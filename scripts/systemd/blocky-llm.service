@@ -1,0 +1,17 @@
+[Unit]
+Description=blockyOS AI model server (llama.cpp)
+After=network.target
+
+[Service]
+User=blocky
+# /usr/lib/wsl/lib holds nvidia-smi under WSL; on real hardware it simply doesn't exist.
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/lib/wsl/lib
+EnvironmentFile=-/etc/blocky/blocky.env
+# Written by the Models page; loaded second so it wins.
+EnvironmentFile=-/opt/blocky/data/llm.env
+ExecStart=/opt/blocky/app/scripts/start-llm.sh
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

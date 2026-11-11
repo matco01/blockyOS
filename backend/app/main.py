@@ -1,0 +1,702 @@
+"""blockyOS web backend.
+
+One process that:
+  - serves the web UI
+  - streams chat to/from llama-server
+  - stores conversations and long-term memory in SQLite
+  - reports hardware stats
+"""
+import asyncio
+import csv
+import io
+import json
+import time
+from contextlib import asynccontextmanager
+from datetime import datetime
+from pathlib import Path
+
+import httpx
+import psutil
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
+
+from . import arena, benchmarks, config, db, evals, generate, lab, memory, system
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    db.init()
+    arena.init()
+    evals.init()
+    psutil.cpu_percent(interval=None)  # prime the CPU counter so the first reading isn't 0
+    app.state.llm = httpx.AsyncClient(base_url=config.LLM_URL, timeout=httpx.Timeout(10, read=300))
+    app.state.background = set()  # keep references so tasks aren't garbage-collected
+    yield
+    await app.state.llm.aclose()
+
+
+app = FastAPI(title="blockyOS", lifespan=lifespan)
+
+
+# ---------- Conversations ----------
+
+@app.get("/api/conversations")
+def list_conversations():
+    return db.list_conversations()
+
+
+@app.get("/api/conversations/{conv_id}")
+def get_conversation(conv_id: int):
+    if not db.conversation_exists(conv_id):
+        raise HTTPException(404, "Conversation not found")
+    return db.get_messages(conv_id)
+
+
+class RenameIn(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+
+
+@app.patch("/api/conversations/{conv_id}")
+def rename_conversation(conv_id: int, body: RenameIn):
+    db.rename_conversation(conv_id, body.title.strip())
+    return {"ok": True}
+
+
+@app.delete("/api/conversations/{conv_id}")
+def delete_conversation(conv_id: int):
+    db.delete_conversation(conv_id)
+    return {"ok": True}
+
+
+@app.get("/api/search")
+def search(q: str):
+    return db.search_messages(q)
+
+
+# ---------- Memory ----------
+
+class MemoryIn(BaseModel):
+    content: str = Field(min_length=1, max_length=memory.MAX_MEMORY_CHARS)
+
+
+@app.get("/api/memories")
+def list_memories():
+    return db.list_memories()
+
+
+@app.post("/api/memories")
+def add_memory(body: MemoryIn):
+    return db.add_memory(body.content.strip(), "user")
+
+
+@app.patch("/api/memories/{mem_id}")
+def update_memory(mem_id: int, body: MemoryIn):
+    if not db.update_memory(mem_id, body.content.strip()):
+        raise HTTPException(404, "Memory not found")
+    return {"ok": True}
+
+
+@app.delete("/api/memories/{mem_id}")
+def delete_memory(mem_id: int):
+    db.delete_memory(mem_id)
+    return {"ok": True}
+
+
+@app.delete("/api/memories")
+def delete_all_memories():
+    db.delete_all_memories()
+    return {"ok": True}
+
+
+# ---------- Settings ----------
+
+@app.get("/api/settings")
+def get_settings():
+    return db.get_settings()
+
+
+@app.patch("/api/settings")
+def update_settings(body: dict):
+    return db.update_settings(body)
+
+
+# ---------- Chat ----------
+
+class Sampling(BaseModel):
+    """Generation parameters a researcher may want to control. None = model/server default."""
+    temperature: float | None = Field(None, ge=0, le=5)
+    top_p: float | None = Field(None, ge=0, le=1)
+    top_k: int | None = Field(None, ge=0, le=1000)
+    min_p: float | None = Field(None, ge=0, le=1)
+    repeat_penalty: float | None = Field(None, ge=0.5, le=3)
+    presence_penalty: float | None = Field(None, ge=-2, le=2)
+    max_tokens: int | None = Field(None, ge=1, le=262_144)
+    seed: int | None = Field(None, ge=-1)
+
+
+class ChatIn(BaseModel):
+    message: str = Field(min_length=1, max_length=50_000)
+    conversation_id: int | None = None
+    think: bool = False  # let the model "reason" first (slower, sometimes smarter)
+    sampling: Sampling | None = None
+    system_prompt: str | None = Field(None, max_length=20_000)  # replaces the default persona
+    think_budget: int | None = Field(4096, ge=64, le=65_536)  # max thinking tokens before forcing an answer
+
+
+def _sse(event: dict) -> str:
+    return f"data: {json.dumps(event)}\n\n"
+
+
+def _spawn(coro) -> None:
+    task = asyncio.create_task(coro)
+    app.state.background.add(task)
+    task.add_done_callback(app.state.background.discard)
+
+
+_token_cache: dict[str, int] = {}
+
+
+async def _count_tokens(text: str) -> int | None:
+    """Token count via llama-server's tokenizer (cached; the system prompt rarely changes)."""
+    if text in _token_cache:
+        return _token_cache[text]
+    try:
+        r = await app.state.llm.post("/tokenize", json={"content": text}, timeout=3)
+        n = len(r.json().get("tokens", []))
+    except (httpx.HTTPError, ValueError):
+        return None
+    if len(_token_cache) > 64:
+        _token_cache.clear()
+    _token_cache[text] = n
+    return n
+
+
+def _system_prompt(user_message: str, use_memory: bool, base: str | None = None) -> str:
+    prompt = (base.strip() if base and base.strip() else config.SYSTEM_PROMPT) + (
+        f"\n\nCurrent date (for your reference; only mention it if asked or relevant): "
+        f"{datetime.now():%A, %B %d, %Y}."
+    )
+    if use_memory:
+        prompt += memory.format_for_prompt(memory.recall(user_message))
+    return prompt
+
+
+@app.post("/api/chat")
+async def chat(body: ChatIn):
+    conv_id = body.conversation_id
+    if conv_id is None:
+        conv_id = db.create_conversation(body.message.strip()[:60] or "New chat")
+    elif not db.conversation_exists(conv_id):
+        raise HTTPException(404, "Conversation not found")
+
+    settings = db.get_settings()
+    use_memory = settings["memory_enabled"]
+
+    db.add_message(conv_id, "user", body.message)
+    history = db.get_messages(conv_id, limit=config.MAX_HISTORY_MESSAGES)
+    system_text = _system_prompt(body.message, use_memory, body.system_prompt)
+    system_n = await _count_tokens(system_text)
+    messages = [{"role": "system", "content": system_text}] + [
+        {"role": m["role"], "content": m["content"]} for m in history
+    ]
+    sampling = body.sampling.model_dump(exclude_none=True) if body.sampling else {}
+    # No explicit settings: use the model's recommended ones (makes small models' thinking far less erratic).
+    used_sampling = sampling or generate.recommended_sampling(lab.read_runtime().get("model"), body.think)
+    budget = body.think_budget if body.think else None
+
+    async def stream():
+        yield _sse({"type": "meta", "conversation_id": conv_id})
+        if lab.busy:
+            msg = {"benchmark": "A benchmark is running. Chat is paused until it finishes.",
+                   "arena": "An Arena match is running. Chat is paused until it finishes.",
+                   "eval": "A quality test is running. Chat is paused until it finishes."}.get(
+                lab.busy, "The model is being switched. Try again in a moment.")
+            yield _sse({"type": "error", "message": msg})
+            return
+        content, reasoning = [], []
+        timings: dict = {}
+        started = time.monotonic()
+        first_token: float | None = None
+        finished = False
+        budget_hit = False
+
+        def stats() -> dict:
+            s = {
+                "ttft_ms": round((first_token - started) * 1000) if first_token else None,
+                "budget_hit": budget_hit, "think_budget": budget,
+                "total_ms": round((time.monotonic() - started) * 1000),
+                "prompt_n": timings.get("prompt_n"),
+                "prompt_per_second": timings.get("prompt_per_second"),
+                "cache_n": timings.get("cache_n"),
+                "predicted_n": timings.get("predicted_n"),
+                "predicted_per_second": timings.get("predicted_per_second"),
+                "think": body.think,
+                "system_n": system_n,  # system prompt + memories (for the context meter)
+            }
+            if sampling:
+                s["sampling"] = sampling
+            elif used_sampling:
+                s["sampling_recommended"] = used_sampling
+            if body.system_prompt:
+                s["custom_system_prompt"] = True
+            return s
+
+        try:
+            async for kind, val in generate.stream(app.state.llm, messages, think=body.think, sampling=used_sampling,
+                                                   budget=budget, answer_tokens=4096):
+                if kind in ("reasoning", "content") and first_token is None:
+                    first_token = time.monotonic()
+                if kind == "reasoning":
+                    reasoning.append(val)
+                    yield _sse({"type": "reasoning", "text": val})
+                elif kind == "content":
+                    content.append(val)
+                    yield _sse({"type": "token", "text": val})
+                elif kind == "budget":
+                    budget_hit = True
+                    yield _sse({"type": "budget", "tokens": val})
+                elif kind == "done":
+                    timings = val["timings"] or {}
+            finished = True
+        except httpx.ConnectError:
+            yield _sse({"type": "error", "message": "The AI model isn't running. Is blocky-llm started?"})
+            return
+        except httpx.HTTPStatusError as e:
+            msg = "The model is still loading. Try again in a few seconds." if "503" in str(e) else str(e)[:300]
+            yield _sse({"type": "error", "message": msg})
+            return
+        except httpx.HTTPError as e:
+            yield _sse({"type": "error", "message": f"Lost connection to the model: {e.__class__.__name__}"})
+            return
+        finally:
+            # Save whatever we got, even if the user navigated away mid-answer.
+            if content or reasoning:
+                db.add_message(
+                    conv_id, "assistant", "".join(content),
+                    reasoning="".join(reasoning) or None,
+                    tokens=timings.get("predicted_n"),
+                    tokens_per_sec=timings.get("predicted_per_second"),
+                    stats=stats(),
+                )
+
+        yield _sse({
+            "type": "done",
+            "tokens": timings.get("predicted_n"),
+            "tokens_per_sec": timings.get("predicted_per_second"),
+            "seconds": round(time.monotonic() - started, 2),
+            "stats": stats(),
+        })
+
+        # Learn from this exchange. Runs as its own task so it completes even if
+        # the browser disconnects; we just stop waiting for it in that case.
+        if finished and use_memory and content and not lab.busy:
+            task = asyncio.create_task(
+                memory.extract(app.state.llm, body.message, "".join(content), conv_id)
+            )
+            app.state.background.add(task)
+            task.add_done_callback(app.state.background.discard)
+            added = await asyncio.shield(task)
+            if added:
+                yield _sse({"type": "memory", "added": added})
+
+    return StreamingResponse(stream(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+# ---------- System ----------
+
+@app.get("/api/system")
+def system_stats():
+    return system.snapshot()
+
+
+@app.get("/api/status")
+async def status():
+    """Is the model loaded, and which one? Also reports Lab activity."""
+    base = {"busy": lab.busy, "switch_error": lab.last_switch_error}
+    try:
+        r = await app.state.llm.get("/props", timeout=2)
+        props = r.json()
+        model_path = props.get("model_path", "")
+        return {
+            **base,
+            "model_ready": r.status_code == 200,
+            "model": Path(model_path).stem if model_path else "unknown",
+            "context_size": (props.get("default_generation_settings") or {}).get("n_ctx"),
+        }
+    except (httpx.HTTPError, ValueError):
+        return {**base, "model_ready": False, "model": None, "context_size": None}
+
+
+# ---------- Lab: models ----------
+
+def _bad(e: Exception):
+    raise HTTPException(400, str(e))
+
+
+@app.get("/api/hardware")
+def hardware():
+    return lab.hardware()
+
+
+@app.get("/api/memory-map")
+async def memory_map():
+    mm = await lab.memory_map()
+    await lab.refresh_measured()
+    return mm
+
+
+@app.get("/api/stats/recent")
+def recent_stats(limit: int = 30):
+    with db.connect() as c:
+        rows = c.execute(
+            "SELECT m.id, m.created_at, m.stats, m.conversation_id FROM messages m "
+            "WHERE m.role = 'assistant' AND m.stats IS NOT NULL ORDER BY m.id DESC LIMIT ?",
+            (max(1, min(500, limit)),),
+        ).fetchall()
+    return [{"id": r["id"], "created_at": r["created_at"], "conversation_id": r["conversation_id"],
+             **json.loads(r["stats"])} for r in reversed(rows)]
+
+
+@app.get("/api/models")
+async def models():
+    await lab.refresh_measured()
+    return {"models": lab.list_models(), "runtime": lab.read_runtime(), "catalog": lab.catalog(),
+            "hardware": lab.hardware(), "kv_types": lab.KV_TYPES}
+
+
+@app.post("/api/models/runtime")
+async def set_runtime(body: dict):
+    if lab.busy:
+        raise HTTPException(409, f"Busy: {lab.busy}")
+    try:
+        cfg = lab.validate_runtime(body)
+    except (ValueError, TypeError) as e:
+        _bad(e)
+    _spawn(lab.apply_runtime(app.state.llm, cfg))
+    return {"ok": True, "runtime": cfg}
+
+
+@app.delete("/api/models/{name}")
+def delete_model(name: str):
+    try:
+        lab.delete_model(name)
+    except ValueError as e:
+        _bad(e)
+    return {"ok": True}
+
+
+@app.get("/api/hf/files")
+async def hf_files(repo: str):
+    try:
+        return await lab.hf_files(repo.strip())
+    except ValueError as e:
+        _bad(e)
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"Couldn't reach Hugging Face: {e.__class__.__name__}")
+
+
+class DownloadIn(BaseModel):
+    repo: str
+    path: str
+
+
+@app.post("/api/downloads")
+async def start_download(body: DownloadIn):  # async: starts a background task on the event loop
+    try:
+        return {"id": lab.start_download(body.repo.strip(), body.path.strip())}
+    except ValueError as e:
+        _bad(e)
+
+
+@app.get("/api/downloads")
+def list_downloads():
+    return sorted(lab.downloads.values(), key=lambda d: d["started"], reverse=True)
+
+
+@app.post("/api/downloads/{dl_id}/cancel")
+def cancel_download(dl_id: str):
+    if dl_id in lab.downloads and lab.downloads[dl_id]["status"] == "downloading":
+        lab.downloads[dl_id]["status"] = "cancelled"
+    return {"ok": True}
+
+
+# ---------- Lab: benchmarks ----------
+
+@app.get("/api/bench")
+def list_bench():
+    return lab.list_bench()
+
+
+@app.post("/api/bench")
+async def start_bench(body: dict):  # async: starts a background task on the event loop
+    if lab.busy:
+        raise HTTPException(409, f"Busy: {lab.busy}")
+    try:
+        run_id = lab.create_bench(body)
+    except (ValueError, TypeError, KeyError) as e:
+        _bad(e)
+    _spawn(lab.run_bench(run_id, app.state.llm))
+    return {"id": run_id}
+
+
+@app.get("/api/bench/export")
+def export_bench(format: str = "csv"):
+    runs = [r for r in lab.list_bench() if r["results"]]
+    if format == "json":
+        return JSONResponse(runs, headers={"Content-Disposition": 'attachment; filename="blocky-benchmarks.json"'})
+    cols = ["run_id", "date", "model", "test", "n_prompt", "n_gen", "n_depth", "avg_ts", "stddev_ts", "power_w",
+            "tokens_per_joule", "peak_vram_mb", "n_gpu_layers", "n_cpu_moe", "type_k", "flash_attn", "n_threads",
+            "gpu", "driver", "cpu", "ram_mb", "os", "wsl", "llama_cpp"]
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(cols)
+    for run in runs:
+        hw = run["hardware"] or {}
+        gpu = (hw.get("gpus") or [{}])[0]
+        for r in run["results"]:
+            w.writerow([run["id"], datetime.fromtimestamp(run["created_at"]).isoformat(timespec="seconds"), run["model"],
+                        r.get("test"), r.get("n_prompt"), r.get("n_gen"), r.get("n_depth"), r.get("avg_ts"), r.get("stddev_ts"),
+                        r.get("power_w"), r.get("tokens_per_joule"), r.get("peak_vram_mb"), r.get("n_gpu_layers"),
+                        r.get("n_cpu_moe"), r.get("type_k"), r.get("flash_attn"), r.get("n_threads"),
+                        gpu.get("name"), gpu.get("driver"), hw.get("cpu"), round(hw.get("ram_mb") or 0),
+                        hw.get("os"), hw.get("wsl"), hw.get("llama_cpp")])
+    return Response(buf.getvalue(), media_type="text/csv",
+                    headers={"Content-Disposition": 'attachment; filename="blocky-benchmarks.csv"'})
+
+
+@app.get("/api/bench/{run_id}")
+def get_bench(run_id: int):
+    run = lab.get_bench(run_id)
+    if not run:
+        raise HTTPException(404, "Run not found")
+    return run
+
+
+@app.post("/api/bench/{run_id}/cancel")
+def cancel_bench(run_id: int):
+    lab.cancel_bench(run_id)
+    return {"ok": True}
+
+
+@app.delete("/api/bench/{run_id}")
+def delete_bench(run_id: int):
+    lab.delete_bench(run_id)
+    return {"ok": True}
+
+
+# ---------- Lab: established benchmarks ----------
+
+@app.get("/api/benchmarks")
+def bench_catalog():
+    return benchmarks.summary()
+
+
+@app.post("/api/benchmarks/{key}/download")
+async def bench_download(key: str):  # async: starts a background task on the event loop
+    if key not in benchmarks.catalog():
+        raise HTTPException(404, "Unknown benchmark")
+    if (benchmarks.downloads.get(key) or {}).get("status") == "downloading":
+        return {"ok": True}
+    _spawn(benchmarks.download(key))
+    return {"ok": True}
+
+
+@app.delete("/api/benchmarks/{key}")
+def bench_delete(key: str):
+    benchmarks.delete(key)
+    return {"ok": True}
+
+
+@app.get("/api/hf/dataset")
+async def hf_dataset_preview(repo: str):
+    try:
+        return await benchmarks.hf_preview(repo.strip())
+    except ValueError as e:
+        _bad(e)
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"Couldn't reach Hugging Face: {e.__class__.__name__}")
+
+
+@app.post("/api/benchmarks/custom")
+async def bench_add_custom(body: dict):  # async: starts the download task
+    try:
+        key = benchmarks.add_custom(body)
+    except (ValueError, TypeError) as e:
+        _bad(e)
+    _spawn(benchmarks.download(key))
+    return {"key": key}
+
+
+# ---------- OpenAI-compatible API (for outside tools: lm-eval, EvalPlus, SWE-bench agents…) ----------
+
+@app.api_route("/v1/{path:path}", methods=["GET", "POST"])
+async def openai_proxy(path: str, request: Request):
+    """Pass-through to llama-server's OpenAI-compatible API, so external harnesses can test the local model."""
+    if path not in ("models", "chat/completions", "completions", "embeddings"):
+        raise HTTPException(404, "Not an OpenAI endpoint Blocky exposes")
+    if lab.busy:
+        raise HTTPException(503, f"Blocky is busy ({lab.busy}). Try again when it's finished.")
+    body = await request.body()
+    req = app.state.llm.build_request(request.method, f"/v1/{path}", content=body,
+                                      headers={"Content-Type": request.headers.get("content-type", "application/json")},
+                                      timeout=httpx.Timeout(10, read=900))
+    upstream = await app.state.llm.send(req, stream=True)
+
+    async def relay():
+        try:
+            async for chunk in upstream.aiter_raw():
+                yield chunk
+        finally:
+            await upstream.aclose()
+
+    return StreamingResponse(relay(), status_code=upstream.status_code,
+                             media_type=upstream.headers.get("content-type", "application/json"))
+
+
+# ---------- Lab: quality tests ----------
+
+@app.get("/api/evals/suites")
+def eval_suites():
+    return evals.suites_summary()
+
+
+@app.get("/api/evals/suites/{key}")
+def eval_suite(key: str):
+    s = evals.all_suites().get(key)
+    if not s:
+        raise HTTPException(404, "Test set not found")
+    return s
+
+
+class CustomSuiteIn(BaseModel):
+    name: str
+    questions: list[dict]
+
+
+@app.post("/api/evals/suites")
+def eval_create_suite(body: CustomSuiteIn):
+    try:
+        return {"key": f"custom:{evals.create_custom(body.name, body.questions)}"}
+    except ValueError as e:
+        _bad(e)
+
+
+@app.delete("/api/evals/suites/custom:{suite_id}")
+def eval_delete_suite(suite_id: int):
+    evals.delete_custom(suite_id)
+    return {"ok": True}
+
+
+@app.get("/api/evals")
+def eval_list():
+    return evals.list_runs()
+
+
+@app.post("/api/evals")
+async def eval_start(body: dict):  # async: starts a background task on the event loop
+    if lab.busy:
+        raise HTTPException(409, f"Busy: {lab.busy}")
+    try:
+        run_id = evals.create(body)
+    except (ValueError, TypeError) as e:
+        _bad(e)
+    _spawn(evals.run(run_id, app.state.llm))
+    return {"id": run_id}
+
+
+@app.get("/api/evals/{run_id}")
+def eval_get(run_id: int):
+    r = evals.get(run_id)
+    if not r:
+        raise HTTPException(404, "Run not found")
+    return r
+
+
+@app.post("/api/evals/{run_id}/cancel")
+def eval_cancel(run_id: int):
+    evals.cancel(run_id)
+    return {"ok": True}
+
+
+@app.delete("/api/evals/{run_id}")
+def eval_delete(run_id: int):
+    evals.delete(run_id)
+    return {"ok": True}
+
+
+# ---------- Lab: arena ----------
+
+@app.get("/api/arena")
+def arena_list():
+    return arena.list_matches()
+
+
+@app.get("/api/arena/leaderboard")
+def arena_leaderboard():
+    return arena.leaderboard()
+
+
+@app.post("/api/arena")
+async def arena_start(body: dict):  # async: starts a background task on the event loop
+    if lab.busy:
+        raise HTTPException(409, f"Busy: {lab.busy}")
+    try:
+        match_id = arena.create(body)
+    except (ValueError, TypeError) as e:
+        _bad(e)
+    _spawn(arena.run(match_id, app.state.llm))
+    return {"id": match_id}
+
+
+@app.get("/api/arena/{match_id}")
+def arena_get(match_id: int):
+    m = arena.get(match_id)
+    if not m:
+        raise HTTPException(404, "Match not found")
+    return m
+
+
+class VoteIn(BaseModel):
+    winner: str
+
+
+@app.post("/api/arena/{match_id}/vote")
+def arena_vote(match_id: int, body: VoteIn):
+    try:
+        arena.vote(match_id, body.winner)
+    except ValueError as e:
+        _bad(e)
+    return arena.get(match_id)
+
+
+@app.post("/api/arena/{match_id}/cancel")
+def arena_cancel(match_id: int):
+    arena.cancel(match_id)
+    return {"ok": True}
+
+
+@app.delete("/api/arena/{match_id}")
+def arena_delete(match_id: int):
+    arena.delete(match_id)
+    return {"ok": True}
+
+
+@app.get("/api/logs")
+async def logs(lines: int = 300):
+    return {"text": await lab.llm_log(lines)}
+
+
+# ---------- Web UI (must be last: catches all other paths) ----------
+
+if config.FRONTEND_DIST.exists():
+    app.mount("/assets", StaticFiles(directory=config.FRONTEND_DIST / "assets"), name="assets")
+
+    @app.get("/{path:path}")
+    def spa(path: str):
+        file = config.FRONTEND_DIST / path
+        if path and file.is_file() and config.FRONTEND_DIST in file.resolve().parents:
+            return FileResponse(file)
+        return FileResponse(config.FRONTEND_DIST / "index.html")
