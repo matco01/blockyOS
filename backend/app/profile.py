@@ -389,11 +389,12 @@ def _parse_load_log(text: str) -> dict:
 # 10 options (chance = 10%). Contamination doesn't matter here: every run of an experiment is the same
 # model, so we measure the *difference* a change makes on identical questions.
 
-MMLU_PER_CATEGORY = 20
+MMLU_PER_CATEGORY = 40   # × 14 subjects = 560 questions
+MMLU_SEED = 20240611     # fixed forever: every experiment uses the same questions, so results compare across experiments
 LETTERS = "ABCDEFGHIJ"
 
 
-def mmlu_sample(seed: int) -> tuple[list[dict], list[dict]]:
+def mmlu_sample(seed: int = MMLU_SEED) -> tuple[list[dict], list[dict]]:
     import random
     from . import benchmarks
     if not benchmarks.path("mmlu_pro").is_file():
@@ -489,7 +490,14 @@ async def _bench(cfg: dict, vram_total: float, run_id: int, log: list[str]) -> d
             x = json.loads(line)
             key = ("pp" if x.get("n_prompt") and not x.get("n_gen") else "tg") + ("_d4096" if x.get("n_depth") else "")
             # Median of the repetitions: one hiccup (a timer glitch, a throttling spike) can't skew the result.
-            samples = sorted(x.get("samples_ts") or [])
+            raw = x.get("samples_ts") or []
+            # llama-bench occasionally reports impossible repetitions (0 tok/s, or 100,000+ tok/s from a timer glitch
+            # under WSL): drop anything more than 50% away from the median and record how many were dropped.
+            pos = sorted(s for s in raw if s and s > 0)
+            m0 = pos[len(pos) // 2] if pos else 0
+            samples = [s for s in pos if 0.5 * m0 <= s <= 1.5 * m0]
+            if len(samples) < len(raw):
+                res[key + "_dropped"] = len(raw) - len(samples)
             if samples:
                 med = samples[len(samples) // 2]
                 # Robust spread: 1.4826 × median absolute deviation (≈ σ for normal noise, ignores one outlier rep).
@@ -559,7 +567,7 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
                 def progress(i, n, k):
                     res["mmlu_progress"] = {"done": i, "total": n, "correct": k}
                     _save(run_id, results=res)
-                res["mmlu"] = await mmlu_eval(client, exp["seed"], lambda: run_id in _cancel, progress)
+                res["mmlu"] = await mmlu_eval(client, MMLU_SEED, lambda: run_id in _cancel, progress)
                 res.pop("mmlu_progress", None)
             await arena._stop(proc)
             proc = None

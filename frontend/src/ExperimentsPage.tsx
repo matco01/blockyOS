@@ -13,6 +13,7 @@ type Metric = {
   sd?: (r: ExpResults) => number | null | undefined;        // ± noise of one measurement (for significance)
   sig?: (c: Ctx) => boolean | null;                          // custom significance test
   fmt?: (v: number) => string; note?: string;
+  minRel?: number;                                           // smallest relative change treated as real (no noise model)
 };
 const n1 = (v: number) => (Math.abs(v) >= 100 ? v.toFixed(0) : v.toFixed(1));
 const pct = (v: number) => v.toFixed(1);
@@ -35,7 +36,7 @@ const METRICS: Metric[] = [
   { key: "vram_free", group: "Memory", label: "VRAM free", unit: "GB", better: "higher", get: (r) => gb(r.hw?.headroom?.vram_free_mb), fmt: (v) => v.toFixed(2) },
   { key: "kv", group: "Memory", label: "Context memory per 1k tokens", term: "kv", unit: "MB", better: "lower", get: (r) => r.hw?.headroom?.kv_mb_per_1k_tokens },
   { key: "w_cpu", group: "Memory", label: "Weights in system RAM", unit: "GB", better: "lower", get: (r) => r.hw?.weights_on_cpu_gb, fmt: (v) => v.toFixed(2) },
-  { key: "load", group: "Memory", label: "Load time", unit: "s", better: "lower", get: (r) => r.load_seconds },
+  { key: "load", group: "Memory", label: "Load time", unit: "s", better: "lower", get: (r) => r.load_seconds, minRel: 0.4, note: "Depends on the disk cache: only large changes count" },
   { key: "eff_bw", group: "Hardware", label: "Effective weight bandwidth", unit: "GB/s", better: "higher", get: (r) => r.hw?.decode?.effective_gbps, fmt: (v) => v.toFixed(0) },
   { key: "roof", group: "Hardware", label: "Decode, % of memory roof", unit: "%", better: "higher", get: (r) => (r.hw?.decode?.roof_util != null ? r.hw.decode.roof_util * 100 : null), fmt: (v) => v.toFixed(0) },
   { key: "tflops", group: "Hardware", label: "Prefill compute", unit: "TFLOPS", better: "higher", get: (r) => r.hw?.prefill?.achieved_tflops },
@@ -50,7 +51,7 @@ const METRICS: Metric[] = [
 ];
 
 /** Difference vs baseline, with a noise check: inside 2σ of the combined measurement noise = not significant. */
-function delta(m: Metric, c: Ctx) {
+function delta(m: Metric, c: Ctx, session = 0) {
   const v = m.get(c.run.results), b = m.get(c.base.results);
   if (v == null || b == null || b === 0) return null;
   const d = (v - b) / Math.abs(b);
@@ -59,7 +60,9 @@ function delta(m: Metric, c: Ctx) {
     const s1 = m.sd(c.run.results), s2 = m.sd(c.base.results);
     if (s1 != null && s2 != null) sig = Math.abs(v - b) > 2 * Math.sqrt(s1 * s1 + s2 * s2);
   }
-  if (sig == null) sig = Math.abs(d) >= 0.02;
+  if (sig == null) sig = Math.abs(d) >= (m.minRel ?? 0.02);
+  // Session-to-session drift (measured by repeating the baseline) must also be exceeded.
+  if (sig && !m.sig && session > 0 && Math.abs(v - b) <= 2 * session) sig = false;
   const text = `${d > 0 ? "+" : ""}${(d * 100).toFixed(Math.abs(d) < 0.1 ? 1 : 0)}%`;
   if (!sig) return { text, tone: "same", title: "Within measurement noise" };
   if (!m.better) return { text, tone: "same", title: "" };
@@ -69,7 +72,7 @@ function delta(m: Metric, c: Ctx) {
 
 const PHASES = [
   { id: "loading", label: "Load", what: "memory layout, load time" },
-  { id: "quality", label: "Quality", what: "MMLU-Pro, 280 questions" },
+  { id: "quality", label: "Quality", what: "MMLU-Pro, 560 questions" },
   { id: "speed", label: "Speed", what: "llama-bench, 5 reps" },
   { id: "fidelity", label: "Fidelity", what: "PPL + KLD, 16k tokens" },
 ];
@@ -153,7 +156,11 @@ function ChangePanel({ base, models, onRun, disabled }: { base: ExpConfig; model
       <div className="xc-foot">
         <span className="row-sub">{changed.length === 0 ? "Pick one variable to change against the baseline."
           : changed.length === 1 ? "One variable changed: differences can be attributed to it." : `${changed.length} variables changed at once: effects will be confounded.`}</span>
-        <button className="btn" disabled={disabled || changed.length === 0} onClick={() => onRun("", cfg)}><Play /> Profile this change</button>
+        <div className="xc-btns">
+          <button className="btn ghost" disabled={disabled} onClick={() => onRun("Repeat of baseline", base)}
+            title="Runs the baseline setup again: the difference between the two shows how much results drift between sessions on this machine.">Repeat baseline</button>
+          <button className="btn" disabled={disabled || changed.length === 0} onClick={() => onRun("", cfg)}><Play /> Profile this change</button>
+        </div>
       </div>
     </div>
   );
@@ -182,7 +189,10 @@ function Board({ runs, metric, setMetric }: { runs: ExpRun[]; metric: string; se
                   <td className="mlabel">{x.term ? <Term k={x.term}>{x.label}</Term> : x.label}{x.unit && <span className="u"> {x.unit}</span>}</td>
                   {runs.map((r, i) => {
                     const v = x.get(r.results), sd = x.sd?.(r.results);
-                    const d = i === 0 ? null : delta(x, { run: r, base });
+                    const repeats = runs.slice(1).filter((q) => q.label === "Repeat of baseline" && q.id !== r.id);
+                    const bv = x.get(base.results);
+                    const session = Math.max(0, ...repeats.map((q) => { const qv = x.get(q.results); return qv != null && bv != null ? Math.abs(qv - bv) : 0; }));
+                    const d = i === 0 ? null : delta(x, { run: r, base }, session);
                     return (
                       <td key={r.id} className="r">
                         {v == null ? "–" : (x.fmt ?? n1)(v)}{sd ? <span className="sd"> ±{(x.fmt ?? n1)(sd)}</span> : null}
@@ -256,8 +266,8 @@ function Roofline({ runs }: { runs: ExpRun[] }) {
         <text x={11} y={(T + H - B) / 2} textAnchor="middle" className="axis" transform={`rotate(-90 11 ${(T + H - B) / 2})`}>TFLOPS (log)</text>
         <path d={`${line(bw)} L${X(10000)},${Y(peak)}`} className="roof" />
         {ram && <path d={line(ram)} className="roof ram" />}
-        <text x={X(0.7)} y={Y((bw * 0.7) / 1000) - 8} className="roof-label">VRAM {bw} GB/s</text>
-        {ram && <text x={X(0.7)} y={Y((ram * 0.7) / 1000) + 16} className="roof-label">RAM {ram} GB/s</text>}
+        <text x={X(25)} y={Y((bw * 25) / 1000) - 10} textAnchor="end" className="roof-label">VRAM {bw} GB/s</text>
+        {ram && <text x={X(40)} y={Y((ram * 40) / 1000) + 18} className="roof-label">RAM {ram} GB/s</text>}
         <text x={W - R - 4} y={Y(peak) - 6} textAnchor="end" className="roof-label">{peak} TFLOPS peak</text>
         {pts.map((p) => p.sq
           ? <rect key={p.id} x={X(p.x) - 5.5} y={Y(p.y) - 5.5} width={11} height={11} rx={2} fill={p.c} className="pt" {...ev(p.id)} />
@@ -428,7 +438,7 @@ export default function ExperimentsPage({ status }: { status: Status | null }) {
             ) : !running && (
               <div className="group pad xcta">
                 <div><b>Measure the starting point</b>
-                  <span className="row-sub">Load (memory layout from llama.cpp's own log) → MMLU-Pro, 280 questions, 5-shot log-likelihood → llama-bench decode and prefill at 0 and 4k context, 5 repetitions (median, robust spread) → perplexity on 16k tokens of WikiText-2, saving logits for the KL divergence of later runs. GPU and CPU telemetry throughout.</span></div>
+                  <span className="row-sub">Load (memory layout from llama.cpp's own log) → MMLU-Pro, 560 questions, 5-shot log-likelihood → llama-bench decode and prefill at 0 and 4k context, 5 repetitions (median, robust spread) → perplexity on 16k tokens of WikiText-2, saving logits for the KL divergence of later runs. GPU and CPU telemetry throughout.</span></div>
                 <button className="btn" disabled={!!status?.busy} onClick={() => runProfile("Baseline", {})}><Play /> Run baseline</button>
               </div>
             )}
@@ -441,7 +451,7 @@ export default function ExperimentsPage({ status }: { status: Status | null }) {
                 <div className="group-label">3 · Results</div>
                 <div className="group pad">
                   <Board runs={done} metric={metric} setMetric={setMetric} />
-                  <div className="row-sub xnote">Speeds are the median of the repetitions; ± is the robust spread (1.4826 × median absolute deviation). A difference is colored only when it is bigger than the noise: 2σ for speeds, a paired McNemar test (p &lt; 0.05) for MMLU-Pro. Grey = not significant. KL divergence measures how far each token's probability distribution drifted from the baseline's.</div>
+                  <div className="row-sub xnote">Speeds are the median of the repetitions; ± is the robust spread (1.4826 × median absolute deviation). A difference is colored only when it is bigger than the noise: 2σ for speeds, a paired McNemar test (p &lt; 0.05) for MMLU-Pro. Grey = not significant. If you add a “Repeat baseline” run, changes must also exceed twice the drift between the two baseline runs (on a desktop PC, other apps share the GPU and add noise). KL divergence measures how far each token's probability distribution drifted from the baseline's.</div>
                   {done.length > 1 && <MetricBars runs={done} metric={metric} />}
                   {runs.filter((r) => !["done", "running", "queued"].includes(r.status)).map((r) => (
                     <div key={r.id} className="xfailed"><AlertCircle size={14} /> “{r.label}” {r.status}{r.error ? `: ${r.error}` : ""}

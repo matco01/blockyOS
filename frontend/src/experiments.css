@@ -133,4 +133,4 @@
 .xlim > div { display: flex; flex-direction: column; gap: 2px; }
 .xlim span:not(.xdot) { color: var(--text-2); font-size: 12.5px; line-height: 1.4; }
 .tool-charts.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-@media (max-width: 1000px) { .xhw-grid { grid-template-columns: 1fr; } .tool-charts.three { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 1000px) { .xhw-grid { grid-template-columns: 1fr; } .tool-charts.three { grid-template-columns: 1fr 1fr; } }.xc-btns { display: flex; gap: 8px; }
