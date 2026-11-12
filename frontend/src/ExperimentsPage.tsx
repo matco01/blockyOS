@@ -234,81 +234,146 @@ function MetricBars({ runs, metric }: { runs: ExpRun[]; metric: string }) {
   );
 }
 
-/** Roofline: attainable TFLOPS = min(compute peak, bandwidth × arithmetic intensity). Log–log. */
-function Roofline({ runs }: { runs: ExpRun[] }) {
-  const hw0 = runs.find((r) => r.results.hw?.peaks.tflops)?.results.hw;
-  const [hover, setHover] = useState<string | null>(null);
-  if (!hw0?.peaks.tflops || !hw0.peaks.vram_gbps) return <div className="row-sub">Peak numbers for this GPU aren't in Blocky's table yet.</div>;
-  const W = 560, H = 300, L = 46, R = 14, T = 14, B = 38;
-  const x0 = Math.log10(0.5), x1 = Math.log10(10000), y0 = Math.log10(0.05), y1 = Math.log10(hw0.peaks.tflops * 2.5);
-  const X = (ai: number) => L + ((Math.log10(ai) - x0) / (x1 - x0)) * (W - L - R);
-  const Y = (tf: number) => T + (1 - (Math.log10(tf) - y0) / (y1 - y0)) * (H - T - B);
-  const peak = hw0.peaks.tflops, bw = hw0.peaks.vram_gbps, ram = hw0.peaks.ram_gbps;
-  const line = (gbps: number) => { const r = (peak * 1000) / gbps; return `M${X(0.5)},${Y((gbps * 0.5) / 1000)} L${X(Math.min(r, 10000))},${Y(Math.min(peak, (gbps * Math.min(r, 10000)) / 1000))}`; };
-  const xt = [1, 10, 100, 1000, 10000], yt = [0.1, 1, 10, 100].filter((v) => Math.log10(v) <= y1);
-  const pts = runs.flatMap((r, i) => {
-    const h = r.results.hw;
-    const out: { id: string; x: number; y: number; c: string; sq: boolean; label: string }[] = [];
-    if (h?.decode?.arithmetic_intensity && h.decode.achieved_tflops)
-      out.push({ id: `${r.id}d`, x: h.decode.arithmetic_intensity, y: h.decode.achieved_tflops, c: colorOf(i), sq: false, label: `${nameOf(r, i)}, decode: ${h.decode.achieved_tflops} TFLOPS` });
-    if (h?.prefill?.arithmetic_intensity)
-      out.push({ id: `${r.id}p`, x: h.prefill.arithmetic_intensity, y: h.prefill.achieved_tflops, c: colorOf(i), sq: true, label: `${nameOf(r, i)}, prefill: ${h.prefill.achieved_tflops} TFLOPS` });
-    return out;
-  });
-  const hv = pts.find((p) => p.id === hover);
-  const ev = (id: string) => ({ onMouseEnter: () => setHover(id), onMouseLeave: () => setHover(null) });
+/* ---------- Hardware views ---------- */
+
+const LIMIT_TEXT: Record<string, { short: string; fix: string }> = {
+  "VRAM bandwidth": { short: "GPU memory speed", fix: "Normal for local AI. Only a smaller/more-compressed model or a GPU with faster memory makes writing much faster." },
+  "System-RAM bandwidth": { short: "System RAM speed", fix: "Part of the model doesn't fit on the GPU and is read from much slower RAM. Fit it on the GPU: smaller quantization, shorter context, or more VRAM." },
+  "Software overhead": { short: "Software overhead", fix: "The hardware has spare capacity, but time goes to things other than reading weights (attention, kernel launches, cache decompression)." },
+};
+
+function UseBar({ value, max, color, text }: { value: number; max: number; color: string; text: string }) {
+  const p = Math.max(0, Math.min(100, (value / max) * 100));
   return (
-    <div className="xroof">
-      <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Roofline chart">
-        {xt.map((v) => <g key={v}><line x1={X(v)} x2={X(v)} y1={T} y2={H - B} className="grid" /><text x={X(v)} y={H - B + 15} textAnchor="middle" className="tick">{v}</text></g>)}
-        {yt.map((v) => <g key={v}><line x1={L} x2={W - R} y1={Y(v)} y2={Y(v)} className="grid" /><text x={L - 6} y={Y(v) + 4} textAnchor="end" className="tick">{v}</text></g>)}
-        <text x={(L + W - R) / 2} y={H - 4} textAnchor="middle" className="axis">FLOP per byte of weights read (log)</text>
-        <text x={11} y={(T + H - B) / 2} textAnchor="middle" className="axis" transform={`rotate(-90 11 ${(T + H - B) / 2})`}>TFLOPS (log)</text>
-        <path d={`${line(bw)} L${X(10000)},${Y(peak)}`} className="roof" />
-        {ram && <path d={line(ram)} className="roof ram" />}
-        <text x={X(25)} y={Y((bw * 25) / 1000) - 10} textAnchor="end" className="roof-label">VRAM {bw} GB/s</text>
-        {ram && <text x={X(40)} y={Y((ram * 40) / 1000) + 18} className="roof-label">RAM {ram} GB/s</text>}
-        <text x={W - R - 4} y={Y(peak) - 6} textAnchor="end" className="roof-label">{peak} TFLOPS peak</text>
-        {pts.map((p) => p.sq
-          ? <rect key={p.id} x={X(p.x) - 5.5} y={Y(p.y) - 5.5} width={11} height={11} rx={2} fill={p.c} className="pt" {...ev(p.id)} />
-          : <circle key={p.id} cx={X(p.x)} cy={Y(p.y)} r={hover === p.id ? 7 : 5.5} fill={p.c} className="pt" {...ev(p.id)} />)}
-      </svg>
-      <div className="xlegend">
-        <span><i className="dot" /> decode</span><span><i className="sq" /> prefill (512-token batch)</span>
-        {runs.map((r, i) => <span key={r.id}><i className="dot" style={{ background: colorOf(i) }} />{nameOf(r, i)}</span>)}
-      </div>
-      <div className="row-sub">{hv ? hv.label : "Hover a point. Points under the slanted line are memory-bound, under the flat line compute-bound. The gap to the line is unused hardware."}</div>
+    <div className="xuse">
+      <div className="xuse-track"><div style={{ width: `${p}%`, background: color }} /></div>
+      <div className="xuse-text"><b>{p.toFixed(0)}%</b> {text}</div>
     </div>
   );
 }
 
-/** Where each generated token's time goes: reading weights from VRAM, from system RAM, and everything else. */
+/** One row per run: what limits it, and how much of the hardware's limit it actually uses. */
+function LimitTable({ runs }: { runs: ExpRun[] }) {
+  return (
+    <div className="xlimit-table">
+      <div className="xlt-head"><span>Run</span><span>What limits writing</span><span>Writing: share of the speed limit</span><span>Reading: share of the GPU's compute</span></div>
+      {runs.map((r, i) => {
+        const h = r.results.hw, d = h?.decode, p = h?.prefill, lim = h?.limiter;
+        const t = lim ? LIMIT_TEXT[lim.what] : null;
+        return (
+          <div className="xlt-row" key={r.id}>
+            <div className="xlt-run"><span className="xdot" style={{ background: colorOf(i) }} />{nameOf(r, i)}</div>
+            <div className="xlt-lim">{lim ? <><span className={`xchip k${lim.what.length % 3}`}>{t?.short ?? lim.what}</span><em title={t?.fix}>{lim.evidence}</em></> : "–"}</div>
+            <div>{d?.roof_tps && r.results.speed?.tg ? <UseBar value={r.results.speed.tg} max={d.roof_tps} color="var(--series-1)" text={`${n1(r.results.speed.tg)} of ~${n1(d.roof_tps)} tok/s possible`} /> : "–"}</div>
+            <div>{p?.roof_tflops ? <UseBar value={p.achieved_tflops} max={p.roof_tflops} color="var(--series-3)" text={`${p.achieved_tflops} of ${p.roof_tflops} TFLOPS`} /> : "–"}</div>
+          </div>
+        );
+      })}
+      {runs.some((r) => r.results.hw?.limiter) && (
+        <div className="xlt-legend">
+          {Array.from(new Set(runs.map((r) => r.results.hw?.limiter?.what).filter(Boolean) as string[])).map((w) => (
+            <div key={w}><span className={`xchip k${w.length % 3}`}>{LIMIT_TEXT[w]?.short ?? w}</span>{LIMIT_TEXT[w]?.fix}</div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Where each generated token's time goes. Full-width bars on one shared scale, labels inside the segments. */
 function TimeSplit({ runs }: { runs: ExpRun[] }) {
   const rows = runs.map((r, i) => ({ r, i })).filter(({ r }) => r.results.hw?.decode);
   const max = Math.max(...rows.map(({ r }) => r.results.hw!.decode!.ms_per_token), 1);
   const parts = [
-    { k: "vram_reads" as const, label: "Weights from VRAM, at peak bandwidth", c: "var(--series-1)" },
-    { k: "ram_reads" as const, label: "Weights from system RAM", c: "var(--series-3)" },
+    { k: "vram_reads" as const, label: "Reading weights from GPU memory", c: "var(--series-1)" },
+    { k: "ram_reads" as const, label: "Reading weights from system RAM", c: "var(--series-3)" },
     { k: "other" as const, label: "Everything else", c: "var(--split-other)" },
   ];
   return (
-    <div className="xsplit">
-      <div className="mini-title">Time per generated token <span className="muted">(ms; minimum possible weight-read time vs the rest)</span></div>
+    <div className="xsplit2">
+      <div className="xlegend top">{parts.map((p) => <span key={p.k}><i className="sq" style={{ background: p.c }} />{p.label}</span>)}</div>
       {rows.map(({ r, i }) => {
         const s = r.results.hw!.decode!.time_split_ms, tot = r.results.hw!.decode!.ms_per_token;
         return (
-          <div className="xbar-row" key={r.id}>
-            <span>{nameOf(r, i)}</span>
-            <div className="xbar-track stack">
-              {parts.map((p) => (s[p.k] ?? 0) > 0.05 && (
-                <div key={p.k} style={{ width: `${((s[p.k] ?? 0) / max) * 100}%`, background: p.c }} title={`${p.label}: ${(s[p.k] ?? 0).toFixed(1)} ms`} />
-              ))}
+          <div className="xs-row" key={r.id}>
+            <div className="xs-name"><span className="xdot" style={{ background: colorOf(i) }} />{nameOf(r, i)}<b>{tot.toFixed(1)} ms per token</b></div>
+            <div className="xs-bar" style={{ width: `${(tot / max) * 100}%` }}>
+              {parts.map((p) => {
+                const v = s[p.k] ?? 0;
+                if (v < 0.05) return null;
+                return <div key={p.k} style={{ flex: v, background: p.c, color: p.k === "other" ? "var(--text)" : "#fff" }} title={`${p.label}: ${v.toFixed(1)} ms`}>{v / max > 0.06 ? `${v.toFixed(1)}` : ""}</div>;
+              })}
             </div>
-            <b>{tot.toFixed(1)}</b>
           </div>
         );
       })}
-      <div className="xlegend">{parts.map((p) => <span key={p.k}><i className="sq" style={{ background: p.c }} />{p.label}</span>)}</div>
+      <div className="row-sub">The purple part is the physical minimum: the time to stream the weights once at the GPU's full memory speed. Everything beyond it is where speed could still be gained.</div>
+    </div>
+  );
+}
+
+/** Roofline for one run: attainable TFLOPS = min(peak compute, memory bandwidth × FLOP per byte). Log–log, clipped. */
+function Roofline({ runs }: { runs: ExpRun[] }) {
+  const withHw = runs.filter((r) => r.results.hw?.peaks.tflops);
+  const [sel, setSel] = useState<number | null>(null);
+  const run = withHw.find((r) => r.id === sel) ?? withHw[0];
+  const h = run?.results.hw;
+  if (!h?.peaks.tflops || !h.peaks.vram_gbps) return <div className="row-sub">Peak numbers for this GPU aren't in Blocky's table yet.</div>;
+  const W = 620, H = 300, L = 48, R = 16, T = 16, B = 40;
+  const x0 = Math.log10(0.5), x1 = Math.log10(5000), y0 = Math.log10(0.05), y1 = Math.log10(h.peaks.tflops * 2.5);
+  const X = (ai: number) => L + ((Math.log10(ai) - x0) / (x1 - x0)) * (W - L - R);
+  const Y = (tf: number) => T + (1 - (Math.log10(tf) - y0) / (y1 - y0)) * (H - T - B);
+  const peak = h.peaks.tflops, bw = h.peaks.vram_gbps, ram = h.peaks.ram_gbps;
+  const roofPath = (gbps: number, flat: boolean) => {
+    const xs = [0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, (peak * 1000) / gbps].filter((x) => x >= 0.5 && x <= 5000).sort((a, b) => a - b);
+    return xs.map((x, k) => `${k ? "L" : "M"}${X(x)},${Y(flat ? Math.min(peak, (gbps * x) / 1000) : (gbps * x) / 1000)}`).join(" ");
+  };
+  const i = runs.indexOf(run);
+  const pts = [
+    h.decode?.arithmetic_intensity && h.decode.achieved_tflops ? { x: h.decode.arithmetic_intensity, y: h.decode.achieved_tflops, name: "Writing", roof: Math.min(peak, (bw * h.decode.arithmetic_intensity) / 1000) } : null,
+    h.prefill?.arithmetic_intensity ? { x: h.prefill.arithmetic_intensity, y: h.prefill.achieved_tflops, name: "Reading", roof: Math.min(peak, (bw * h.prefill.arithmetic_intensity) / 1000) } : null,
+  ].filter(Boolean) as { x: number; y: number; name: string; roof: number }[];
+  return (
+    <div className="xroof">
+      <div className="xroof-bar">
+        <select className="field select small-select" value={run.id} onChange={(e) => setSel(Number(e.target.value))}>
+          {withHw.map((r) => <option key={r.id} value={r.id}>{nameOf(r, runs.indexOf(r))}</option>)}
+        </select>
+        <span className="row-sub">The line is the most this GPU can do. Each dot is what the run achieved; the dashed gap below the line is unused hardware.</span>
+      </div>
+      <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Roofline chart">
+        <defs><clipPath id="roofclip"><rect x={L} y={T} width={W - L - R} height={H - T - B} /></clipPath></defs>
+        {[1, 10, 100, 1000].map((v) => <g key={v}><line x1={X(v)} x2={X(v)} y1={T} y2={H - B} className="grid" /><text x={X(v)} y={H - B + 15} textAnchor="middle" className="tick">{v}</text></g>)}
+        {[0.1, 1, 10, 100].filter((v) => Math.log10(v) <= y1).map((v) => <g key={v}><line x1={L} x2={W - R} y1={Y(v)} y2={Y(v)} className="grid" /><text x={L - 6} y={Y(v) + 4} textAnchor="end" className="tick">{v}</text></g>)}
+        <text x={(L + W - R) / 2} y={H - 4} textAnchor="middle" className="axis">Work per byte of weights (FLOP/byte, log scale)</text>
+        <text x={12} y={(T + H - B) / 2} textAnchor="middle" className="axis" transform={`rotate(-90 12 ${(T + H - B) / 2})`}>TFLOPS (log)</text>
+        <g clipPath="url(#roofclip)">
+          <path d={roofPath(bw, true)} className="roof" />
+          {ram && <path d={roofPath(ram, true)} className="roof ram" />}
+          {pts.map((p) => <line key={p.name} x1={X(p.x)} x2={X(p.x)} y1={Y(p.roof)} y2={Y(p.y)} className="gap" />)}
+        </g>
+        {(() => {
+          // Labels run along their slanted line (same angle on screen), placed above it.
+          const ang = (Math.atan2(Y(1) - Y(10), X(10) - X(1)) * 180) / Math.PI;
+          const at = (gbps: number, ai: number, dy: number, text: string) => (
+            <text x={X(ai)} y={Y((gbps * ai) / 1000) + dy} className="roof-label" transform={`rotate(${-ang} ${X(ai)} ${Y((gbps * ai) / 1000) + dy})`}>{text}</text>
+          );
+          return <>
+            {at(bw, 6, -8, `GPU memory speed limit · ${bw} GB/s`)}
+            {ram && at(ram, 45, 15, `system RAM speed · ${ram} GB/s`)}
+          </>;
+        })()}
+        <text x={W - R - 4} y={Y(peak) - 7} textAnchor="end" className="roof-label">compute limit · {peak} TFLOPS</text>
+        {pts.map((p) => {
+          const right = X(p.x) > W * 0.6;
+          return (
+            <g key={p.name}>
+              <circle cx={X(p.x)} cy={Y(p.y)} r={6} fill={colorOf(i)} className="pt" />
+              <text x={X(p.x) + (right ? -10 : 10)} y={Y(p.y) + 4} textAnchor={right ? "end" : "start"} className="pt-label">{p.name}: {((p.y / p.roof) * 100).toFixed(0)}% of the limit</text>
+            </g>
+          );
+        })}
+      </svg>
     </div>
   );
 }
@@ -459,22 +524,16 @@ export default function ExperimentsPage({ status }: { status: Status | null }) {
                   ))}
                 </div>
 
-                <div className="group-label">4 · Hardware utilization</div>
-                <div className="group pad xhw-grid">
-                  <div>
-                    <div className="mini-title">Roofline <span className="muted">(achieved compute vs the GPU's memory and compute limits)</span></div>
-                    <Roofline runs={done} />
-                  </div>
-                  <div className="xside">
-                    <TimeSplit runs={done} />
-                    <div className="xlimiters">
-                      <div className="mini-title">Binding constraint for decode</div>
-                      {done.map((r, i) => r.results.hw?.limiter && (
-                        <div key={r.id} className="xlim"><span className="xdot" style={{ background: colorOf(i) }} /><div><b>{r.results.hw.limiter.what}</b><span>{r.results.hw.limiter.evidence}</span></div></div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
+                <div className="group-label">4 · What limits each run</div>
+                <div className="group pad"><LimitTable runs={done} /></div>
+
+                <div className="group-label">Where the time goes, per generated token</div>
+                <div className="group pad"><TimeSplit runs={done} /></div>
+
+                <details className="group pad xadv" open={new URLSearchParams(window.location.hash.split("?")[1] ?? "").has("roofline") || undefined}>
+                  <summary><b>Roofline</b> <span className="row-sub">the standard performance-engineering chart, one run at a time</span></summary>
+                  <Roofline runs={done} />
+                </details>
 
                 <div className="group-label history-head">
                   <span>5 · Telemetry</span>
