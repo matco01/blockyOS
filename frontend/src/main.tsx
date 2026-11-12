@@ -11,6 +11,7 @@ import "./dash.css";
 import "./arena.css";
 import "./tests.css";
 import "./ux.css";
+import "./experiments.css";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

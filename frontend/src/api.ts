@@ -21,7 +21,7 @@ export type TokenProb = { t: string; p: number; alts: [string, number][] };
 
 export type Status = {
   model_ready: boolean; model: string | null; context_size: number | null;
-  busy: "switching" | "benchmark" | "arena" | "eval" | null; switch_error: string | null;
+  busy: "switching" | "benchmark" | "arena" | "eval" | "quantlab" | "throughput" | "experiment" | string | null; switch_error: string | null;
 };
 
 export type Contestant = { model: string; think: boolean; sampling: { temperature?: number; top_p?: number; top_k?: number; min_p?: number }; system_prompt?: string; max_tokens?: number; seed?: number };
@@ -71,6 +71,25 @@ export type QuantJob = { id: string; source: string; type: string; output: strin
 export type ToolRun = {
   id: number; created_at: number; kind: string; status: string; params: Record<string, unknown>;
   results: Record<string, number | string | null>[]; log: string | null; error: string | null;
+};
+
+export type ExpConfig = { model: string; ctx: number; kv: string; ngl: string | number; vram_limit_mb: number | null; fa: string; threads: number | null };
+export type Finding = { kind: string; severity: "major" | "minor" | "info"; title: string; text: string };
+export type PhaseTelemetry = { gpu_avg?: number; mem_bw_avg?: number; power_avg?: number; power_max?: number; temp_max?: number; vram_max_mb?: number; cpu_avg?: number; ram_max_mb?: number; seconds?: number };
+export type ExpResults = {
+  load_seconds?: number;
+  memory?: { gpu: Record<string, number>; ram: Record<string, number>; layers: { gpu: number; total: number } | null; vram_used_mb?: number };
+  quality?: Record<string, { correct: number; total: number; score: number }>; quality_score?: number; chat_tps?: number; ttft_ms?: number;
+  speed?: { pp?: number; tg?: number; pp_d4096?: number; tg_d4096?: number; tg_sd?: number };
+  ppl?: number; kld?: number; same_top?: number;
+  telemetry?: Record<string, PhaseTelemetry>;
+  series?: { t: number; phase: string; gpu?: number; mem_bw?: number; power?: number; temp?: number; vram_mb?: number; cpu?: number }[];
+  bottleneck?: { findings: Finding[]; primary: string | null; ceiling_tps: number | null; efficiency: number | null; gb_per_token: number; gpu_bandwidth_gbps: number | null; ram_bandwidth_gbps: number | null };
+};
+export type ExpRun = { id: number; experiment_id: number; created_at: number; status: string; label: string; config: ExpConfig; results: ExpResults; phase: string | null; error: string | null };
+export type Experiment = {
+  id: number; created_at: number; name: string; model: string; seed: number; runs?: number;
+  runs_list?: ExpRun[]; limits?: { gpu: string | null; gpu_bandwidth_gbps: number | null; vram_mb: number; power_limit_w: number | null; ram_bandwidth_gbps: number | null; ram_mb: number; cpu: string };
 };
 
 export type LeaderRow = { label: string; model: string; matches: number; wins: number; ties: number; losses: number; avg_tps: number | null; score: number };
@@ -223,6 +242,13 @@ export const api = {
   evalStart: (b: { model: string; think: boolean; suites: string[]; think_budget?: number }) => json<{ id: number }>("/api/evals", send("POST", b)),
   evalCancel: (id: number) => json(`/api/evals/${id}/cancel`, send("POST", {})),
   evalDelete: (id: number) => json(`/api/evals/${id}`, { method: "DELETE" }),
+  experiments: () => json<Experiment[]>("/api/experiments"),
+  experiment: (id: number) => json<Experiment>(`/api/experiments/${id}`),
+  experimentCreate: (name: string, model: string) => json<{ id: number }>("/api/experiments", send("POST", { name, model })),
+  experimentDelete: (id: number) => json(`/api/experiments/${id}`, { method: "DELETE" }),
+  experimentRun: (id: number, label: string, config: Partial<ExpConfig>) => json<{ id: number }>(`/api/experiments/${id}/runs`, send("POST", { label, config })),
+  experimentCancel: (runId: number) => json(`/api/experiments/runs/${runId}/cancel`, send("POST", {})),
+  experimentDeleteRun: (runId: number) => json(`/api/experiments/runs/${runId}`, { method: "DELETE" }),
   quantLab: () => json<{ runs: QuantRun[]; jobs: QuantJob[]; types: string[] }>("/api/quantlab"),
   quantStart: (models: string[]) => json<{ id: number }>("/api/quantlab", send("POST", { models })),
   quantCancel: (id: number) => json(`/api/quantlab/${id}/cancel`, send("POST", {})),

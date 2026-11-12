@@ -23,7 +23,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import arena, benchmarks, config, db, evals, generate, lab, memory, quantlab, system, tools
+from . import arena, benchmarks, config, db, evals, generate, lab, memory, profile, quantlab, system, tools
 
 
 @asynccontextmanager
@@ -33,6 +33,7 @@ async def lifespan(app: FastAPI):
     evals.init()
     quantlab.init()
     tools.init()
+    profile.init()
     psutil.cpu_percent(interval=None)  # prime the CPU counter so the first reading isn't 0
     app.state.llm = httpx.AsyncClient(base_url=config.LLM_URL, timeout=httpx.Timeout(10, read=300))
     app.state.background = set()  # keep references so tasks aren't garbage-collected
@@ -217,7 +218,8 @@ async def chat(body: ChatIn):
                    "arena": "An Arena match is running. Chat is paused until it finishes.",
                    "eval": "A quality test is running. Chat is paused until it finishes.",
                    "quantlab": "The quantization lab is running. Chat is paused until it finishes.",
-                   "throughput": "A throughput test is running. Chat is paused until it finishes."}.get(
+                   "throughput": "A throughput test is running. Chat is paused until it finishes.",
+                   "experiment": "An experiment profile is running. Chat is paused until it finishes."}.get(
                 lab.busy, "The model is being switched. Try again in a moment.")
             yield _sse({"type": "error", "message": msg})
             return
@@ -707,6 +709,69 @@ async def quant_make(body: QuantizeIn):  # async: starts a background task
         return {"id": quantlab.start_quantize(body.source, body.type)}
     except ValueError as e:
         _bad(e)
+
+
+# ---------- Experiments (research workflow) ----------
+
+@app.get("/api/experiments")
+def experiments_list():
+    return profile.list_experiments()
+
+
+class ExperimentIn(BaseModel):
+    name: str = ""
+    model: str
+
+
+@app.post("/api/experiments")
+def experiments_create(body: ExperimentIn):
+    try:
+        return {"id": profile.create_experiment(body.name, body.model)}
+    except ValueError as e:
+        _bad(e)
+
+
+@app.get("/api/experiments/{exp_id}")
+def experiments_get(exp_id: int):
+    e = profile.get_experiment(exp_id)
+    if not e:
+        raise HTTPException(404, "Experiment not found")
+    return e
+
+
+@app.delete("/api/experiments/{exp_id}")
+def experiments_delete(exp_id: int):
+    profile.delete_experiment(exp_id)
+    return {"ok": True}
+
+
+@app.post("/api/experiments/{exp_id}/runs")
+async def experiments_run(exp_id: int, body: dict):  # async: starts a background task
+    if lab.busy:
+        raise HTTPException(409, f"Busy: {lab.busy}")
+    try:
+        run_id = profile.create_run(exp_id, body)
+    except (ValueError, TypeError) as e:
+        _bad(e)
+    _spawn(profile.run(run_id, app.state.llm))
+    return {"id": run_id}
+
+
+@app.post("/api/experiments/runs/{run_id}/cancel")
+def experiments_cancel(run_id: int):
+    profile.cancel(run_id)
+    return {"ok": True}
+
+
+@app.delete("/api/experiments/runs/{run_id}")
+def experiments_delete_run(run_id: int):
+    profile.delete_run(run_id)
+    return {"ok": True}
+
+
+@app.get("/api/hardware/limits")
+def hardware_limits():
+    return profile.limits()
 
 
 # ---------- Lab: throughput & speculative decoding ----------

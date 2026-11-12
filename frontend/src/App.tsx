@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Activity, Boxes, Brain, ClipboardCheck, FlaskConical, LayoutDashboard, PanelLeft, Swords, Plus, Search, Settings as SettingsIcon, SlidersHorizontal, Trash2 } from "lucide-react";
+import { Activity, Boxes, Brain, ClipboardCheck, FlaskConical, LayoutDashboard, Microscope, PanelLeft, Swords, Plus, Search, Settings as SettingsIcon, SlidersHorizontal, Trash2 } from "lucide-react";
 import { api, Conversation, MessageStats, Sampling, SearchHit, Status } from "./api";
 import ArenaPage from "./ArenaPage";
 import BenchPage from "./BenchPage";
@@ -7,6 +7,7 @@ import Chat from "./Chat";
 import Dashboard from "./Dashboard";
 import Inspector from "./Inspector";
 import TestsPage from "./TestsPage";
+import ExperimentsPage from "./ExperimentsPage";
 import { Mode, ModeContext } from "./ui";
 import ModelsPage from "./ModelsPage";
 import MemoryPage from "./MemoryPage";
@@ -15,9 +16,10 @@ import SettingsPage from "./SettingsPage";
 import Logo from "./Logo";
 import { Accent, BLOCK_COLORS, Theme, useSetting } from "./settings";
 
-export type Page = "chat" | "home" | "models" | "arena" | "tests" | "bench" | "memory" | "system" | "settings";
+export type Page = "chat" | "home" | "experiments" | "models" | "arena" | "tests" | "bench" | "memory" | "system" | "settings";
 
 const PAGES = [
+  { id: "experiments", label: "Experiments", icon: Microscope },
   { id: "home", label: "Overview", icon: LayoutDashboard },
   { id: "models", label: "Models", icon: Boxes },
   { id: "arena", label: "Arena", icon: Swords },
@@ -30,7 +32,8 @@ const PAGES = [
 
 /** Sidebar groups: what you do with models, then the device itself. */
 const NAV_GROUPS: { label: string; ids: readonly Page[] }[] = [
-  { label: "Lab", ids: ["home", "models", "arena", "tests", "bench"] },
+  { label: "Research", ids: ["experiments", "home"] },
+  { label: "Tools", ids: ["models", "arena", "tests", "bench"] },
   { label: "Device", ids: ["memory", "system", "settings"] },
 ];
 
@@ -49,7 +52,7 @@ function Snippet({ text }: { text: string }) {
 function parseHash(): { page: Page; id: number | null } {
   const [, rawP, id] = window.location.hash.split("?")[0].split("/");
   const p = rawP ?? "";
-  if (p === "home" || p === "models" || p === "arena" || p === "tests" || p === "bench" || p === "memory" || p === "system" || p === "settings") return { page: p, id: null };
+  if (PAGES.some((x) => x.id === p)) return { page: p as Page, id: null };
   return { page: "chat", id: p === "chat" && id ? Number(id) || null : null };
 }
 
@@ -247,6 +250,8 @@ export default function App() {
               {status?.busy === "benchmark" ? "Benchmarking…" : status?.busy === "switching" ? "Switching model…"
                 : status?.busy === "arena" ? "Arena match…"
                 : status?.busy === "eval" ? "Running tests…"
+                : status?.busy === "experiment" ? "Profiling…"
+                : status?.busy ? "Lab busy…"
                 : status?.model_ready ? status.model : "Starting model…"}
             </button>
             {page === "chat" && (
@@ -280,6 +285,7 @@ export default function App() {
             </div>
           )}
           {page === "home" && <Dashboard status={status} go={go} />}
+          {page === "experiments" && <ExperimentsPage status={status} />}
           {page === "models" && <ModelsPage status={status} />}
           {page === "arena" && <ArenaPage status={status} />}
           {page === "tests" && <TestsPage status={status} />}
