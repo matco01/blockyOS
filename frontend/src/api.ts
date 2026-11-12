@@ -98,11 +98,25 @@ export type ExpResults = {
   telemetry?: Record<string, PhaseTelemetry>;
   series?: { t: number; phase: string; gpu?: number; mem_bw?: number; power?: number; temp?: number; vram_mb?: number; cpu?: number; sm_clock?: number }[];
   hw?: HwAnalysis;
+  provenance?: Provenance;
+  commands?: Record<string, string>;
+};
+export type Provenance = {
+  protocol: string;
+  llama_cpp: { version: string | null; commit: string | null; built_with: string | null };
+  model: { file: string; sha256: string | null; bytes: number };
+  data: { mmlu_pro_sha256: string | null; mmlu_seed: number; wikitext_sha256: string | null };
+  gpu: { name: string | null; driver: string | null; vram_mb: number | null; pcie: string | null; cuda_driver_api: string | null; cuda_toolkit: string | null };
+  host: { cpu: string; threads: number; ram_mb: number; os: string; kernel: string; wsl: boolean };
+  blocky: { commit: string | null; dirty: boolean };
+  started_at: string;
 };
 export type ExpRun = { id: number; experiment_id: number; created_at: number; status: string; label: string; config: ExpConfig; results: ExpResults;
-  phase: string | null; error: string | null; stats?: { mmlu_p?: number | null; mmlu_flips?: { lost: number; gained: number } } };
+  phase: string | null; error: string | null; stats?: { mmlu_p?: number | null; mmlu_flips?: { lost: number; gained: number }; env_mismatch?: string[] } };
+export type CanvasNote = { id: string; x: number; y: number; text: string };
+export type CanvasState = { pos: Record<string, { x: number; y: number }>; notes: CanvasNote[]; view?: { x: number; y: number; k: number } };
 export type Experiment = {
-  id: number; created_at: number; name: string; model: string; seed: number; runs?: number;
+  id: number; created_at: number; name: string; model: string; seed: number; runs?: number; canvas?: CanvasState | null;
   runs_list?: ExpRun[]; limits?: { gpu: string | null; gpu_bandwidth_gbps: number | null; gpu_tflops: number | null; gpu_tflops_kind: string | null; sm_clock_max: number | null;
     vram_mb: number; power_limit_w: number | null; ram_bandwidth_gbps: number | null; ram_mb: number; cpu: string; cpu_power_source: string | null };
 };
@@ -262,6 +276,9 @@ export const api = {
   experimentCreate: (name: string, model: string) => json<{ id: number }>("/api/experiments", send("POST", { name, model })),
   experimentDelete: (id: number) => json(`/api/experiments/${id}`, { method: "DELETE" }),
   experimentRun: (id: number, label: string, config: Partial<ExpConfig>) => json<{ id: number }>(`/api/experiments/${id}/runs`, send("POST", { label, config })),
+  experimentSweep: (id: number, grid: Record<string, unknown[]>, repeats: number) => json<{ ids: number[] }>(`/api/experiments/${id}/sweep`, send("POST", { grid, repeats })),
+  experimentCanvas: (id: number, canvas: CanvasState) => json(`/api/experiments/${id}/canvas`, send("PUT", canvas)),
+  experimentCancelQueue: (id: number) => json(`/api/experiments/${id}/cancel-queue`, send("POST", {})),
   experimentCancel: (runId: number) => json(`/api/experiments/runs/${runId}/cancel`, send("POST", {})),
   experimentDeleteRun: (runId: number) => json(`/api/experiments/runs/${runId}`, { method: "DELETE" }),
   quantLab: () => json<{ runs: QuantRun[]; jobs: QuantJob[]; types: string[] }>("/api/quantlab"),

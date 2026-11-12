@@ -1,74 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertCircle, Check, Cpu, Download, FlaskConical, Gauge, Loader2, MemoryStick, Play, Plus, Sparkles, Square, Trash2, Zap } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { api, ExpConfig, Experiment, ExpResults, ExpRun, ModelFile, Status } from "./api";
+import { api, ExpConfig, Experiment, ExpRun, ModelFile, Provenance, Status } from "./api";
 import { LineChart, Term } from "./ui";
-
-/* ---------- Metric registry: one place defines every number, its noise and which direction is better ---------- */
-
-type Ctx = { run: ExpRun; base: ExpRun };
-type Metric = {
-  key: string; group: string; label: string; term?: string; unit: string; better: "higher" | "lower" | null;
-  get: (r: ExpResults) => number | null | undefined;
-  sd?: (r: ExpResults) => number | null | undefined;        // ± noise of one measurement (for significance)
-  sig?: (c: Ctx) => boolean | null;                          // custom significance test
-  fmt?: (v: number) => string; note?: string;
-  minRel?: number;                                           // smallest relative change treated as real (no noise model)
-};
-const n1 = (v: number) => (Math.abs(v) >= 100 ? v.toFixed(0) : v.toFixed(1));
-const pct = (v: number) => v.toFixed(1);
-const gb = (mb?: number | null) => (mb != null ? mb / 1024 : null);
-
-const METRICS: Metric[] = [
-  { key: "tg", group: "Speed", label: "Decode (writing)", term: "tg", unit: "tok/s", better: "higher", get: (r) => r.speed?.tg, sd: (r) => r.speed?.tg_sd },
-  { key: "tg_long", group: "Speed", label: "Decode at 4k context", unit: "tok/s", better: "higher", get: (r) => r.speed?.tg_d4096, sd: (r) => r.speed?.tg_d4096_sd },
-  { key: "pp", group: "Speed", label: "Prefill (reading)", term: "pp", unit: "tok/s", better: "higher", get: (r) => r.speed?.pp, sd: (r) => r.speed?.pp_sd, fmt: (v) => v.toFixed(0) },
-  { key: "pp_long", group: "Speed", label: "Prefill at 4k context", unit: "tok/s", better: "higher", get: (r) => r.speed?.pp_d4096, sd: (r) => r.speed?.pp_d4096_sd, fmt: (v) => v.toFixed(0) },
-  { key: "ttft", group: "Speed", label: "Latency, 512-token prompt", unit: "ms", better: "lower", get: (r) => (r.speed?.pp ? (512 / r.speed.pp) * 1000 : null), fmt: (v) => v.toFixed(0) },
-  { key: "mmlu", group: "Quality", label: "MMLU-Pro accuracy", unit: "%", better: "higher", get: (r) => (r.mmlu ? r.mmlu.acc * 100 : null), fmt: pct,
-    sig: (c) => (c.run.stats?.mmlu_p != null ? c.run.stats.mmlu_p < 0.05 : null), note: "paired McNemar test, p < 0.05" },
-  { key: "mmlu_p", group: "Quality", label: "MMLU-Pro P(correct)", unit: "%", better: "higher", get: (r) => (r.mmlu ? r.mmlu.p_correct_mean * 100 : null), fmt: pct },
-  { key: "kld", group: "Quality", label: "KL divergence vs baseline", unit: "", better: "lower", get: (r) => r.kld, fmt: (v) => v.toFixed(4) },
-  { key: "kld99", group: "Quality", label: "KLD, 99th percentile", unit: "", better: "lower", get: (r) => r.kld_p99, fmt: (v) => v.toFixed(3) },
-  { key: "same_top", group: "Quality", label: "Same top token as baseline", unit: "%", better: "higher", get: (r) => r.same_top, sd: (r) => r.same_top_sd, fmt: pct },
-  { key: "ppl", group: "Quality", label: "Perplexity (WikiText-2)", unit: "", better: "lower", get: (r) => r.ppl, sd: (r) => r.ppl_sd, fmt: (v) => v.toFixed(3) },
-  { key: "vram_model", group: "Memory", label: "VRAM, model buffers", term: "vram", unit: "GB", better: "lower", get: (r) => gb(r.hw?.headroom?.vram_model_mb), fmt: (v) => v.toFixed(2) },
-  { key: "vram_free", group: "Memory", label: "VRAM free", unit: "GB", better: "higher", get: (r) => gb(r.hw?.headroom?.vram_free_mb), fmt: (v) => v.toFixed(2) },
-  { key: "kv", group: "Memory", label: "Context memory per 1k tokens", term: "kv", unit: "MB", better: "lower", get: (r) => r.hw?.headroom?.kv_mb_per_1k_tokens },
-  { key: "w_cpu", group: "Memory", label: "Weights in system RAM", unit: "GB", better: "lower", get: (r) => r.hw?.weights_on_cpu_gb, fmt: (v) => v.toFixed(2) },
-  { key: "load", group: "Memory", label: "Load time", unit: "s", better: "lower", get: (r) => r.load_seconds, minRel: 0.4, note: "Depends on the disk cache: only large changes count" },
-  { key: "eff_bw", group: "Hardware", label: "Effective weight bandwidth", unit: "GB/s", better: "higher", get: (r) => r.hw?.decode?.effective_gbps, fmt: (v) => v.toFixed(0) },
-  { key: "roof", group: "Hardware", label: "Decode, % of memory roof", unit: "%", better: "higher", get: (r) => (r.hw?.decode?.roof_util != null ? r.hw.decode.roof_util * 100 : null), fmt: (v) => v.toFixed(0) },
-  { key: "tflops", group: "Hardware", label: "Prefill compute", unit: "TFLOPS", better: "higher", get: (r) => r.hw?.prefill?.achieved_tflops },
-  { key: "croof", group: "Hardware", label: "Prefill, % of compute roof", unit: "%", better: "higher", get: (r) => (r.hw?.prefill?.roof_util != null ? r.hw.prefill.roof_util * 100 : null), fmt: (v) => v.toFixed(0) },
-  { key: "clock", group: "Hardware", label: "SM clock, % of max", unit: "%", better: "higher", get: (r) => (r.hw?.clocks.ratio != null ? r.hw.clocks.ratio * 100 : null), fmt: (v) => v.toFixed(0) },
-  { key: "temp", group: "Hardware", label: "GPU temperature, peak", unit: "°C", better: "lower", get: (r) => r.hw?.clocks.temp_max_c, fmt: (v) => v.toFixed(0) },
-  { key: "gpu_util", group: "Hardware", label: "GPU busy (decode)", unit: "%", better: null, get: (r) => r.hw?.clocks.gpu_util_avg, fmt: (v) => v.toFixed(0) },
-  { key: "cpu_util", group: "Hardware", label: "CPU busy (decode)", unit: "%", better: null, get: (r) => r.hw?.clocks.cpu_util_avg, fmt: (v) => v.toFixed(0) },
-  { key: "power", group: "Energy", label: "GPU power (decode)", unit: "W", better: "lower", get: (r) => r.hw?.clocks.power_avg_w, fmt: (v) => v.toFixed(0) },
-  { key: "tpj", group: "Energy", label: "Tokens per joule (GPU)", term: "tpj", unit: "tok/J", better: "higher",
-    get: (r) => (r.speed?.tg && r.hw?.clocks.power_avg_w ? r.speed.tg / r.hw.clocks.power_avg_w : null), fmt: (v) => v.toFixed(2) },
-];
-
-/** Difference vs baseline, with a noise check: inside 2σ of the combined measurement noise = not significant. */
-function delta(m: Metric, c: Ctx, session = 0) {
-  const v = m.get(c.run.results), b = m.get(c.base.results);
-  if (v == null || b == null || b === 0) return null;
-  const d = (v - b) / Math.abs(b);
-  let sig: boolean | null = m.sig ? m.sig(c) : null;
-  if (sig == null && m.sd) {
-    const s1 = m.sd(c.run.results), s2 = m.sd(c.base.results);
-    if (s1 != null && s2 != null) sig = Math.abs(v - b) > 2 * Math.sqrt(s1 * s1 + s2 * s2);
-  }
-  if (sig == null) sig = Math.abs(d) >= (m.minRel ?? 0.02);
-  // Session-to-session drift (measured by repeating the baseline) must also be exceeded.
-  if (sig && !m.sig && session > 0 && Math.abs(v - b) <= 2 * session) sig = false;
-  const text = `${d > 0 ? "+" : ""}${(d * 100).toFixed(Math.abs(d) < 0.1 ? 1 : 0)}%`;
-  if (!sig) return { text, tone: "same", title: "Within measurement noise" };
-  if (!m.better) return { text, tone: "same", title: "" };
-  const good = m.better === "higher" ? d > 0 : d < 0;
-  return { text, tone: good ? "good" : "bad", title: "Significant" };
-}
+import ResearchCanvas from "./ResearchCanvas";
+import { colorOf, delta, METRICS, Metric, n1, nameOf } from "./expmetrics";
 
 const PHASES = [
   { id: "loading", label: "Load", what: "memory layout, load time" },
@@ -76,9 +12,6 @@ const PHASES = [
   { id: "speed", label: "Speed", what: "llama-bench, 5 reps" },
   { id: "fidelity", label: "Fidelity", what: "PPL + KLD, 16k tokens" },
 ];
-const SERIES = ["var(--series-1)", "var(--series-2)", "var(--series-3)", "var(--series-4)"];
-const colorOf = (i: number) => SERIES[i] ?? "var(--text-2)";
-const nameOf = (r: ExpRun, i: number) => (i === 0 ? "Baseline" : r.label);
 
 /* ---------- Pieces ---------- */
 
@@ -129,18 +62,37 @@ function Running({ run, onStop }: { run: ExpRun; onStop: () => void }) {
 const CTX = [4096, 8192, 16384, 32768, 65536];
 const VRAM_SIM = [null, 6144, 4096, 2048];
 
-function ChangePanel({ base, models, onRun, disabled }: { base: ExpConfig; models: ModelFile[]; onRun: (label: string, cfg: Partial<ExpConfig>) => void; disabled: boolean }) {
+type SweepGrid = Partial<Record<keyof ExpConfig, unknown[]>>;
+
+function ChangePanel({ base, models, onRun, onSweep }: { base: ExpConfig; models: ModelFile[]; onRun: (label: string, cfg: Partial<ExpConfig>) => void; onSweep: (grid: SweepGrid, repeats: number) => void }) {
+  const [mode, setMode] = useState<"single" | "sweep">("single");
   const [cfg, setCfg] = useState<ExpConfig>(base);
+  const [grid, setGrid] = useState<SweepGrid>({});
+  const [repeats, setRepeats] = useState(1);
   useEffect(() => setCfg(base), [base]);
   const baseModel = models.find((m) => m.file === base.model);
   const family = models.filter((m) => baseModel && m.architecture === baseModel.architecture && m.layers === baseModel.layers);
   const changed = (Object.keys(cfg) as (keyof ExpConfig)[]).filter((k) => String(cfg[k] ?? "") !== String(base[k] ?? ""));
   const set = (patch: Partial<ExpConfig>) => setCfg((c) => ({ ...c, ...patch }));
-  const Opt = ({ k, v, label }: { k: keyof ExpConfig; v: unknown; label: string }) => (
-    <button className={String(cfg[k] ?? "") === String(v ?? "") ? "on" : ""} onClick={() => set({ [k]: v } as Partial<ExpConfig>)}>{label}</button>
-  );
+  const inGrid = (k: keyof ExpConfig, v: unknown) => (grid[k] ?? []).some((x) => String(x ?? "") === String(v ?? ""));
+  const toggle = (k: keyof ExpConfig, v: unknown) => setGrid((g) => {
+    const cur = g[k] ?? [];
+    const next = inGrid(k, v) ? cur.filter((x) => String(x ?? "") !== String(v ?? "")) : [...cur, v];
+    return { ...g, [k]: next };
+  });
+  const Opt = ({ k, v, label }: { k: keyof ExpConfig; v: unknown; label: string }) => mode === "single"
+    ? <button className={String(cfg[k] ?? "") === String(v ?? "") ? "on" : ""} onClick={() => set({ [k]: v } as Partial<ExpConfig>)}>{label}</button>
+    : <button className={inGrid(k, v) ? "on multi" : ""} onClick={() => toggle(k, v)}>{label}</button>;
+  const swept = (Object.keys(grid) as (keyof ExpConfig)[]).filter((k) => (grid[k] ?? []).length > 0);
+  const nRuns = swept.length ? swept.reduce((n, k) => n * (grid[k]!.length), 1) * repeats : 0;
   return (
     <div className="xchange">
+      <div className="xc-mode">
+        <div className="segmented"><button className={mode === "single" ? "on" : ""} onClick={() => setMode("single")}>One change</button>
+          <button className={mode === "sweep" ? "on" : ""} onClick={() => setMode("sweep")}>Sweep</button></div>
+        <span className="row-sub">{mode === "single" ? "Change one setting and profile it against the baseline."
+          : "Select several values per setting. Every combination gets queued and profiled one after another; leave it running."}</span>
+      </div>
       <div className="xc-row"><div><b>Weights</b><span>Same model, different <Term k="quant">quantization</Term>{family.length < 2 && <> · create more in <a href="#/models?tab=compress">Models → Compress</a></>}</span></div>
         <div className="segmented wrap">{family.map((m) => <Opt key={m.file} k="model" v={m.file} label={`${m.quant} · ${(m.size_bytes / 2 ** 30).toFixed(1)} GB`} />)}</div></div>
       <div className="xc-row"><div><b><Term k="kv">KV cache type</Term></b><span>-ctk / -ctv</span></div>
@@ -153,15 +105,28 @@ function ChangePanel({ base, models, onRun, disabled }: { base: ExpConfig; model
         <div className="segmented"><Opt k="ngl" v="auto" label="Auto" />{[24, 16, 8, 0].map((n) => <Opt key={n} k="ngl" v={n} label={String(n)} />)}</div></div>
       <div className="xc-row"><div><b><Term k="fa">Flash attention</Term></b><span>-fa</span></div>
         <div className="segmented"><Opt k="fa" v="auto" label="Auto" /><Opt k="fa" v="on" label="On" /><Opt k="fa" v="off" label="Off" /></div></div>
-      <div className="xc-foot">
-        <span className="row-sub">{changed.length === 0 ? "Pick one variable to change against the baseline."
-          : changed.length === 1 ? "One variable changed: differences can be attributed to it." : `${changed.length} variables changed at once: effects will be confounded.`}</span>
-        <div className="xc-btns">
-          <button className="btn ghost" disabled={disabled} onClick={() => onRun("Repeat of baseline", base)}
-            title="Runs the baseline setup again: the difference between the two shows how much results drift between sessions on this machine.">Repeat baseline</button>
-          <button className="btn" disabled={disabled || changed.length === 0} onClick={() => onRun("", cfg)}><Play /> Profile this change</button>
+      {mode === "single" ? (
+        <div className="xc-foot">
+          <span className="row-sub">{changed.length === 0 ? "Pick one variable to change against the baseline."
+            : changed.length === 1 ? "One variable changed: differences can be attributed to it." : `${changed.length} variables changed at once: effects will be confounded.`}</span>
+          <div className="xc-btns">
+            <button className="btn ghost" onClick={() => onRun("Repeat of baseline", base)}
+              title="Runs the baseline setup again: the difference between the two shows how much results drift between sessions on this machine.">Repeat baseline</button>
+            <button className="btn" disabled={changed.length === 0} onClick={() => onRun("", cfg)}><Play /> Profile this change</button>
+          </div>
         </div>
-      </div>
+      ) : (
+        <div className="xc-foot">
+          <span className="row-sub">
+            {nRuns === 0 ? "Select values above. Settings you leave empty stay as in the baseline."
+              : <>{swept.map((k) => `${grid[k]!.length} ${k === "vram_limit_mb" ? "VRAM limits" : k === "model" ? "weight files" : k}`).join(" × ")}{repeats > 1 ? ` × ${repeats} repeats` : ""} = <b>{nRuns} runs</b>, about {Math.round(nRuns * 4.5)} min{nRuns > 32 ? " · limit is 32 per sweep" : ""}</>}
+          </span>
+          <div className="xc-btns">
+            <label className="xrep">Repeats <select className="field select small-select" value={repeats} onChange={(e) => setRepeats(Number(e.target.value))}>{[1, 2, 3].map((n) => <option key={n}>{n}</option>)}</select></label>
+            <button className="btn" disabled={nRuns === 0 || nRuns > 32} onClick={() => { onSweep(grid, repeats); setGrid({}); }}><Play /> Queue {nRuns || ""} runs</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -175,7 +140,8 @@ function Board({ runs, metric, setMetric }: { runs: ExpRun[]; metric: string; se
       <table className="data">
         <thead>
           <tr><th>Metric</th>{runs.map((r, i) => (
-            <th key={r.id} className="r run-label" title={r.label}><span className="xdot" style={{ background: colorOf(i) }} />{nameOf(r, i)}</th>
+            <th key={r.id} className="r run-label" title={r.stats?.env_mismatch?.length ? `Not directly comparable: ${r.stats.env_mismatch.join(", ")} differ from the baseline` : r.label}>
+              <span className="xdot" style={{ background: colorOf(i) }} />{nameOf(r, i)}{r.stats?.env_mismatch?.length ? <span className="xwarn">⚠</span> : null}</th>
           ))}</tr>
         </thead>
         {groups.map((g) => {
@@ -231,6 +197,45 @@ function MetricBars({ runs, metric }: { runs: ExpRun[]; metric: string }) {
         );
       })}
     </div>
+  );
+}
+
+/* ---------- Reproducibility ---------- */
+
+function Repro({ runs }: { runs: ExpRun[] }) {
+  const [cmdRun, setCmdRun] = useState<number | null>(null);
+  const rows: { label: string; get: (p: Provenance) => string | null | undefined }[] = [
+    { label: "llama.cpp", get: (p) => [p.llama_cpp.version, p.llama_cpp.commit].filter(Boolean).join(" @ ") },
+    { label: "Model SHA-256", get: (p) => p.model.sha256?.slice(0, 16) + "…" },
+    { label: "GPU driver / CUDA", get: (p) => `${p.gpu.driver ?? "?"} / toolkit ${p.gpu.cuda_toolkit ?? "?"}, driver API ${p.gpu.cuda_driver_api ?? "?"}` },
+    { label: "Host", get: (p) => `${p.host.os}${p.host.wsl ? " (WSL2)" : ""} · ${p.host.kernel}` },
+    { label: "MMLU-Pro data", get: (p) => `${p.data.mmlu_pro_sha256?.slice(0, 12)}… seed ${p.data.mmlu_seed}` },
+    { label: "Blocky", get: (p) => `${p.blocky.commit ?? "?"}${p.blocky.dirty ? " (uncommitted changes)" : ""}` },
+    { label: "Started", get: (p) => p.started_at },
+  ];
+  const withProv = runs.filter((r) => r.results.provenance);
+  const sel = runs.find((r) => r.id === cmdRun) ?? withProv[0];
+  return (
+    <details className="xrepro">
+      <summary><b>Reproducibility</b> <span className="row-sub">versions, file hashes and exact commands for every run{runs.some((r) => r.stats?.env_mismatch?.length) ? " · ⚠ some runs used a different environment" : ""}</span></summary>
+      {withProv.length === 0 ? <div className="row-sub">Runs made before provenance tracking don't have this. New runs record it automatically.</div> : <>
+        <div className="row-sub">Protocol: {withProv[0].results.provenance!.protocol}</div>
+        <div className="table-wrap"><table className="data">
+          <thead><tr><th />{runs.map((r, i) => <th key={r.id}>{nameOf(r, i)}</th>)}</tr></thead>
+          <tbody>{rows.map((row) => (
+            <tr key={row.label}><td className="mlabel">{row.label}</td>
+              {runs.map((r) => { const p = r.results.provenance; return <td key={r.id} className="mono-cell">{p ? row.get(p) : "–"}</td>; })}</tr>
+          ))}
+          <tr><td className="mlabel">Differs from baseline</td>{runs.map((r, i) => <td key={r.id} className={r.stats?.env_mismatch?.length ? "warn-cell" : ""}>{i === 0 ? "–" : r.stats?.env_mismatch?.length ? r.stats.env_mismatch.join(", ") : "nothing"}</td>)}</tr>
+          </tbody></table></div>
+        {sel?.results.commands && <>
+          <div className="xroof-bar"><span className="mini-title">Exact commands</span>
+            <select className="field select small-select" value={sel.id} onChange={(e) => setCmdRun(Number(e.target.value))}>
+              {withProv.map((r) => <option key={r.id} value={r.id}>{nameOf(r, runs.indexOf(r))}</option>)}</select></div>
+          <pre className="xcmds">{Object.entries(sel.results.commands).map(([k, v]) => `# ${k}\n${v}`).join("\n\n")}</pre>
+        </>}
+      </>}
+    </details>
   );
 }
 
@@ -413,6 +418,8 @@ export default function ExperimentsPage({ status }: { status: Status | null }) {
   const [creating, setCreating] = useState(false);
   const [focus, setFocus] = useState<number | null>(null);
   const [metric, setMetric] = useState("tg");
+  const [tab, setTabState] = useState<"report" | "canvas">(() => { if (window.location.hash.includes("view=canvas")) return "canvas"; try { return localStorage.getItem("blocky.exp.tab") === "canvas" ? "canvas" : "report"; } catch { return "report"; } });
+  const setTab = (t: "report" | "canvas") => { setTabState(t); try { localStorage.setItem("blocky.exp.tab", t); } catch { /* private mode */ } };
   const [err, setErr] = useState<string | null>(null);
 
   const loadList = useCallback(() => api.experiments().then((l) => { setList(l); setId((cur) => cur ?? l[0]?.id ?? null); }).catch(() => {}), []);
@@ -424,7 +431,7 @@ export default function ExperimentsPage({ status }: { status: Status | null }) {
   useEffect(() => { setExp(null); load(); }, [load]);
 
   const runs = exp?.runs_list ?? [];
-  const running = runs.find((r) => r.status === "running" || r.status === "queued");
+  const running = runs.find((r) => r.status === "running") ?? runs.find((r) => r.status === "queued");
   useEffect(() => {
     const t = setInterval(load, running ? 2000 : 15000);
     return () => clearInterval(t);
@@ -447,11 +454,17 @@ export default function ExperimentsPage({ status }: { status: Status | null }) {
     setErr(null);
     try { await api.experimentRun(exp.id, label, cfg); load(); window.scrollTo({ top: 0 }); } catch (e) { setErr((e as Error).message); }
   };
+  const runSweep = async (grid: SweepGrid, repeats: number) => {
+    if (!exp) return;
+    setErr(null);
+    try { await api.experimentSweep(exp.id, grid as Record<string, unknown[]>, repeats); load(); window.scrollTo({ top: 0 }); } catch (e) { setErr((e as Error).message); }
+  };
   const L = exp?.limits;
+  const queued = runs.filter((r) => r.status === "queued");
 
   return (
     <div className="page">
-      <div className="page-inner wide">
+      <div className={`page-inner wide ${tab === "canvas" ? "xfull" : ""}`}>
         <h1 className="page-title">Experiments</h1>
         <p className="page-sub">One model, one variable at a time. Every run measures the same things the same way, and the noise is shown, so you can tell real differences from luck.</p>
 
@@ -493,7 +506,24 @@ export default function ExperimentsPage({ status }: { status: Status | null }) {
             </div>
 
             {running && <Running run={running} onStop={() => api.experimentCancel(running.id).then(load)} />}
+            {queued.filter((r) => r.id !== running?.id).length > 0 && (
+              <div className="xqueue">
+                <b>{queued.filter((r) => r.id !== running?.id).length} more in the queue</b>
+                <span className="row-sub">{queued.filter((r) => r.id !== running?.id).map((r) => r.label).join(" · ")}</span>
+                <span className="row-sub">· done in about {Math.round(queued.length * 4.5)} min</span>
+                <button className="btn small ghost" onClick={() => api.experimentCancelQueue(exp.id).then(load)}>Cancel queue</button>
+              </div>
+            )}
 
+            <div className="xviewbar">
+              <div className="segmented">
+                <button className={tab === "report" ? "on" : ""} onClick={() => setTab("report")}>Report</button>
+                <button className={tab === "canvas" ? "on" : ""} onClick={() => setTab("canvas")}>Canvas</button>
+              </div>
+              <span className="row-sub">{tab === "report" ? "Every number, in order: baseline → change → results → hardware." : "The map of this experiment: what was tried, what it led to. Drag, zoom, annotate."}</span>
+            </div>
+
+            {tab === "canvas" ? <ResearchCanvas key={exp.id} exp={exp} runs={runs} /> : <>
             <div className="group-label">1 · Baseline</div>
             {baseline ? (
               <div className="group pad">
@@ -504,20 +534,21 @@ export default function ExperimentsPage({ status }: { status: Status | null }) {
               <div className="group pad xcta">
                 <div><b>Measure the starting point</b>
                   <span className="row-sub">Load (memory layout from llama.cpp's own log) → MMLU-Pro, 560 questions, 5-shot log-likelihood → llama-bench decode and prefill at 0 and 4k context, 5 repetitions (median, robust spread) → perplexity on 16k tokens of WikiText-2, saving logits for the KL divergence of later runs. GPU and CPU telemetry throughout.</span></div>
-                <button className="btn" disabled={!!status?.busy} onClick={() => runProfile("Baseline", {})}><Play /> Run baseline</button>
+                <button className="btn" onClick={() => runProfile("Baseline", {})}><Play /> {status?.busy ? "Queue baseline" : "Run baseline"}</button>
               </div>
             )}
 
             {baseline && (
               <>
                 <div className="group-label">2 · Change one variable</div>
-                <div className="group pad"><ChangePanel base={baseline.config} models={models} onRun={runProfile} disabled={!!running || !!status?.busy} /></div>
+                <div className="group pad"><ChangePanel base={baseline.config} models={models} onRun={runProfile} onSweep={runSweep} /></div>
 
                 <div className="group-label">3 · Results</div>
                 <div className="group pad">
                   <Board runs={done} metric={metric} setMetric={setMetric} />
                   <div className="row-sub xnote">Speeds are the median of the repetitions; ± is the robust spread (1.4826 × median absolute deviation). A difference is colored only when it is bigger than the noise: 2σ for speeds, a paired McNemar test (p &lt; 0.05) for MMLU-Pro. Grey = not significant. If you add a “Repeat baseline” run, changes must also exceed twice the drift between the two baseline runs (on a desktop PC, other apps share the GPU and add noise). KL divergence measures how far each token's probability distribution drifted from the baseline's.</div>
                   {done.length > 1 && <MetricBars runs={done} metric={metric} />}
+                  <Repro runs={done} />
                   {runs.filter((r) => !["done", "running", "queued"].includes(r.status)).map((r) => (
                     <div key={r.id} className="xfailed"><AlertCircle size={14} /> “{r.label}” {r.status}{r.error ? `: ${r.error}` : ""}
                       <button className="icon-btn danger" onClick={() => api.experimentDeleteRun(r.id).then(load)}><Trash2 /></button></div>
@@ -546,6 +577,7 @@ export default function ExperimentsPage({ status }: { status: Status | null }) {
                 </div>
               </>
             )}
+            </>}
           </>
         )}
       </div>

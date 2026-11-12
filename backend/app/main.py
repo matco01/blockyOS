@@ -38,7 +38,10 @@ async def lifespan(app: FastAPI):
     psutil.cpu_percent(interval=None)  # prime the CPU counter so the first reading isn't 0
     app.state.llm = httpx.AsyncClient(base_url=config.LLM_URL, timeout=httpx.Timeout(10, read=300))
     app.state.background = set()  # keep references so tasks aren't garbage-collected
+    worker = asyncio.create_task(profile.worker(app.state.llm))
+    app.state.background.add(worker)
     yield
+    worker.cancel()
     await app.state.llm.aclose()
 
 
@@ -762,15 +765,36 @@ def experiments_delete(exp_id: int):
 
 
 @app.post("/api/experiments/{exp_id}/runs")
-async def experiments_run(exp_id: int, body: dict):  # async: starts a background task
-    if lab.busy:
-        raise HTTPException(409, f"Busy: {lab.busy}")
+def experiments_run(exp_id: int, body: dict):
+    """Queues a profile; the experiments worker runs queued profiles in order."""
     try:
         run_id = profile.create_run(exp_id, body)
     except (ValueError, TypeError) as e:
         _bad(e)
-    _spawn(profile.run(run_id, app.state.llm))
     return {"id": run_id}
+
+
+@app.post("/api/experiments/{exp_id}/sweep")
+def experiments_sweep(exp_id: int, body: dict):
+    try:
+        ids = profile.create_sweep(exp_id, body)
+    except (ValueError, TypeError) as e:
+        _bad(e)
+    return {"ids": ids}
+
+
+@app.put("/api/experiments/{exp_id}/canvas")
+def experiments_canvas(exp_id: int, body: dict):
+    try:
+        profile.save_canvas(exp_id, body)
+    except ValueError as e:
+        _bad(e)
+    return {"ok": True}
+
+
+@app.post("/api/experiments/{exp_id}/cancel-queue")
+def experiments_cancel_queue(exp_id: int):
+    return {"cancelled": profile.cancel_queue(exp_id)}
 
 
 @app.post("/api/experiments/runs/{run_id}/cancel")

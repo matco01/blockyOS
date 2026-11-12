@@ -71,7 +71,11 @@ def init() -> None:
     DIR.mkdir(parents=True, exist_ok=True)
     with db.connect() as c:
         c.executescript(SCHEMA)
-        c.execute("UPDATE exp_runs SET status = 'error', error = 'Interrupted' WHERE status IN ('queued', 'running')")
+        cols = [r[1] for r in c.execute("PRAGMA table_info(experiments)")]
+        if "canvas" not in cols:  # research canvas layout: card positions, notes, viewport
+            c.execute("ALTER TABLE experiments ADD COLUMN canvas TEXT")
+        # Queued runs survive a restart (the worker picks them up); a run that was mid-way is lost.
+        c.execute("UPDATE exp_runs SET status = 'error', error = 'Interrupted by a restart' WHERE status = 'running'")
 
 
 # ---------- Hardware limits ----------
@@ -164,7 +168,20 @@ def limits() -> dict:
 # ---------- Records ----------
 
 def _exp(r) -> dict:
-    return dict(r)
+    d = dict(r)
+    try:
+        d["canvas"] = json.loads(d.get("canvas") or "null")
+    except ValueError:
+        d["canvas"] = None
+    return d
+
+
+def save_canvas(exp_id: int, canvas: dict) -> None:
+    blob = json.dumps(canvas)
+    if len(blob) > 500_000:
+        raise ValueError("Canvas too large")
+    with db.connect() as c:
+        c.execute("UPDATE experiments SET canvas = ? WHERE id = ?", (blob, exp_id))
 
 
 def _run(r) -> dict:
@@ -213,7 +230,80 @@ def delete_run(run_id: int) -> None:
 
 
 def cancel(run_id: int) -> None:
-    _cancel.add(run_id)
+    with db.connect() as c:
+        queued = c.execute("UPDATE exp_runs SET status = 'cancelled' WHERE id = ? AND status = 'queued'", (run_id,)).rowcount
+    if not queued:
+        _cancel.add(run_id)
+
+
+def cancel_queue(exp_id: int) -> int:
+    with db.connect() as c:
+        return c.execute("UPDATE exp_runs SET status = 'cancelled' WHERE experiment_id = ? AND status = 'queued'", (exp_id,)).rowcount
+
+
+SWEEP_KEYS = ("model", "kv", "ctx", "vram_limit_mb", "ngl", "fa", "threads")
+MAX_SWEEP = 32
+
+
+def create_sweep(exp_id: int, body: dict) -> list[int]:
+    """Queue every combination of the given values (a full grid), optionally repeated."""
+    import itertools
+    exp = get_experiment(exp_id)
+    if not exp:
+        raise ValueError("Experiment not found")
+    grid = {k: list(dict.fromkeys(v)) for k, v in (body.get("grid") or {}).items() if k in SWEEP_KEYS and isinstance(v, list) and v}
+    if not grid:
+        raise ValueError("Pick at least one value to sweep")
+    repeats = max(1, min(5, int(body.get("repeats") or 1)))
+    done = [r for r in exp["runs_list"] if r["status"] == "done"]
+    base = done[0]["config"] if done else normalize_config(exp, {})
+    keys = list(grid)
+    combos = [dict(zip(keys, vals)) for vals in itertools.product(*(grid[k] for k in keys))]
+    if len(combos) * repeats > MAX_SWEEP:
+        raise ValueError(f"That's {len(combos) * repeats} runs; the limit is {MAX_SWEEP} per sweep")
+    ids = []
+    for rep in range(repeats):
+        for combo in combos:
+            cfg = normalize_config(exp, {**base, **combo})
+            label = describe_change(base, cfg)
+            if label == "Repeat of baseline" and not done and not ids:
+                label = "Baseline"  # first run of a fresh experiment
+            if repeats > 1:
+                label = f"{label} · rep {rep + 1}"
+            ids.append(create_run(exp_id, {"label": label, "config": cfg}))
+    return ids
+
+
+_chat_down = False
+
+
+async def _restore_chat(llm: httpx.AsyncClient) -> None:
+    global _chat_down
+    _chat_down = False
+    try:
+        await lab.llm_service("start")
+        await lab.wait_ready(llm, timeout=300)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+async def worker(llm: httpx.AsyncClient) -> None:
+    """Runs queued profiles one after another, whenever the lab is free."""
+    while True:
+        try:
+            await asyncio.sleep(2)
+            if lab.busy or lab._lock.locked():
+                continue
+            with db.connect() as c:
+                row = c.execute("SELECT id FROM exp_runs WHERE status = 'queued' ORDER BY id LIMIT 1").fetchone()
+            if row:
+                await run(row["id"], llm)
+            elif _chat_down:  # the queue was cancelled between runs: bring chat back
+                await _restore_chat(llm)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - the worker must never die
+            await asyncio.sleep(5)
 
 
 def _save(run_id: int, **f) -> None:
@@ -480,9 +570,96 @@ def mcnemar_p(a: str, b: str) -> float | None:
     return min(1.0, 2 * p)
 
 
-async def _bench(cfg: dict, vram_total: float, run_id: int, log: list[str]) -> dict:
+# ---------- Provenance: everything needed to reproduce (or question) a run ----------
+
+PROTOCOL = "blocky-profile/2 (MMLU-Pro 560q 5-shot loglik · llama-bench p512 n128 d0,4096 r5 · PPL/KLD WikiText-2 c512 x32)"
+REPO = Path(__file__).resolve().parents[2]
+
+
+def _sh(*cmd: str, timeout: int = 20) -> str:
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                           env={**os.environ, "LD_LIBRARY_PATH": str(lab.LLAMA_BIN)})
+        return (p.stdout + "\n" + p.stderr).strip()  # llama.cpp prints --version to stderr
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def file_sha256(path: Path) -> str | None:
+    """SHA-256 of a file, cached by (name, size, mtime) because models are GBs."""
+    import hashlib
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    cache_file = DIR / "hashes.json"
+    try:
+        cache = json.loads(cache_file.read_text())
+    except (OSError, ValueError):
+        cache = {}
+    key = f"{path.resolve()}|{st.st_size}|{int(st.st_mtime)}"
+    if key not in cache:
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(8 * 2**20), b""):
+                h.update(chunk)
+        cache[key] = h.hexdigest()
+        cache_file.write_text(json.dumps(cache))
+    return cache[key]
+
+
+def provenance(cfg: dict) -> dict:
+    from . import benchmarks
+    hw = lab.hardware()
+    g = hw["gpus"][0] if hw["gpus"] else {}
+    ver = _sh(str(lab.LLAMA_BIN / "llama-server"), "--version")
+    m = re.search(r"version:\s*(\S+)\s*\((?:build\s*\d+,\s*commit\s*)?([0-9a-f]{6,})\)", ver)
+    smi = _sh("nvidia-smi", "-q")
+    cuda_rt = re.search(r"CUDA (?:UMD )?Version\s*:\s*([\d.]+)", smi)
+    try:
+        cuda_tk = json.loads(Path("/usr/local/cuda/version.json").read_text())["cuda"]["version"]
+    except (OSError, ValueError, KeyError):
+        cuda_tk = None
+    git = lambda *a: _sh("git", "-c", "safe.directory=*", "-C", str(REPO), *a)  # noqa: E731
+    text = quantlab.TEXT
+    return {
+        "protocol": PROTOCOL,
+        "llama_cpp": {"version": m.group(1) if m else None, "commit": m.group(2) if m else None,
+                      "built_with": next((l.strip() for l in ver.splitlines() if l.startswith("built with")), None)},
+        "model": {"file": cfg["model"], "sha256": file_sha256(lab.MODELS_DIR / cfg["model"]),
+                  "bytes": (lab.MODELS_DIR / cfg["model"]).stat().st_size},
+        "data": {"mmlu_pro_sha256": file_sha256(benchmarks.path("mmlu_pro")), "mmlu_seed": MMLU_SEED,
+                 "wikitext_sha256": file_sha256(text) if text.is_file() else None},
+        "gpu": {"name": g.get("name"), "driver": g.get("driver"), "vram_mb": g.get("vram_mb"), "pcie": g.get("pcie"),
+                "cuda_driver_api": cuda_rt.group(1) if cuda_rt else None, "cuda_toolkit": cuda_tk},
+        "host": {"cpu": hw["cpu"], "threads": hw["cpu_threads"], "ram_mb": hw["ram_mb"], "os": hw["os"], "kernel": hw["kernel"], "wsl": hw["wsl"]},
+        "blocky": {"commit": git("rev-parse", "--short", "HEAD") or None,
+                   "dirty": bool(git("status", "--porcelain", "--untracked-files=no"))},
+        "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    }
+
+
+# Fields that must match the baseline for a comparison to be clean.
+PROV_KEYS = [("llama.cpp commit", ("llama_cpp", "commit")), ("GPU driver", ("gpu", "driver")), ("CUDA toolkit", ("gpu", "cuda_toolkit")),
+             ("protocol", ("protocol",)), ("MMLU-Pro data", ("data", "mmlu_pro_sha256")), ("WSL", ("host", "wsl"))]
+
+
+def _get(d: dict, path: tuple):
+    for k in path:
+        d = (d or {}).get(k) if isinstance(d, dict) else None
+    return d
+
+
+def _cmdline(cmd: list[str]) -> str:
+    import shlex
+    return " ".join(shlex.quote(c) for c in cmd)
+
+
+async def _bench(cfg: dict, vram_total: float, run_id: int, log: list[str], cmds: dict | None = None) -> dict:
     cmd = [str(lab.LLAMA_BIN / "llama-bench"), "-m", str(lab.MODELS_DIR / cfg["model"]), "-p", "512", "-n", "128",
            "-d", "0,4096", "-r", "5", "-ctk", cfg["kv"], "-ctv", cfg["kv"], "-fa", cfg["fa"], "-o", "jsonl"] + _placement_args(cfg, vram_total, bench=True)
+    if cmds is not None:
+        cmds["speed"] = _cmdline(cmd)
     out = await quantlab._proc(cmd, log, run_id, timeout=900)
     res = {}
     for line in out.splitlines():
@@ -533,6 +710,9 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
         lab.busy = "experiment"
         _save(run_id, status="running")
         try:
+            res["provenance"] = await asyncio.to_thread(provenance, cfg)
+            cmds: dict[str, str] = {}
+            res["commands"] = cmds
             await lab.llm_service("stop")
             await asyncio.sleep(1)
             sampler.start()
@@ -543,6 +723,7 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
             cmd = [str(lab.LLAMA_BIN / "llama-server"), "-m", str(lab.MODELS_DIR / cfg["model"]), "--host", "127.0.0.1",
                    "--port", str(PORT), "-c", str(cfg["ctx"]), "-np", "1", "-ctk", cfg["kv"], "-ctv", cfg["kv"], "-fa", cfg["fa"],
                    "--jinja", "--no-webui", "-lv", "4"] + _placement_args(cfg, vram_total)
+            cmds["load_and_quality"] = _cmdline(cmd)
             t0 = time.monotonic()
             with open(logfile, "w") as lf:
                 proc = await asyncio.create_subprocess_exec(*cmd, stdout=lf, stderr=asyncio.subprocess.STDOUT,
@@ -575,7 +756,7 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
 
             # 3) Speed: llama-bench with the same setup.
             phase("speed")
-            res["speed"] = await _bench(cfg, vram_total, run_id, log)
+            res["speed"] = await _bench(cfg, vram_total, run_id, log, cmds)
 
             # 4) Fidelity: perplexity, and KL divergence vs the experiment's baseline.
             phase("fidelity")
@@ -583,12 +764,14 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
             pcmd = [str(lab.LLAMA_BIN / "llama-perplexity"), "-m", str(lab.MODELS_DIR / cfg["model"]), "-f", str(text), "-c", "512",
                     "--chunks", "32", "-ctk", cfg["kv"], "-ctv", cfg["kv"], "-fa", cfg["fa"]] + _placement_args(cfg, vram_total)
             if is_baseline or not base_kld.is_file():
+                cmds["fidelity"] = _cmdline(pcmd + ["--kl-divergence-base", str(base_kld)])
                 out = await quantlab._proc(pcmd + ["--kl-divergence-base", str(base_kld)], log, run_id)
                 res["ppl"] = quantlab._num(r"Final estimate: PPL = ([\d.]+)", out)
                 res["ppl_sd"] = quantlab._num(r"Final estimate: PPL = [\d.]+\s*\+/-\s*([\d.]+)", out)
                 res["kld"], res["same_top"] = 0.0, 100.0
                 res["kld_reference"] = True
             else:
+                cmds["fidelity"] = _cmdline(pcmd + ["--kl-divergence-base", str(base_kld), "--kl-divergence"])
                 out = await quantlab._proc(pcmd + ["--kl-divergence-base", str(base_kld), "--kl-divergence"], log, run_id)
                 res["ppl"] = quantlab._num(r"Mean PPL\(Q\)\s*:\s*([\d.]+)", out)
                 res["ppl_sd"] = quantlab._num(r"Mean PPL\(Q\)\s*:\s*[\d.]+\s*±\s*([\d.]+)", out)
@@ -613,11 +796,13 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
                 res["series"] = sampler.series()
             _save(run_id, status=status, error=error, results=res, phase=None, log="\n".join(log[-60:]))
             _cancel.discard(run_id)
-            try:
-                await lab.llm_service("start")
-                await lab.wait_ready(llm, timeout=300)
-            except Exception:  # noqa: BLE001
-                pass
+            with db.connect() as c:
+                more = c.execute("SELECT 1 FROM exp_runs WHERE status = 'queued' LIMIT 1").fetchone()
+            if not more:  # bring chat back only after the last queued profile
+                await _restore_chat(llm)
+            else:
+                global _chat_down
+                _chat_down = True
             lab.busy = None
 
 
@@ -725,6 +910,13 @@ def compare(base: dict | None, run: dict) -> dict:
         return {}
     a, b = (base["results"].get("mmlu") or {}), (run["results"].get("mmlu") or {})
     out = {}
+    pa, pb = base["results"].get("provenance"), run["results"].get("provenance")
+    if pa and pb:
+        out["env_mismatch"] = [name for name, path in PROV_KEYS if _get(pa, path) != _get(pb, path)]
+        if pa["model"]["file"] == pb["model"]["file"] and pa["model"]["sha256"] != pb["model"]["sha256"]:
+            out["env_mismatch"].append("model file changed on disk")
+    elif pa or pb:
+        out["env_mismatch"] = ["provenance missing"]
     if a.get("answers") and b.get("answers"):
         out["mmlu_p"] = mcnemar_p(a["answers"], b["answers"])
         out["mmlu_flips"] = {"lost": sum(1 for x, y in zip(a["answers"], b["answers"]) if x == "1" and y == "0"),

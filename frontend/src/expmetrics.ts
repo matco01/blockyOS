@@ -1,0 +1,72 @@
+import type { ExpResults, ExpRun } from "./api";
+
+/* ---------- Metric registry: one place defines every number, its noise and which direction is better ---------- */
+
+export type Ctx = { run: ExpRun; base: ExpRun };
+export type Metric = {
+  key: string; group: string; label: string; term?: string; unit: string; better: "higher" | "lower" | null;
+  get: (r: ExpResults) => number | null | undefined;
+  sd?: (r: ExpResults) => number | null | undefined;        // ± noise of one measurement (for significance)
+  sig?: (c: Ctx) => boolean | null;                          // custom significance test
+  fmt?: (v: number) => string; note?: string;
+  minRel?: number;                                           // smallest relative change treated as real (no noise model)
+};
+export const n1 = (v: number) => (Math.abs(v) >= 100 ? v.toFixed(0) : v.toFixed(1));
+export const pct = (v: number) => v.toFixed(1);
+export const gb = (mb?: number | null) => (mb != null ? mb / 1024 : null);
+
+export const METRICS: Metric[] = [
+  { key: "tg", group: "Speed", label: "Decode (writing)", term: "tg", unit: "tok/s", better: "higher", get: (r) => r.speed?.tg, sd: (r) => r.speed?.tg_sd },
+  { key: "tg_long", group: "Speed", label: "Decode at 4k context", unit: "tok/s", better: "higher", get: (r) => r.speed?.tg_d4096, sd: (r) => r.speed?.tg_d4096_sd },
+  { key: "pp", group: "Speed", label: "Prefill (reading)", term: "pp", unit: "tok/s", better: "higher", get: (r) => r.speed?.pp, sd: (r) => r.speed?.pp_sd, fmt: (v) => v.toFixed(0) },
+  { key: "pp_long", group: "Speed", label: "Prefill at 4k context", unit: "tok/s", better: "higher", get: (r) => r.speed?.pp_d4096, sd: (r) => r.speed?.pp_d4096_sd, fmt: (v) => v.toFixed(0) },
+  { key: "ttft", group: "Speed", label: "Latency, 512-token prompt", unit: "ms", better: "lower", get: (r) => (r.speed?.pp ? (512 / r.speed.pp) * 1000 : null), fmt: (v) => v.toFixed(0) },
+  { key: "mmlu", group: "Quality", label: "MMLU-Pro accuracy", unit: "%", better: "higher", get: (r) => (r.mmlu ? r.mmlu.acc * 100 : null), fmt: pct,
+    sig: (c) => (c.run.stats?.mmlu_p != null ? c.run.stats.mmlu_p < 0.05 : null), note: "paired McNemar test, p < 0.05" },
+  { key: "mmlu_p", group: "Quality", label: "MMLU-Pro P(correct)", unit: "%", better: "higher", get: (r) => (r.mmlu ? r.mmlu.p_correct_mean * 100 : null), fmt: pct },
+  { key: "kld", group: "Quality", label: "KL divergence vs baseline", unit: "", better: "lower", get: (r) => r.kld, fmt: (v) => v.toFixed(4) },
+  { key: "kld99", group: "Quality", label: "KLD, 99th percentile", unit: "", better: "lower", get: (r) => r.kld_p99, fmt: (v) => v.toFixed(3) },
+  { key: "same_top", group: "Quality", label: "Same top token as baseline", unit: "%", better: "higher", get: (r) => r.same_top, sd: (r) => r.same_top_sd, fmt: pct },
+  { key: "ppl", group: "Quality", label: "Perplexity (WikiText-2)", unit: "", better: "lower", get: (r) => r.ppl, sd: (r) => r.ppl_sd, fmt: (v) => v.toFixed(3) },
+  { key: "vram_model", group: "Memory", label: "VRAM, model buffers", term: "vram", unit: "GB", better: "lower", get: (r) => gb(r.hw?.headroom?.vram_model_mb), fmt: (v) => v.toFixed(2) },
+  { key: "vram_free", group: "Memory", label: "VRAM free", unit: "GB", better: "higher", get: (r) => gb(r.hw?.headroom?.vram_free_mb), fmt: (v) => v.toFixed(2) },
+  { key: "kv", group: "Memory", label: "Context memory per 1k tokens", term: "kv", unit: "MB", better: "lower", get: (r) => r.hw?.headroom?.kv_mb_per_1k_tokens },
+  { key: "w_cpu", group: "Memory", label: "Weights in system RAM", unit: "GB", better: "lower", get: (r) => r.hw?.weights_on_cpu_gb, fmt: (v) => v.toFixed(2) },
+  { key: "load", group: "Memory", label: "Load time", unit: "s", better: "lower", get: (r) => r.load_seconds, minRel: 0.4, note: "Depends on the disk cache: only large changes count" },
+  { key: "eff_bw", group: "Hardware", label: "Effective weight bandwidth", unit: "GB/s", better: "higher", get: (r) => r.hw?.decode?.effective_gbps, fmt: (v) => v.toFixed(0) },
+  { key: "roof", group: "Hardware", label: "Decode, % of memory roof", unit: "%", better: "higher", get: (r) => (r.hw?.decode?.roof_util != null ? r.hw.decode.roof_util * 100 : null), fmt: (v) => v.toFixed(0) },
+  { key: "tflops", group: "Hardware", label: "Prefill compute", unit: "TFLOPS", better: "higher", get: (r) => r.hw?.prefill?.achieved_tflops },
+  { key: "croof", group: "Hardware", label: "Prefill, % of compute roof", unit: "%", better: "higher", get: (r) => (r.hw?.prefill?.roof_util != null ? r.hw.prefill.roof_util * 100 : null), fmt: (v) => v.toFixed(0) },
+  { key: "clock", group: "Hardware", label: "SM clock, % of max", unit: "%", better: "higher", get: (r) => (r.hw?.clocks.ratio != null ? r.hw.clocks.ratio * 100 : null), fmt: (v) => v.toFixed(0) },
+  { key: "temp", group: "Hardware", label: "GPU temperature, peak", unit: "°C", better: "lower", get: (r) => r.hw?.clocks.temp_max_c, fmt: (v) => v.toFixed(0) },
+  { key: "gpu_util", group: "Hardware", label: "GPU busy (decode)", unit: "%", better: null, get: (r) => r.hw?.clocks.gpu_util_avg, fmt: (v) => v.toFixed(0) },
+  { key: "cpu_util", group: "Hardware", label: "CPU busy (decode)", unit: "%", better: null, get: (r) => r.hw?.clocks.cpu_util_avg, fmt: (v) => v.toFixed(0) },
+  { key: "power", group: "Energy", label: "GPU power (decode)", unit: "W", better: "lower", get: (r) => r.hw?.clocks.power_avg_w, fmt: (v) => v.toFixed(0) },
+  { key: "tpj", group: "Energy", label: "Tokens per joule (GPU)", term: "tpj", unit: "tok/J", better: "higher",
+    get: (r) => (r.speed?.tg && r.hw?.clocks.power_avg_w ? r.speed.tg / r.hw.clocks.power_avg_w : null), fmt: (v) => v.toFixed(2) },
+];
+
+/** Difference vs baseline, with a noise check: inside 2σ of the combined measurement noise = not significant. */
+export function delta(m: Metric, c: Ctx, session = 0) {
+  const v = m.get(c.run.results), b = m.get(c.base.results);
+  if (v == null || b == null || b === 0) return null;
+  const d = (v - b) / Math.abs(b);
+  let sig: boolean | null = m.sig ? m.sig(c) : null;
+  if (sig == null && m.sd) {
+    const s1 = m.sd(c.run.results), s2 = m.sd(c.base.results);
+    if (s1 != null && s2 != null) sig = Math.abs(v - b) > 2 * Math.sqrt(s1 * s1 + s2 * s2);
+  }
+  if (sig == null) sig = Math.abs(d) >= (m.minRel ?? 0.02);
+  // Session-to-session drift (measured by repeating the baseline) must also be exceeded.
+  if (sig && !m.sig && session > 0 && Math.abs(v - b) <= 2 * session) sig = false;
+  const text = `${d > 0 ? "+" : ""}${(d * 100).toFixed(Math.abs(d) < 0.1 ? 1 : 0)}%`;
+  if (!sig) return { text, tone: "same", title: "Within measurement noise" };
+  if (!m.better) return { text, tone: "same", title: "" };
+  const good = m.better === "higher" ? d > 0 : d < 0;
+  return { text, tone: good ? "good" : "bad", title: "Significant" };
+}
+
+
+export const SERIES = ["var(--series-1)", "var(--series-2)", "var(--series-3)", "var(--series-4)"];
+export const colorOf = (i: number) => SERIES[i] ?? "var(--text-2)";
+export const nameOf = (r: ExpRun, i: number) => (i === 0 ? "Baseline" : r.label);
