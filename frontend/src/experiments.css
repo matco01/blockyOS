@@ -272,3 +272,38 @@
 .ws-job code { font-size: 11px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ws-job.done svg { color: var(--success); }
 .ws-job.error svg { color: var(--danger); }
+/* canvas v2: tree workspace */
+.cv-model { font-size: 11px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: -3px; margin-bottom: 2px; }
+.cv-card { position: relative; }
+.cv-plus { position: absolute; right: -13px; top: 50%; transform: translateY(-50%); width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--accent); color: #fff; box-shadow: 0 2px 8px rgba(0,0,0,.18); opacity: 0; transition: opacity .15s var(--ease), transform .15s var(--ease); }
+.cv-card:hover .cv-plus, .cv-card.sel .cv-plus { opacity: 1; }
+.cv-plus:hover { transform: translateY(-50%) scale(1.12); }
+.cv-edge-label { max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
+.cv-topbar { position: absolute; top: 10px; left: 14px; right: 14px; display: flex; gap: 12px; align-items: center; justify-content: space-between; pointer-events: none; }
+.cv-topbar > * { pointer-events: auto; }
+.cv-topbar .cv-hint { position: static; pointer-events: none; }
+.cv-topbar .segmented { background: var(--surface); }
+.cv-menu { position: absolute; z-index: 5; min-width: 220px; padding: 6px; border-radius: 12px; background: var(--surface); cursor: default;
+  box-shadow: 0 12px 36px rgba(0,0,0,.18), var(--shadow-hair); display: flex; flex-direction: column; }
+.cv-menu-title { font-size: 11.5px; color: var(--text-2); padding: 4px 10px 6px; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cv-menu button { display: flex; gap: 10px; align-items: center; padding: 7px 10px; border-radius: 8px; font-size: 13px; color: var(--text); text-align: left; }
+.cv-menu button:hover { background: var(--hover, var(--surface-2)); }
+.cv-menu button.danger { color: var(--danger); }
+.cv-menu button svg { color: var(--text-2); }
+.cv-menu button.danger svg { color: var(--danger); }
+.cv-side, .cv-drawer { position: absolute; right: 14px; top: 54px; bottom: 70px; background: var(--surface); border-radius: 16px; z-index: 4;
+  box-shadow: 0 10px 40px rgba(0,0,0,.18), var(--shadow-hair); display: flex; flex-direction: column; cursor: default; user-select: text; }
+.cv-side { width: min(440px, calc(100% - 28px)); }
+.cv-drawer { width: min(640px, calc(100% - 28px)); }
+.cv-side-head { display: flex; gap: 8px; align-items: center; padding: 12px 14px; border-bottom: 1px solid var(--separator, rgba(128,128,128,.15)); font-size: 13px; }
+.cv-side-head span { color: var(--text-2); }
+.cv-side-head b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cv-side-head button { margin-left: auto; }
+.cv-side-body { overflow: auto; padding: 4px 14px 14px; }
+.cv-side-body td.r, .cv-side-body th.r { text-align: right; font-variant-numeric: tabular-nums; }
+.cv-side-body .u { color: var(--text-2); font-size: 11px; }
+.cv-side-body .d.good { color: var(--success); font-weight: 600; } .cv-side-body .d.bad { color: var(--danger); font-weight: 600; } .cv-side-body .d.same { color: var(--text-2); }
+.cv-drawer-note { margin: 10px 0 6px; line-height: 1.45; }
+.cv-drawer .xc-row { flex-wrap: wrap; }
+.cv-tools .btn svg { width: 14px; height: 14px; }

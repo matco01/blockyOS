@@ -221,8 +221,23 @@ def metadata(path: Path) -> dict:
         "experts_used": a("expert_used_count"),
         "license": kv.get("general.license"),
         "tensors": kv.get("_tensor_count"),
+        "tokenizer": tokenizer_signature(kv),
     })
     return info
+
+
+def tokenizer_signature(kv: dict) -> str | None:
+    """Tokenizer identity: type / pre-tokenizer / vocabulary size. Two models can only be compared token-by-token
+    (KL divergence, perplexity) when this matches."""
+    toks = kv.get("tokenizer.ggml.tokens")
+    n = None
+    if isinstance(toks, list):
+        n = len(toks)
+    elif isinstance(toks, str) and (m := re.search(r"\d+", toks)):
+        n = int(m.group(0))
+    if not (kv.get("tokenizer.ggml.model") or n):
+        return None
+    return f"{kv.get('tokenizer.ggml.model')}/{kv.get('tokenizer.ggml.pre')}/{n}"
 
 
 def kv_bytes_per_token(info: dict, cache_type: str = "q8_0") -> float:

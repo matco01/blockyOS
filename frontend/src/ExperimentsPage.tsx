@@ -75,6 +75,7 @@ function ChangePanel({ base, models, onRun, onSweep, onModels }: { base: ExpConf
   useEffect(() => setCfg(base), [base]);
   const baseModel = models.find((m) => m.file === base.model);
   const family = models.filter((m) => baseModel && m.architecture === baseModel.architecture && (m.name ?? "") === (baseModel.name ?? ""));
+  const others = models.filter((m) => !family.includes(m) && !m.error);
   const changed = (Object.keys(cfg) as (keyof ExpConfig)[]).filter((k) => String(cfg[k] ?? "") !== String(base[k] ?? ""));
   const set = (patch: Partial<ExpConfig>) => setCfg((c) => ({ ...c, ...patch }));
   const inGrid = (k: keyof ExpConfig, v: unknown) => (grid[k] ?? []).some((x) => String(x ?? "") === String(v ?? ""));
@@ -93,7 +94,7 @@ function ChangePanel({ base, models, onRun, onSweep, onModels }: { base: ExpConf
       <div className="xc-mode">
         <div className="segmented"><button className={mode === "single" ? "on" : ""} onClick={() => setMode("single")}>One change</button>
           <button className={mode === "sweep" ? "on" : ""} onClick={() => setMode("sweep")}>Sweep</button></div>
-        <span className="row-sub">{mode === "single" ? "Change one setting and profile it against the baseline."
+        <span className="row-sub">{mode === "single" ? "Change one setting and profile it against its starting point."
           : "Select several values per setting. Every combination gets queued and profiled one after another; leave it running."}</span>
       </div>
       <div className="xc-row"><div><b>Weights</b><span>Versions of this model's weights: downloaded, or built in the workshop</span></div>
@@ -102,6 +103,10 @@ function ChangePanel({ base, models, onRun, onSweep, onModels }: { base: ExpConf
           <button className={`btn small ${shop ? "" : "ghost"}`} onClick={() => setShop(!shop)}><Hammer /> {shop ? "Close workshop" : "Make a variant"}</button>
         </div></div>
       {shop && <div className="xc-shop"><WeightsWorkshop model={base.model} onBuilt={onModels} /></div>}
+      {others.length > 0 && (
+        <div className="xc-row"><div><b>A different model</b><span>Same tests, same hardware. Speed, memory and MMLU-Pro always compare; KL divergence and perplexity only between models that share a tokenizer.</span></div>
+          <div className="segmented wrap">{others.map((m) => <Opt key={m.file} k="model" v={m.file} label={`${m.file.replace(".gguf", "")} · ${(m.size_bytes / 2 ** 30).toFixed(1)} GB`} />)}</div></div>
+      )}
       <div className="xc-row"><div><b><Term k="kv">KV cache type</Term></b><span>-ctk / -ctv</span></div>
         <div className="segmented"><Opt k="kv" v="f16" label="f16" /><Opt k="kv" v="q8_0" label="q8_0" /><Opt k="kv" v="q4_0" label="q4_0" /></div></div>
       <div className="xc-row"><div><b><Term k="context">Context size</Term></b><span>-c</span></div>
@@ -117,8 +122,8 @@ function ChangePanel({ base, models, onRun, onSweep, onModels }: { base: ExpConf
           <span className="row-sub">{changed.length === 0 ? "Pick one variable to change against the baseline."
             : changed.length === 1 ? "One variable changed: differences can be attributed to it." : `${changed.length} variables changed at once: effects will be confounded.`}</span>
           <div className="xc-btns">
-            <button className="btn ghost" onClick={() => onRun("Repeat of baseline", base)}
-              title="Runs the baseline setup again: the difference between the two shows how much results drift between sessions on this machine.">Repeat baseline</button>
+            <button className="btn ghost" onClick={() => onRun("", base)}
+              title="Runs this exact setup again: the difference between the two shows how much results drift between sessions on this machine.">Repeat this setup</button>
             <button className="btn" disabled={changed.length === 0} onClick={() => onRun("", cfg)}><Play /> Profile this change</button>
           </div>
         </div>
@@ -466,6 +471,13 @@ export default function ExperimentsPage({ status }: { status: Status | null }) {
     setErr(null);
     try { await api.experimentSweep(exp.id, grid as Record<string, unknown[]>, repeats); load(); window.scrollTo({ top: 0 }); } catch (e) { setErr((e as Error).message); }
   };
+  const reloadModels = () => api.models().then((d) => setModels(d.models)).catch(() => {});
+  // The canvas reuses the same change panel, but branches from whichever card you picked.
+  const branchPanel = (parent: ExpRun, close: () => void) => exp && (
+    <ChangePanel base={parent.config} models={models} onModels={reloadModels}
+      onRun={(label, cfg) => { setErr(null); api.experimentRun(exp.id, label, cfg, parent.id).then(() => { load(); close(); }).catch((e) => setErr((e as Error).message)); }}
+      onSweep={(grid, reps) => { setErr(null); api.experimentSweep(exp.id, grid as Record<string, unknown[]>, reps, parent.id).then(() => { load(); close(); }).catch((e) => setErr((e as Error).message)); }} />
+  );
   const L = exp?.limits;
   const queued = runs.filter((r) => r.status === "queued");
 
@@ -473,7 +485,7 @@ export default function ExperimentsPage({ status }: { status: Status | null }) {
     <div className="page">
       <div className={`page-inner wide ${tab === "canvas" ? "xfull" : ""}`}>
         <h1 className="page-title">Experiments</h1>
-        <p className="page-sub">One model, one variable at a time. Every run measures the same things the same way, and the noise is shown, so you can tell real differences from luck.</p>
+        <p className="page-sub">Start from a baseline, branch one change at a time, and compare setups or whole different models. Every run is measured the same way, with its noise shown, so you can tell real differences from luck.</p>
 
         <div className="xbar">
           <select className="field select" value={id ?? ""} onChange={(e) => { setId(Number(e.target.value)); setFocus(null); }} disabled={list.length === 0}>
@@ -530,7 +542,9 @@ export default function ExperimentsPage({ status }: { status: Status | null }) {
               <span className="row-sub">{tab === "report" ? "Every number, in order: baseline → change → results → hardware." : "The map of this experiment: what was tried, what it led to. Drag, zoom, annotate."}</span>
             </div>
 
-            {tab === "canvas" ? <ResearchCanvas key={exp.id} exp={exp} runs={runs} /> : <>
+            {tab === "canvas" ? <ResearchCanvas key={exp.id} exp={exp} runs={runs} branchPanel={branchPanel} onChanged={load}
+              onRepeat={(r) => api.experimentRun(exp.id, "", r.config, r.parent_id ?? null).then(load).catch((e) => setErr((e as Error).message))}
+              onDelete={(r) => api.experimentDeleteRun(r.id).then(load)} onCancel={(r) => api.experimentCancel(r.id).then(load)} /> : <>
             <div className="group-label">1 · Baseline</div>
             {baseline ? (
               <div className="group pad">
@@ -548,7 +562,7 @@ export default function ExperimentsPage({ status }: { status: Status | null }) {
             {baseline && (
               <>
                 <div className="group-label">2 · Change one variable</div>
-                <div className="group pad"><ChangePanel base={baseline.config} models={models} onRun={runProfile} onSweep={runSweep} onModels={() => api.models().then((d) => setModels(d.models)).catch(() => {})} /></div>
+                <div className="group pad"><ChangePanel base={baseline.config} models={models} onRun={runProfile} onSweep={runSweep} onModels={reloadModels} /></div>
 
                 <div className="group-label">3 · Results</div>
                 <div className="group pad">

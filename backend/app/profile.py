@@ -74,6 +74,9 @@ def init() -> None:
         cols = [r[1] for r in c.execute("PRAGMA table_info(experiments)")]
         if "canvas" not in cols:  # research canvas layout: card positions, notes, viewport
             c.execute("ALTER TABLE experiments ADD COLUMN canvas TEXT")
+        if "parent_id" not in [r[1] for r in c.execute("PRAGMA table_info(exp_runs)")]:
+            # The run tree: each run is derived from a parent run (its config + one change). NULL = from the baseline.
+            c.execute("ALTER TABLE exp_runs ADD COLUMN parent_id INTEGER")
         # Queued runs survive a restart (the worker picks them up); a run that was mid-way is lost.
         c.execute("UPDATE exp_runs SET status = 'error', error = 'Interrupted by a restart' WHERE status = 'running'")
 
@@ -226,7 +229,12 @@ def delete_experiment(exp_id: int) -> None:
 
 def delete_run(run_id: int) -> None:
     with db.connect() as c:
-        c.execute("DELETE FROM exp_runs WHERE id = ? AND status NOT IN ('queued', 'running')", (run_id,))
+        r = c.execute("SELECT parent_id FROM exp_runs WHERE id = ? AND status NOT IN ('queued', 'running')", (run_id,)).fetchone()
+        if not r:
+            return
+        # Keep the tree connected: the deleted run's children hang from its parent instead.
+        c.execute("UPDATE exp_runs SET parent_id = ? WHERE parent_id = ?", (r["parent_id"], run_id))
+        c.execute("DELETE FROM exp_runs WHERE id = ?", (run_id,))
 
 
 def cancel(run_id: int) -> None:
@@ -256,7 +264,8 @@ def create_sweep(exp_id: int, body: dict) -> list[int]:
         raise ValueError("Pick at least one value to sweep")
     repeats = max(1, min(5, int(body.get("repeats") or 1)))
     done = [r for r in exp["runs_list"] if r["status"] == "done"]
-    base = done[0]["config"] if done else normalize_config(exp, {})
+    parent = next((r for r in exp["runs_list"] if r["id"] == int(body["parent_id"])), None) if body.get("parent_id") is not None else None
+    base = parent["config"] if parent else (done[0]["config"] if done else normalize_config(exp, {}))
     keys = list(grid)
     combos = [dict(zip(keys, vals)) for vals in itertools.product(*(grid[k] for k in keys))]
     if len(combos) * repeats > MAX_SWEEP:
@@ -266,11 +275,13 @@ def create_sweep(exp_id: int, body: dict) -> list[int]:
         for combo in combos:
             cfg = normalize_config(exp, {**base, **combo})
             label = describe_change(base, cfg)
+            if label == "Repeat of baseline" and parent:
+                label = f"Repeat of {parent['label']}"[:60]
             if label == "Repeat of baseline" and not done and not ids:
                 label = "Baseline"  # first run of a fresh experiment
             if repeats > 1:
                 label = f"{label} · rep {rep + 1}"
-            ids.append(create_run(exp_id, {"label": label, "config": cfg}))
+            ids.append(create_run(exp_id, {"label": label, "config": cfg, "parent_id": parent["id"] if parent else None}))
     return ids
 
 
@@ -340,10 +351,18 @@ def create_run(exp_id: int, body: dict) -> int:
     if not exp:
         raise ValueError("Experiment not found")
     cfg = normalize_config(exp, body.get("config") or {})
-    label = (body.get("label") or "").strip()[:60] or ("Baseline" if not exp["runs_list"] else describe_change(exp["runs_list"][0]["config"], cfg))
+    parent = None
+    if body.get("parent_id") is not None:
+        parent = next((r for r in exp["runs_list"] if r["id"] == int(body["parent_id"])), None)
+        if not parent:
+            raise ValueError("The run to branch from isn't in this experiment")
+    ref = parent or (exp["runs_list"][0] if exp["runs_list"] else None)
+    label = (body.get("label") or "").strip()[:60] or ("Baseline" if not ref else describe_change(ref["config"], cfg))
+    if label == "Repeat of baseline" and parent and parent["id"] != exp["runs_list"][0]["id"]:
+        label = f"Repeat of {parent['label']}"[:60]
     with db.connect() as c:
-        return c.execute("INSERT INTO exp_runs (experiment_id, created_at, status, label, config, results) VALUES (?, ?, 'queued', ?, ?, '{}')",
-                         (exp_id, time.time(), label, json.dumps(cfg))).lastrowid
+        return c.execute("INSERT INTO exp_runs (experiment_id, created_at, status, label, config, results, parent_id) VALUES (?, ?, 'queued', ?, ?, '{}', ?)",
+                         (exp_id, time.time(), label, json.dumps(cfg), parent["id"] if parent else None)).lastrowid
 
 
 def weights_label(model: str) -> str:
@@ -356,7 +375,9 @@ def weights_label(model: str) -> str:
 def describe_change(base: dict, cfg: dict) -> str:
     parts = []
     if cfg["model"] != base.get("model"):
-        parts.append(weights_label(cfg["model"]))
+        a, b = (gguf.metadata(lab.MODELS_DIR / m) for m in (base.get("model") or cfg["model"], cfg["model"]))
+        # Same model, other weights -> "Q3_K_M-imat"; a different model altogether -> its full name.
+        parts.append(weights_label(cfg["model"]) if a.get("name") == b.get("name") else cfg["model"].removesuffix(".gguf"))
     if cfg["kv"] != base.get("kv"):
         parts.append(f"KV {cfg['kv']}")
     if cfg["ctx"] != base.get("ctx"):
@@ -780,7 +801,19 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
             text = await quantlab.ensure_text()
             pcmd = [str(lab.LLAMA_BIN / "llama-perplexity"), "-m", str(lab.MODELS_DIR / cfg["model"]), "-f", str(text), "-c", "512",
                     "--chunks", "32", "-ctk", cfg["kv"], "-ctv", cfg["kv"], "-fa", cfg["fa"]] + _placement_args(cfg, vram_total)
-            if is_baseline or not base_kld.is_file():
+            base_run = next((r for r in exp["runs_list"] if r["status"] == "done" and r["id"] != run_id), None)
+            same_tok = is_baseline or not base_run or (
+                gguf.metadata(lab.MODELS_DIR / cfg["model"]).get("tokenizer") == gguf.metadata(lab.MODELS_DIR / base_run["config"]["model"]).get("tokenizer"))
+            if not same_tok:
+                # A different tokenizer splits text into different tokens: per-token KL divergence is undefined and
+                # perplexity isn't comparable. Measure this model's own perplexity, and say so.
+                cmds["fidelity"] = _cmdline(pcmd)
+                out = await quantlab._proc(pcmd, log, run_id)
+                res["ppl"] = quantlab._num(r"Final estimate: PPL = ([\d.]+)", out)
+                res["ppl_sd"] = quantlab._num(r"Final estimate: PPL = [\d.]+\s*\+/-\s*([\d.]+)", out)
+                res["kld"] = res["same_top"] = None
+                res["token_note"] = "different tokenizer than the baseline: KL divergence and perplexity can't be compared"
+            elif is_baseline or not base_kld.is_file():
                 cmds["fidelity"] = _cmdline(pcmd + ["--kl-divergence-base", str(base_kld)])
                 out = await quantlab._proc(pcmd + ["--kl-divergence-base", str(base_kld)], log, run_id)
                 res["ppl"] = quantlab._num(r"Final estimate: PPL = ([\d.]+)", out)
@@ -945,11 +978,21 @@ def enrich(exp: dict) -> dict:
     """Recompute analysis and statistics for every run, so old runs benefit from fixes too."""
     lim = exp["limits"]
     base = next((r for r in exp["runs_list"] if r["status"] == "done"), None)
+    by_id = {r["id"]: r for r in exp["runs_list"]}
     for r in exp["runs_list"]:
+        # Runs made before the tree existed (no parent) were all derived from the baseline.
+        if r.get("parent_id") is None and base and r["id"] != base["id"]:
+            r["parent_id"] = base["id"]
         if r["status"] == "done":
             r["results"]["hw"] = analyze(r["results"], r["config"], lim)
             r["results"].pop("bottleneck", None)
             r["stats"] = compare(base, r)
+            if base:
+                r["stats"]["baseline_id"] = base["id"]
+            parent = by_id.get(r.get("parent_id"))
+            if parent and base and parent["id"] != base["id"] and parent["status"] == "done":
+                vp = compare(parent, r)
+                r["stats"]["vs_parent"] = {k: vp[k] for k in ("mmlu_p", "mmlu_flips") if k in vp}
     return exp
 
 

@@ -22,7 +22,12 @@ export const METRICS: Metric[] = [
   { key: "pp_long", group: "Speed", label: "Prefill at 4k context", unit: "tok/s", better: "higher", get: (r) => r.speed?.pp_d4096, sd: (r) => r.speed?.pp_d4096_sd, fmt: (v) => v.toFixed(0) },
   { key: "ttft", group: "Speed", label: "Latency, 512-token prompt", unit: "ms", better: "lower", get: (r) => (r.speed?.pp ? (512 / r.speed.pp) * 1000 : null), fmt: (v) => v.toFixed(0) },
   { key: "mmlu", group: "Quality", label: "MMLU-Pro accuracy", unit: "%", better: "higher", get: (r) => (r.mmlu ? r.mmlu.acc * 100 : null), fmt: pct,
-    sig: (c) => (c.run.stats?.mmlu_p != null ? c.run.stats.mmlu_p < 0.05 : null), note: "paired McNemar test, p < 0.05" },
+    sig: (c) => {
+      // Paired test against whichever run we're comparing with: the baseline, or this run's parent in the tree.
+      const s = c.run.stats;
+      const p = c.base.id === s?.baseline_id ? s?.mmlu_p : c.base.id === c.run.parent_id ? s?.vs_parent?.mmlu_p : null;
+      return p != null ? p < 0.05 : null;
+    }, note: "paired McNemar test, p < 0.05" },
   { key: "mmlu_p", group: "Quality", label: "MMLU-Pro P(correct)", unit: "%", better: "higher", get: (r) => (r.mmlu ? r.mmlu.p_correct_mean * 100 : null), fmt: pct },
   { key: "kld", group: "Quality", label: "KL divergence vs baseline", unit: "", better: "lower", get: (r) => r.kld, fmt: (v) => v.toFixed(4) },
   { key: "kld99", group: "Quality", label: "KLD, 99th percentile", unit: "", better: "lower", get: (r) => r.kld_p99, fmt: (v) => v.toFixed(3) },
@@ -46,10 +51,17 @@ export const METRICS: Metric[] = [
     get: (r) => (r.speed?.tg && r.hw?.clocks.power_avg_w ? r.speed.tg / r.hw.clocks.power_avg_w : null), fmt: (v) => v.toFixed(2) },
 ];
 
+const TOKEN_LEVEL = new Set(["ppl", "kld", "kld99", "same_top"]);
+
 /** Difference vs baseline, with a noise check: inside 2σ of the combined measurement noise = not significant. */
 export function delta(m: Metric, c: Ctx, session = 0) {
   const v = m.get(c.run.results), b = m.get(c.base.results);
   if (v == null || b == null || b === 0) return null;
+  // Token-level metrics are meaningless between models that split text into different tokens.
+  // (token_note marks a run whose tokenizer differs from the experiment's baseline.)
+  const crossTok = !!c.run.results.token_note !== !!c.base.results.token_note
+    || (!!c.run.results.token_note && c.run.config.model.split("-")[0] !== c.base.config.model.split("-")[0]);
+  if (TOKEN_LEVEL.has(m.key) && crossTok) return { text: "not comparable", tone: "same", title: "Different tokenizer" };
   const d = (v - b) / Math.abs(b);
   let sig: boolean | null = m.sig ? m.sig(c) : null;
   if (sig == null && m.sd) {

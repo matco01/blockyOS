@@ -100,6 +100,7 @@ export type ExpResults = {
   hw?: HwAnalysis;
   provenance?: Provenance;
   commands?: Record<string, string>;
+  token_note?: string;
 };
 export type Provenance = {
   protocol: string;
@@ -112,7 +113,9 @@ export type Provenance = {
   started_at: string;
 };
 export type ExpRun = { id: number; experiment_id: number; created_at: number; status: string; label: string; config: ExpConfig; results: ExpResults;
-  phase: string | null; error: string | null; stats?: { mmlu_p?: number | null; mmlu_flips?: { lost: number; gained: number }; env_mismatch?: string[] } };
+  phase: string | null; error: string | null; parent_id?: number | null;
+  stats?: { mmlu_p?: number | null; mmlu_flips?: { lost: number; gained: number }; env_mismatch?: string[]; baseline_id?: number;
+    vs_parent?: { mmlu_p?: number | null; mmlu_flips?: { lost: number; gained: number } } } };
 export type WeightFile = { file: string; quant: string | null; bits: number; size_bytes: number; layers: number | null; recipe: Record<string, unknown> | null };
 export type TensorGroup = { pattern: string; count: number; bytes: number; types: string[]; part: string };
 export type VariantSpec = { source: string; qtype: string; imatrix: boolean; overrides: Record<string, string>; output_type?: string | null;
@@ -281,8 +284,10 @@ export const api = {
   experiment: (id: number) => json<Experiment>(`/api/experiments/${id}`),
   experimentCreate: (name: string, model: string) => json<{ id: number }>("/api/experiments", send("POST", { name, model })),
   experimentDelete: (id: number) => json(`/api/experiments/${id}`, { method: "DELETE" }),
-  experimentRun: (id: number, label: string, config: Partial<ExpConfig>) => json<{ id: number }>(`/api/experiments/${id}/runs`, send("POST", { label, config })),
-  experimentSweep: (id: number, grid: Record<string, unknown[]>, repeats: number) => json<{ ids: number[] }>(`/api/experiments/${id}/sweep`, send("POST", { grid, repeats })),
+  experimentRun: (id: number, label: string, config: Partial<ExpConfig>, parentId?: number | null) =>
+    json<{ id: number }>(`/api/experiments/${id}/runs`, send("POST", { label, config, parent_id: parentId ?? null })),
+  experimentSweep: (id: number, grid: Record<string, unknown[]>, repeats: number, parentId?: number | null) =>
+    json<{ ids: number[] }>(`/api/experiments/${id}/sweep`, send("POST", { grid, repeats, parent_id: parentId ?? null })),
   weightsFamily: (model: string) => json<{ files: WeightFile[]; base_types: string[]; tensor_types: string[]; needs_imatrix: string[] }>(`/api/weights/family?model=${encodeURIComponent(model)}`),
   weightsTensors: (model: string) => json<TensorGroup[]>(`/api/weights/tensors?model=${encodeURIComponent(model)}`),
   weightsCreate: (spec: VariantSpec) => json<{ id: string }>("/api/weights/variants", send("POST", spec)),
