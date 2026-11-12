@@ -5,7 +5,7 @@ import { api, ExpConfig, Experiment, ExpRun, ModelFile, Provenance, Status } fro
 import { LineChart, Term } from "./ui";
 import ResearchCanvas from "./ResearchCanvas";
 import WeightsWorkshop from "./WeightsWorkshop";
-import { colorOf, delta, METRICS, Metric, n1, nameOf } from "./expmetrics";
+import { colorOf, delta, METRICS, Metric, n1, nameOf, runTitle, shortModel } from "./expmetrics";
 
 const PHASES = [
   { id: "loading", label: "Load", what: "memory layout, load time" },
@@ -47,7 +47,7 @@ function Running({ run, onStop }: { run: ExpRun; onStop: () => void }) {
   const mp = run.results.mmlu_progress;
   return (
     <div className="xrun">
-      <div className="xrun-head"><Loader2 className="spin" /> <b>Profiling “{run.label}”</b><span className="row-sub">4–8 minutes · chat is paused</span>
+      <div className="xrun-head"><Loader2 className="spin" /> <b>Profiling “{runTitle(run)}”</b><span className="row-sub">4–8 minutes · chat is paused</span>
         <button className="btn small ghost" onClick={onStop}><Square /> Stop</button></div>
       <div className="xsteps">
         {PHASES.map((p, i) => (
@@ -528,7 +528,7 @@ export default function ExperimentsPage({ status }: { status: Status | null }) {
             {queued.filter((r) => r.id !== running?.id).length > 0 && (
               <div className="xqueue">
                 <b>{queued.filter((r) => r.id !== running?.id).length} more in the queue</b>
-                <span className="row-sub">{queued.filter((r) => r.id !== running?.id).map((r) => r.label).join(" · ")}</span>
+                <span className="row-sub">{queued.filter((r) => r.id !== running?.id).map((r) => runTitle(r)).join(" · ")}</span>
                 <span className="row-sub">· done in about {Math.round(queued.length * 4.5)} min</span>
                 <button className="btn small ghost" onClick={() => api.experimentCancelQueue(exp.id).then(load)}>Cancel queue</button>
               </div>
@@ -545,7 +545,7 @@ export default function ExperimentsPage({ status }: { status: Status | null }) {
             {tab === "canvas" ? <ResearchCanvas key={exp.id} exp={exp} runs={runs} branchPanel={branchPanel} onChanged={load}
               onRepeat={(r) => api.experimentRun(exp.id, "", r.config, r.parent_id ?? null).then(load).catch((e) => setErr((e as Error).message))}
               onDelete={(r) => api.experimentDeleteRun(r.id).then(load)} onCancel={(r) => api.experimentCancel(r.id).then(load)} /> : <>
-            <div className="group-label">1 · Baseline</div>
+            <div className="group-label">1 · Baseline{baseline ? `: ${shortModel(baseline)}` : ""}</div>
             {baseline ? (
               <div className="group pad">
                 <div className="xcap"><b>{baseline.config.model.replace(".gguf", "")}</b><span className="row-sub">ctx {baseline.config.ctx} · KV {baseline.config.kv} · ngl {String(baseline.config.ngl)} · fa {baseline.config.fa}</span></div>

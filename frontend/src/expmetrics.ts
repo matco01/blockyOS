@@ -81,4 +81,8 @@ export function delta(m: Metric, c: Ctx, session = 0) {
 
 export const SERIES = ["var(--series-1)", "var(--series-2)", "var(--series-3)", "var(--series-4)"];
 export const colorOf = (i: number) => SERIES[i] ?? "var(--text-2)";
-export const nameOf = (r: ExpRun, i: number) => (i === 0 ? "Baseline" : r.label);
+export const shortModel = (r: ExpRun) => r.config.model.replace(/\.gguf$/, "");
+/** A run's display name. The baseline always says what it is: "Baseline · Qwen3.5-9B-Q8_0". */
+export const runTitle = (r: ExpRun, isBase = r.parent_id == null) =>
+  isBase ? (r.label.startsWith("Baseline ·") ? r.label : `Baseline · ${shortModel(r)}`) : r.label;
+export const nameOf = (r: ExpRun, i: number) => runTitle(r, i === 0);

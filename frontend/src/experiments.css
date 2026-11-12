@@ -306,4 +306,6 @@
 .cv-side-body .d.good { color: var(--success); font-weight: 600; } .cv-side-body .d.bad { color: var(--danger); font-weight: 600; } .cv-side-body .d.same { color: var(--text-2); }
 .cv-drawer-note { margin: 10px 0 6px; line-height: 1.45; }
 .cv-drawer .xc-row { flex-wrap: wrap; }
-.cv-tools .btn svg { width: 14px; height: 14px; }
+.cv-tools .btn svg { width: 14px; height: 14px; }.cv-card { height: 172px; }
+.cv-card > * { flex-shrink: 0; }
+.cv-card { height: 186px; }

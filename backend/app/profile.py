@@ -278,7 +278,7 @@ def create_sweep(exp_id: int, body: dict) -> list[int]:
             if label == "Repeat of baseline" and parent:
                 label = f"Repeat of {parent['label']}"[:60]
             if label == "Repeat of baseline" and not done and not ids:
-                label = "Baseline"  # first run of a fresh experiment
+                label = baseline_label(cfg)  # first run of a fresh experiment
             if repeats > 1:
                 label = f"{label} · rep {rep + 1}"
             ids.append(create_run(exp_id, {"label": label, "config": cfg, "parent_id": parent["id"] if parent else None}))
@@ -357,12 +357,19 @@ def create_run(exp_id: int, body: dict) -> int:
         if not parent:
             raise ValueError("The run to branch from isn't in this experiment")
     ref = parent or (exp["runs_list"][0] if exp["runs_list"] else None)
-    label = (body.get("label") or "").strip()[:60] or ("Baseline" if not ref else describe_change(ref["config"], cfg))
+    label = (body.get("label") or "").strip()[:60] or (baseline_label(cfg) if not ref else describe_change(ref["config"], cfg))
+    if label == "Baseline":
+        label = baseline_label(cfg)
     if label == "Repeat of baseline" and parent and parent["id"] != exp["runs_list"][0]["id"]:
         label = f"Repeat of {parent['label']}"[:60]
     with db.connect() as c:
         return c.execute("INSERT INTO exp_runs (experiment_id, created_at, status, label, config, results, parent_id) VALUES (?, ?, 'queued', ?, ?, '{}', ?)",
                          (exp_id, time.time(), label, json.dumps(cfg), parent["id"] if parent else None)).lastrowid
+
+
+def baseline_label(cfg: dict) -> str:
+    """'Baseline · Qwen3.5-9B-Q8_0': always say what the baseline actually is."""
+    return f"Baseline · {cfg['model'].removesuffix('.gguf')}"[:60]
 
 
 def weights_label(model: str) -> str:

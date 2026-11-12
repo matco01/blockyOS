@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Copy, GitBranch, GitCompare, Loader2, Maximize, Minus, Plus, Repeat, Square, StickyNote, Trash2, Wand2, X } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { api, CanvasNote, CanvasState, Experiment, ExpRun } from "./api";
-import { colorOf, delta, METRICS, n1 } from "./expmetrics";
+import { colorOf, delta, METRICS, n1, runTitle } from "./expmetrics";
 
 /**
  * Research canvas: the experiment as a tree you work in. Every run is a card; each run was branched from a parent
@@ -10,7 +10,7 @@ import { colorOf, delta, METRICS, n1 } from "./expmetrics";
  */
 
 const CARD_W = 270;
-const CARD_H = 172;
+const CARD_H = 186;
 const COL = CARD_W + 200;   // horizontal step per generation (room for the "what changed" label)
 const ROW = CARD_H + 28;
 
@@ -53,7 +53,7 @@ function Card({ run, idx, cmp, selected, onDown, onClick, onMenu, onBranch }: { 
       style={{ "--c": colorOf(idx) } as React.CSSProperties}>
       <div className="cv-head">
         <span className="xdot" style={{ background: colorOf(idx) }} />
-        <b title={run.label}>{run.parent_id == null ? "Baseline" : run.label}</b>
+        <b title={run.label}>{runTitle(run)}</b>
         {selected ? <span className="cv-pick">{selected === 1 ? "A" : "B"}</span> : null}
       </div>
       <div className="cv-model" title={run.config.model}>{run.config.model.replace(".gguf", "")} · ctx {run.config.ctx / 1024}k · KV {run.config.kv}</div>
@@ -85,7 +85,7 @@ function Compare({ a, b, onClose }: { a: ExpRun; b: ExpRun; onClose: () => void 
   const rows = METRICS.filter((m) => m.get(a.results) != null || m.get(b.results) != null);
   return (
     <div className="cv-side" onPointerDown={(e) => e.stopPropagation()} onWheel={(e) => e.stopPropagation()} onContextMenu={(e) => e.stopPropagation()}>
-      <div className="cv-side-head"><GitCompare size={15} /><b>A: {a.label}</b><span>vs</span><b>B: {b.label}</b><button className="icon-btn" onClick={onClose}><X /></button></div>
+      <div className="cv-side-head"><GitCompare size={15} /><b title={runTitle(a)}>A: {runTitle(a)}</b><span>vs</span><b title={runTitle(b)}>B: {runTitle(b)}</b><button className="icon-btn" onClick={onClose}><X /></button></div>
       <div className="cv-side-body">
         <table className="data">
           <thead><tr><th>Metric</th><th className="r">A</th><th className="r">B</th><th className="r">B vs A</th></tr></thead>
@@ -278,7 +278,7 @@ export default function ResearchCanvas({ exp, runs, branchPanel, onRepeat, onDel
       {menu && (
         <div className="cv-menu" style={{ left: menu.x, top: menu.y }} onPointerDown={(e) => e.stopPropagation()} onContextMenu={(e) => e.preventDefault()}>
           {menu.run ? <>
-            <div className="cv-menu-title">{menu.run.parent_id == null ? "Baseline" : menu.run.label}</div>
+            <div className="cv-menu-title">{runTitle(menu.run)}</div>
             <Item icon={GitBranch} label="Branch from here…" onClick={() => setBranchFrom(menu.run!.id)} />
             <Item icon={Repeat} label="Repeat this run" onClick={() => onRepeat(menu.run!)} />
             {menu.run.parent_id != null && byId.get(menu.run.parent_id) && <Item icon={GitCompare} label="Compare with its parent" onClick={() => setSel([menu.run!.parent_id!, menu.run!.id])} />}
@@ -298,7 +298,7 @@ export default function ResearchCanvas({ exp, runs, branchPanel, onRepeat, onDel
 
       {branchRun ? (
         <div className="cv-drawer" onPointerDown={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()} onContextMenu={(e) => e.stopPropagation()}>
-          <div className="cv-side-head"><GitBranch size={15} /><span>Branch from</span><b>{branchRun.parent_id == null ? "Baseline" : branchRun.label}</b>
+          <div className="cv-side-head"><GitBranch size={15} /><span>Branch from</span><b>{runTitle(branchRun)}</b>
             <button className="icon-btn" onClick={() => setBranchFrom(null)}><X /></button></div>
           <div className="cv-side-body">
             <div className="row-sub cv-drawer-note">The new run starts from this card's exact setup ({branchRun.config.model.replace(".gguf", "")}, ctx {branchRun.config.ctx / 1024}k, KV {branchRun.config.kv}). Change one thing and it's queued as a child of this card.</div>
