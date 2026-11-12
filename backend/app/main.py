@@ -10,6 +10,7 @@ import asyncio
 import csv
 import io
 import json
+import re
 import random
 import time
 from contextlib import asynccontextmanager
@@ -737,6 +738,21 @@ def experiments_get(exp_id: int):
     if not e:
         raise HTTPException(404, "Experiment not found")
     return e
+
+
+@app.get("/api/experiments/{exp_id}/export.{fmt}")
+def experiments_export(exp_id: int, fmt: str):
+    e = profile.get_experiment(exp_id)
+    if not e:
+        raise HTTPException(404, "Experiment not found")
+    name = re.sub(r"[^A-Za-z0-9._-]+", "-", e["name"]).strip("-") or f"experiment-{exp_id}"
+    if fmt == "csv":
+        return Response(profile.export_csv(e), media_type="text/csv",
+                        headers={"Content-Disposition": f'attachment; filename="{name}.csv"'})
+    if fmt == "json":
+        return Response(json.dumps(e, indent=1), media_type="application/json",
+                        headers={"Content-Disposition": f'attachment; filename="{name}.json"'})
+    raise HTTPException(400, "Use csv or json")
 
 
 @app.delete("/api/experiments/{exp_id}")

@@ -25,7 +25,7 @@ from pathlib import Path
 import httpx
 import psutil
 
-from . import arena, config, db, evals, fresh, generate, gguf, lab, quantlab
+from . import arena, config, db, evals, gguf, lab, quantlab
 
 DIR = config.DATA_DIR / "experiments"
 PORT = arena.TEMP_PORT
@@ -76,43 +76,89 @@ def init() -> None:
 
 # ---------- Hardware limits ----------
 
-def gpu_bandwidth(name: str | None) -> float | None:
+# Peak dense matrix throughput (TFLOPS) from spec sheets: FP16 tensor cores with FP32 accumulate
+# (Turing and newer GeForce), or plain FP32 for Pascal, which has no tensor cores. The compute roof for prompt reading.
+GPU_TFLOPS = {
+    "RTX 4090": (165.2, "FP16 tensor, FP32 acc."), "RTX 4080": (97.5, "FP16 tensor, FP32 acc."), "RTX 4070": (58.3, "FP16 tensor, FP32 acc."),
+    "RTX 3090": (71.0, "FP16 tensor, FP32 acc."), "RTX 3080": (59.5, "FP16 tensor, FP32 acc."), "RTX 3070": (40.6, "FP16 tensor, FP32 acc."),
+    "RTX 3060": (25.5, "FP16 tensor, FP32 acc."),
+    "RTX 2080 Ti": (53.8, "FP16 tensor, FP32 acc."), "RTX 2080 SUPER": (44.6, "FP16 tensor, FP32 acc."), "RTX 2080": (40.3, "FP16 tensor, FP32 acc."),
+    "RTX 2070 SUPER": (36.3, "FP16 tensor, FP32 acc."), "RTX 2070": (29.9, "FP16 tensor, FP32 acc."), "RTX 2060": (25.8, "FP16 tensor, FP32 acc."),
+    "GTX 1080 Ti": (11.3, "FP32"), "GTX 1080": (8.9, "FP32"), "GTX 1070": (6.5, "FP32"), "GTX 1060": (4.4, "FP32"), "GTX 1050 Ti": (2.1, "FP32"),
+}
+
+
+def _lookup(table: dict, name: str | None):
     if not name:
         return None
-    for key in sorted(GPU_BANDWIDTH, key=len, reverse=True):
+    for key in sorted(table, key=len, reverse=True):
         if key.lower() in name.lower():
-            return GPU_BANDWIDTH[key]
+            return table[key]
     return None
+
+
+def gpu_bandwidth(name: str | None) -> float | None:
+    return _lookup(GPU_BANDWIDTH, name)
 
 
 _ram_bw: float | None = None
 
+# Read bandwidth with one process per two hardware threads, summed: what CPU inference actually does.
+_RAM_BW_CODE = """
+import numpy as np, time, os
+from multiprocessing import Pool
+def work(_):
+    a = np.ones(32 * 2**20, dtype=np.float64); best = 0
+    for _ in range(6):
+        t = time.perf_counter(); a.sum(); dt = time.perf_counter() - t
+        best = max(best, a.nbytes / dt / 1e9)
+    return best
+n = max(1, (os.cpu_count() or 2) // 2)
+with Pool(n) as p:
+    print(sum(p.map(work, range(n))))
+"""
+
 
 def ram_bandwidth() -> float | None:
-    """Measured system-RAM copy bandwidth (GB/s), cached. The ceiling for layers running on the CPU."""
+    """Measured multi-core system-RAM read bandwidth (GB/s), cached: the ceiling for layers on the CPU."""
     global _ram_bw
-    cache = DIR / "ram_bandwidth.json"
+    cache = DIR / "ram_read_bandwidth.json"
     if _ram_bw is None and cache.is_file():
         _ram_bw = json.loads(cache.read_text()).get("gbps")
     if _ram_bw is None:
-        code = ("import numpy as np, time\na = np.ones(64*2**20, dtype=np.float64); b = np.empty_like(a); best = 0\n"
-                "for _ in range(5):\n t = time.perf_counter(); np.copyto(b, a); dt = time.perf_counter() - t\n"
-                " best = max(best, 2 * a.nbytes / dt / 1e9)\nprint(best)")
         try:
-            out = subprocess.run(["python3", "-c", code], capture_output=True, text=True, timeout=60).stdout.strip()
+            out = subprocess.run(["python3", "-c", _RAM_BW_CODE], capture_output=True, text=True, timeout=120).stdout.strip()
             _ram_bw = round(float(out), 1)
-            cache.write_text(json.dumps({"gbps": _ram_bw, "measured_at": time.time()}))
+            cache.write_text(json.dumps({"gbps": _ram_bw, "measured_at": time.time(), "method": "numpy sum, one process per 2 threads"}))
         except (ValueError, OSError, subprocess.SubprocessError):
             return None
     return _ram_bw
 
 
+_sm_max: float | None = None
+
+
+def sm_clock_max() -> float | None:
+    global _sm_max
+    if _sm_max is None and shutil.which("nvidia-smi"):
+        try:
+            out = subprocess.run(["nvidia-smi", "--query-gpu=clocks.max.sm", "--format=csv,noheader,nounits"],
+                                 capture_output=True, text=True, timeout=10).stdout
+            _sm_max = float(out.strip().splitlines()[0])
+        except (ValueError, IndexError, OSError, subprocess.SubprocessError):
+            pass
+    return _sm_max
+
+
 def limits() -> dict:
     hw = lab.hardware()
     g = hw["gpus"][0] if hw["gpus"] else None
+    tf = _lookup(GPU_TFLOPS, g["name"] if g else None)
     return {"gpu": g["name"] if g else None, "gpu_bandwidth_gbps": gpu_bandwidth(g["name"] if g else None),
+            "gpu_tflops": tf[0] if tf else None, "gpu_tflops_kind": tf[1] if tf else None, "sm_clock_max": sm_clock_max(),
             "vram_mb": g["vram_mb"] if g else 0, "power_limit_w": g.get("power_limit_w") if g else None,
-            "ram_bandwidth_gbps": ram_bandwidth(), "ram_mb": hw["ram_mb"], "cpu": hw["cpu"], "cpu_threads": hw["cpu_threads"]}
+            "ram_bandwidth_gbps": ram_bandwidth(), "ram_mb": hw["ram_mb"], "cpu": hw["cpu"], "cpu_threads": hw["cpu_threads"],
+            "power_source": "nvidia-smi" if g else None, "cpu_power_source": "RAPL" if _rapl_file() else None}
 
 
 # ---------- Records ----------
@@ -141,7 +187,7 @@ def get_experiment(exp_id: int) -> dict | None:
         if not e:
             return None
         runs = [_run(r) for r in c.execute("SELECT * FROM exp_runs WHERE experiment_id = ? ORDER BY id", (exp_id,))]
-    return {**_exp(e), "runs_list": runs, "limits": limits()}
+    return enrich({**_exp(e), "runs_list": runs, "limits": limits()})
 
 
 def create_experiment(name: str, model: str) -> int:
@@ -244,6 +290,15 @@ def _placement_args(cfg: dict, vram_total: float, bench: bool = False) -> list[s
     return args
 
 
+def _rapl_file() -> Path | None:
+    """CPU package energy counter (bare-metal Linux on Intel and AMD Zen; not available inside WSL)."""
+    p = Path("/sys/class/powercap/intel-rapl:0/energy_uj")
+    try:
+        return p if p.is_file() and os.access(p, os.R_OK) else None
+    except OSError:
+        return None
+
+
 class Sampler:
     """GPU/CPU/RAM telemetry every 0.5 s, with phase tags so each phase can be summarized."""
 
@@ -252,12 +307,28 @@ class Sampler:
         self.phase = "idle"
         self._stop = asyncio.Event()
         self._task = None
+        self._rapl = _rapl_file()
+        self._last_energy: tuple[float, int] | None = None
+
+    def _cpu_power(self) -> float | None:
+        if not self._rapl:
+            return None
+        try:
+            now, e = time.monotonic(), int(self._rapl.read_text())
+        except (OSError, ValueError):
+            return None
+        prev, self._last_energy = self._last_energy, (now, e)
+        if not prev or e < prev[1]:
+            return None
+        return (e - prev[1]) / 1e6 / (now - prev[0])
 
     async def _loop(self):
         psutil.cpu_percent(interval=None)
         while not self._stop.is_set():
             s = {"t": time.monotonic(), "phase": self.phase, "cpu": psutil.cpu_percent(interval=None),
                  "ram_mb": (psutil.virtual_memory().total - psutil.virtual_memory().available) / 2**20}
+            if (cp := self._cpu_power()) is not None:
+                s["cpu_power"] = cp
             code, out = await lab._run("nvidia-smi", "--query-gpu=utilization.gpu,utilization.memory,power.draw,temperature.gpu,memory.used,clocks.sm",
                                        "--format=csv,noheader,nounits", timeout=5)
             if code == 0 and out.strip():
@@ -289,11 +360,12 @@ class Sampler:
         def mx(k): v = [s[k] for s in ss if k in s]; return round(max(v), 1) if v else None  # noqa: E702
         return {"gpu_avg": avg("gpu"), "mem_bw_avg": avg("mem_bw"), "power_avg": avg("power"), "power_max": mx("power"),
                 "temp_max": mx("temp"), "vram_max_mb": mx("vram_mb"), "cpu_avg": avg("cpu"), "ram_max_mb": mx("ram_mb"),
-                "sm_clock_avg": avg("sm_clock"), "seconds": round(ss[-1]["t"] - ss[0]["t"], 1)}
+                "sm_clock_avg": avg("sm_clock"), "cpu_power_avg": avg("cpu_power"), "seconds": round(ss[-1]["t"] - ss[0]["t"], 1),
+                "samples": len(ss)}
 
     def series(self, every: int = 2) -> list[dict]:
         t0 = self.samples[0]["t"] if self.samples else 0
-        return [{"t": round(s["t"] - t0, 1), "phase": s["phase"], **{k: s.get(k) for k in ("gpu", "mem_bw", "power", "temp", "vram_mb", "cpu")}}
+        return [{"t": round(s["t"] - t0, 1), "phase": s["phase"], **{k: s.get(k) for k in ("gpu", "mem_bw", "power", "temp", "vram_mb", "cpu", "sm_clock", "cpu_power")}}
                 for i, s in enumerate(self.samples) if i % every == 0]
 
 
@@ -311,9 +383,105 @@ def _parse_load_log(text: str) -> dict:
     return {"gpu": {k: round(v) for k, v in gpu.items()}, "ram": {k: round(v) for k, v in host.items()}, "layers": layers}
 
 
+# ---------- Quality: MMLU-Pro, 5-shot, log-likelihood ----------
+# The same protocol as the Open LLM Leaderboard (v2): the model never writes an answer; we read the
+# probability it assigns to each option letter after "Answer:". No parsing errors, no sampling noise,
+# 10 options (chance = 10%). Contamination doesn't matter here: every run of an experiment is the same
+# model, so we measure the *difference* a change makes on identical questions.
+
+MMLU_PER_CATEGORY = 20
+LETTERS = "ABCDEFGHIJ"
+
+
+def mmlu_sample(seed: int) -> tuple[list[dict], list[dict]]:
+    import random
+    from . import benchmarks
+    if not benchmarks.path("mmlu_pro").is_file():
+        raise RuntimeError("MMLU-Pro isn't downloaded yet: get it in Quality tests → Benchmarks (one click).")
+    qs = evals.bench_questions("mmlu_pro")
+    by_cat: dict[str, list[dict]] = {}
+    for q in qs:
+        by_cat.setdefault(q.get("tag") or "other", []).append(q)
+    rng = random.Random(seed)
+    shots, sample = [], []
+    for cat in sorted(by_cat):
+        pool = by_cat[cat][:]
+        rng.shuffle(pool)
+        sample += [{**q, "tag": cat} for q in pool[:MMLU_PER_CATEGORY]]
+        if len(shots) < 5:
+            shots.append(pool[MMLU_PER_CATEGORY])
+    return shots, sample
+
+
+def _mc_block(q: dict, answer: bool) -> str:
+    opts = "\n".join(f"{LETTERS[i]}. {o}" for i, o in enumerate(q["options"]))
+    return f"Question: {q['q'].strip()}\nOptions:\n{opts}\nAnswer:" + (f" {q['answer']}\n\n" if answer else "")
+
+
+async def mmlu_eval(client: httpx.AsyncClient, seed: int, should_stop, progress) -> dict:
+    import math
+    shots, sample = mmlu_sample(seed)
+    prefix = "The following are multiple choice questions (with answers).\n\n" + "".join(_mc_block(s, True) for s in shots)
+    correct, p_true, cats = [], [], {}
+    for i, q in enumerate(sample):
+        if should_stop():
+            raise asyncio.CancelledError
+        r = await client.post("/completion", json={"prompt": prefix + _mc_block(q, False), "n_predict": 1, "n_probs": 50,
+                                                   "temperature": 0, "cache_prompt": True})
+        r.raise_for_status()
+        top = (r.json().get("completion_probabilities") or [{}])[0].get("top_logprobs") or []
+        lp = {}
+        for t in top:
+            tok = t["token"].strip()
+            if len(tok) == 1 and tok in LETTERS[:len(q["options"])] and tok not in lp:
+                lp[tok] = t["logprob"]
+        if lp:
+            m = max(lp.values())
+            z = sum(math.exp(v - m) for v in lp.values())
+            pred = max(lp, key=lp.get)
+            pt = math.exp(lp[q["answer"]] - m) / z if q["answer"] in lp else 0.0
+        else:
+            pred, pt = None, 0.0
+        ok = int(pred == q["answer"])
+        correct.append(ok); p_true.append(pt)
+        c = cats.setdefault(q["tag"], [0, 0]); c[0] += ok; c[1] += 1
+        if i % 20 == 19:
+            progress(i + 1, len(sample), sum(correct))
+    n, k = len(correct), sum(correct)
+    return {"benchmark": "MMLU-Pro", "protocol": "5-shot, letter log-likelihood", "n": n, "correct": k, "acc": round(k / n, 4),
+            "ci95": [round(x, 4) for x in wilson(k, n)], "p_correct_mean": round(sum(p_true) / n, 4),
+            "by_category": {c: {"correct": v[0], "total": v[1]} for c, v in sorted(cats.items())},
+            "answers": "".join(str(x) for x in correct), "chance": 0.1}
+
+
+def wilson(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
+    if not n:
+        return (0.0, 0.0)
+    p = k / n
+    d = 1 + z * z / n
+    c = (p + z * z / (2 * n)) / d
+    h = z * ((p * (1 - p) / n + z * z / (4 * n * n)) ** 0.5) / d
+    return (max(0.0, c - h), min(1.0, c + h))
+
+
+def mcnemar_p(a: str, b: str) -> float | None:
+    """Exact two-sided McNemar test on paired right/wrong answers (same questions, two setups)."""
+    import math
+    if not a or len(a) != len(b):
+        return None
+    n01 = sum(1 for x, y in zip(a, b) if x == "1" and y == "0")
+    n10 = sum(1 for x, y in zip(a, b) if x == "0" and y == "1")
+    n = n01 + n10
+    if n == 0:
+        return 1.0
+    k = min(n01, n10)
+    p = sum(math.comb(n, i) for i in range(k + 1)) / 2 ** n
+    return min(1.0, 2 * p)
+
+
 async def _bench(cfg: dict, vram_total: float, run_id: int, log: list[str]) -> dict:
     cmd = [str(lab.LLAMA_BIN / "llama-bench"), "-m", str(lab.MODELS_DIR / cfg["model"]), "-p", "512", "-n", "128",
-           "-d", "0,4096", "-r", "3", "-ctk", cfg["kv"], "-ctv", cfg["kv"], "-fa", cfg["fa"], "-o", "jsonl"] + _placement_args(cfg, vram_total, bench=True)
+           "-d", "0,4096", "-r", "5", "-ctk", cfg["kv"], "-ctv", cfg["kv"], "-fa", cfg["fa"], "-o", "jsonl"] + _placement_args(cfg, vram_total, bench=True)
     out = await quantlab._proc(cmd, log, run_id, timeout=900)
     res = {}
     for line in out.splitlines():
@@ -322,8 +490,14 @@ async def _bench(cfg: dict, vram_total: float, run_id: int, log: list[str]) -> d
             key = ("pp" if x.get("n_prompt") and not x.get("n_gen") else "tg") + ("_d4096" if x.get("n_depth") else "")
             # Median of the repetitions: one hiccup (a timer glitch, a throttling spike) can't skew the result.
             samples = sorted(x.get("samples_ts") or [])
-            res[key] = round(samples[len(samples) // 2] if samples else (x.get("avg_ts") or 0), 2)
-            res[key + "_sd"] = round(x.get("stddev_ts") or 0, 2)
+            if samples:
+                med = samples[len(samples) // 2]
+                # Robust spread: 1.4826 × median absolute deviation (≈ σ for normal noise, ignores one outlier rep).
+                mad = sorted(abs(s - med) for s in samples)[len(samples) // 2]
+                res[key], res[key + "_sd"] = round(med, 2), round(1.4826 * mad, 2)
+                res[key + "_samples"] = [round(s, 2) for s in x["samples_ts"]]
+            else:
+                res[key], res[key + "_sd"] = round(x.get("avg_ts") or 0, 2), round(x.get("stddev_ts") or 0, 2)
     return res
 
 
@@ -380,31 +554,13 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
                 await asyncio.sleep(1.5)
                 res["memory"]["vram_used_mb"] = (sampler.samples[-1].get("vram_mb") if sampler.samples else None)
 
-                # 2) Quality: the experiment's fixed fresh questions (identical for every run).
+                # 2) Quality: MMLU-Pro, 5-shot log-likelihood, same 280 questions for every run of the experiment.
                 phase("quality")
-                quality, tps, ttft = {}, [], []
-                for kind, n in (("math", 15), ("logic", 15), ("code", 10)):
-                    qs = fresh.generate(kind, n, exp["seed"])
-                    ok = 0
-                    for q in qs:
-                        if run_id in _cancel:
-                            raise asyncio.CancelledError
-                        info = await generate.complete(client, [{"role": "user", "content": evals.prompt_for(q)}], think=False,
-                                                       sampling={"temperature": 0.0}, seed=1, max_tokens=1024,
-                                                       should_stop=lambda: run_id in _cancel)
-                        g = await evals.score(q, info["content"])
-                        ok += g["correct"]
-                        t = info["timings"] or {}
-                        if t.get("predicted_per_second") and (t.get("predicted_n") or 0) > 20:
-                            tps.append(t["predicted_per_second"])
-                        if info.get("ttft_ms"):
-                            ttft.append(info["ttft_ms"])
-                    quality[kind] = {"correct": ok, "total": n, "score": ok / n}
-                    res["quality"] = quality
+                def progress(i, n, k):
+                    res["mmlu_progress"] = {"done": i, "total": n, "correct": k}
                     _save(run_id, results=res)
-                res["quality_score"] = round(sum(v["score"] for v in quality.values()) / len(quality), 4)
-                res["chat_tps"] = round(sum(tps) / len(tps), 2) if tps else None
-                res["ttft_ms"] = round(sum(ttft) / len(ttft)) if ttft else None
+                res["mmlu"] = await mmlu_eval(client, exp["seed"], lambda: run_id in _cancel, progress)
+                res.pop("mmlu_progress", None)
             await arena._stop(proc)
             proc = None
             await asyncio.sleep(1)
@@ -417,22 +573,27 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
             phase("fidelity")
             text = await quantlab.ensure_text()
             pcmd = [str(lab.LLAMA_BIN / "llama-perplexity"), "-m", str(lab.MODELS_DIR / cfg["model"]), "-f", str(text), "-c", "512",
-                    "--chunks", "8", "-ctk", cfg["kv"], "-ctv", cfg["kv"], "-fa", cfg["fa"]] + _placement_args(cfg, vram_total)
+                    "--chunks", "32", "-ctk", cfg["kv"], "-ctv", cfg["kv"], "-fa", cfg["fa"]] + _placement_args(cfg, vram_total)
             if is_baseline or not base_kld.is_file():
                 out = await quantlab._proc(pcmd + ["--kl-divergence-base", str(base_kld)], log, run_id)
                 res["ppl"] = quantlab._num(r"Final estimate: PPL = ([\d.]+)", out)
+                res["ppl_sd"] = quantlab._num(r"Final estimate: PPL = [\d.]+\s*\+/-\s*([\d.]+)", out)
                 res["kld"], res["same_top"] = 0.0, 100.0
                 res["kld_reference"] = True
             else:
                 out = await quantlab._proc(pcmd + ["--kl-divergence-base", str(base_kld), "--kl-divergence"], log, run_id)
                 res["ppl"] = quantlab._num(r"Mean PPL\(Q\)\s*:\s*([\d.]+)", out)
+                res["ppl_sd"] = quantlab._num(r"Mean PPL\(Q\)\s*:\s*[\d.]+\s*±\s*([\d.]+)", out)
                 res["kld"] = quantlab._num(r"Mean\s+KLD:\s*([\d.]+)", out)
+                res["kld_sd"] = quantlab._num(r"Mean\s+KLD:\s*[\d.]+\s*±\s*([\d.]+)", out)
+                res["kld_p99"] = quantlab._num(r"99\.0%\s+KLD:\s*([\d.]+)", out)
                 res["same_top"] = quantlab._num(r"Same top p:\s*([\d.]+)", out)
+                res["same_top_sd"] = quantlab._num(r"Same top p:\s*[\d.]+\s*±\s*([\d.]+)", out)
 
             # 5) Telemetry + bottleneck analysis.
             res["telemetry"] = {p: sampler.summary(p) for p in ("loading", "quality", "speed", "fidelity")}
             res["series"] = sampler.series()
-            res["bottleneck"] = analyze(res, cfg, lim)
+            res["hw"] = analyze(res, cfg, lim)
         except asyncio.CancelledError:
             status = "cancelled"
         except Exception as e:  # noqa: BLE001
@@ -452,76 +613,159 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
             lab.busy = None
 
 
-# ---------- Bottleneck analysis ----------
+# ---------- Hardware analysis (roofline) ----------
 
-def analyze(res: dict, cfg: dict, lim: dict) -> dict:
-    """What limits this setup? Compares measured speed with the hardware's physical ceilings."""
-    findings = []
-    mem = res.get("memory") or {}
-    layers = mem.get("layers") or {}
-    speed = res.get("speed") or {}
-    tel = (res.get("telemetry") or {}).get("speed") or {}
-    tg = speed.get("tg")
-    path = lab.MODELS_DIR / cfg["model"]
-
-    # Bytes read per generated token ≈ all weights on the hot path (MoE: only the active experts).
+def _weights(path: Path) -> dict:
+    """Bytes and parameters touched per generated token (embedding lookup excluded; MoE: active experts only)."""
     try:
         an = gguf.anatomy(path)
-        per_token = an["total_bytes"] - an["embedding"]["bytes"]
-        if an.get("experts") and an.get("experts_used"):
-            exp_bytes = sum(L["parts"].get("experts", {}).get("bytes", 0) for L in an["layers"])
-            per_token -= exp_bytes * (1 - an["experts_used"] / an["experts"])
     except (OSError, ValueError):
-        per_token = path.stat().st_size
-    gb_per_token = per_token / 1e9
+        size = path.stat().st_size
+        return {"bytes": size, "params": None, "embedding_bytes": 0}
+    b, p = an["total_bytes"] - an["embedding"]["bytes"], an["total_params"] - an["embedding"]["params"]
+    if an.get("experts") and an.get("experts_used"):
+        keep = an["experts_used"] / an["experts"]
+        eb = sum(L["parts"].get("experts", {}).get("bytes", 0) for L in an["layers"])
+        ep = sum(L["parts"].get("experts", {}).get("params", 0) for L in an["layers"])
+        b, p = b - eb * (1 - keep), p - ep * (1 - keep)
+    return {"bytes": b, "params": p, "embedding_bytes": an["embedding"]["bytes"]}
 
-    bw = lim.get("gpu_bandwidth_gbps")
-    ram_bw = lim.get("ram_bandwidth_gbps")
-    on_cpu = (layers.get("total", 0) - layers.get("gpu", 0)) if layers else 0
-    ceiling = None
-    if bw and gb_per_token:
-        if on_cpu and layers.get("total"):
-            frac_cpu = on_cpu / layers["total"]
-            # time per token = GPU part / GPU bandwidth + CPU part / RAM bandwidth
-            t = gb_per_token * (1 - frac_cpu) / bw + gb_per_token * frac_cpu / (ram_bw or 30)
-            ceiling = 1 / t
-        else:
-            ceiling = bw / gb_per_token
-    eff = (tg / ceiling) if (tg and ceiling) else None
 
-    if on_cpu:
-        findings.append({"kind": "ram", "severity": "major",
-                         "title": f"{on_cpu} of {layers['total']} layers run from system RAM",
-                         "text": f"They didn't fit in GPU memory. System RAM is ~{(bw or 0) / (ram_bw or 30):.0f}× slower than VRAM here, so those layers dominate the time per word. "
-                                 "Fixes: a smaller quantization, a shorter context, q4_0 KV cache, or a GPU with more VRAM."})
-    if eff is not None:
-        if eff >= 0.5:
-            findings.append({"kind": "bandwidth", "severity": "info",
-                             "title": "Memory-bandwidth bound, right at the hardware ceiling" if eff >= 0.95
-                                      else f"Memory-bandwidth bound at {eff * 100:.0f}% of the hardware ceiling",
-                             "text": f"Writing each word means reading ~{gb_per_token:.2f} GB of weights. At {bw} GB/s the physical limit is ~{ceiling:.0f} tok/s; you get {tg:.0f}. "
-                                     "That's normal and close to optimal: only a smaller model/quantization or faster memory can make it much faster."})
+def analyze(res: dict, cfg: dict, lim: dict) -> dict:
+    """Measured numbers against the hardware's physical limits. Pure function of stored data, so it can be recomputed."""
+    path = lab.MODELS_DIR / cfg["model"]
+    if not path.is_file():
+        return {}
+    w = _weights(path)
+    mem = res.get("memory") or {}
+    speed = res.get("speed") or {}
+    tel = (res.get("telemetry") or {}).get("speed") or {}
+    tg, pp = speed.get("tg"), speed.get("pp")
+    bw, ram_bw, peak_tf = lim.get("gpu_bandwidth_gbps"), lim.get("ram_bandwidth_gbps"), lim.get("gpu_tflops")
+
+    gb = w["bytes"] / 1e9
+    # Which weights live where, from the load log: host "model" buffers minus the embedding table (always on CPU, only looked up).
+    cpu_gb = max(0.0, ((mem.get("ram") or {}).get("model", 0) * 2**20 - w["embedding_bytes"]) / 1e9) if mem else 0.0
+    cpu_gb = min(cpu_gb, gb)
+    gpu_gb = gb - cpu_gb
+    flops = 2 * w["params"] if w["params"] else None
+
+    out: dict = {"weights_gb_per_token": round(gb, 3), "weights_on_gpu_gb": round(gpu_gb, 3), "weights_on_cpu_gb": round(cpu_gb, 3),
+                 "params_active_b": round(w["params"] / 1e9, 3) if w["params"] else None,
+                 "peaks": {"vram_gbps": bw, "ram_gbps": ram_bw, "tflops": peak_tf, "tflops_kind": lim.get("gpu_tflops_kind"),
+                           "sm_clock_mhz": lim.get("sm_clock_max")}}
+
+    if tg:
+        t_gpu = gpu_gb / bw * 1000 if bw else None
+        t_cpu = cpu_gb / ram_bw * 1000 if (cpu_gb and ram_bw) else 0.0
+        t_meas = 1000 / tg
+        roof_ms = (t_gpu or 0) + (t_cpu or 0) if t_gpu is not None else None
+        out["decode"] = {
+            "ms_per_token": round(t_meas, 2),
+            "effective_gbps": round(gb * tg, 1),
+            "roof_tps": round(1000 / roof_ms, 1) if roof_ms else None,
+            "roof_util": round(min(1.0, roof_ms / t_meas), 3) if roof_ms else None,
+            "time_split_ms": {"vram_reads": round(t_gpu, 2) if t_gpu is not None else None, "ram_reads": round(t_cpu, 2),
+                              "other": round(max(0.0, t_meas - (roof_ms or 0)), 2) if roof_ms else None},
+            "achieved_tflops": round(flops * tg / 1e12, 3) if flops else None,
+            "arithmetic_intensity": round(flops / w["bytes"], 2) if flops else None,
+            "long_context_ratio": round(speed["tg_d4096"] / tg, 3) if speed.get("tg_d4096") else None,
+        }
+    if pp and flops:
+        ai = flops * 512 / w["bytes"]  # one 512-token batch reads the weights once
+        roof = min(peak_tf, (bw or 0) * ai / 1000) if (peak_tf and bw) else None
+        ach = flops * pp / 1e12
+        out["prefill"] = {"achieved_tflops": round(ach, 2), "arithmetic_intensity": round(ai, 1),
+                          "roof_tflops": round(roof, 2) if roof else None, "roof_util": round(ach / roof, 3) if roof else None,
+                          "long_context_ratio": round(speed["pp_d4096"] / pp, 3) if speed.get("pp_d4096") else None}
+
+    sm, smax = tel.get("sm_clock_avg"), lim.get("sm_clock_max")
+    out["clocks"] = {"sm_avg_mhz": sm, "sm_max_mhz": smax, "ratio": round(sm / smax, 3) if (sm and smax) else None,
+                     "temp_max_c": tel.get("temp_max"), "gpu_util_avg": tel.get("gpu_avg"), "mem_util_avg": tel.get("mem_bw_avg"),
+                     "cpu_util_avg": tel.get("cpu_avg"), "power_avg_w": tel.get("power_avg"), "cpu_power_avg_w": tel.get("cpu_power_avg")}
+
+    vram_used = mem.get("vram_used_mb")
+    ctx_mb = (mem.get("gpu") or {}).get("context") or 0
+    own = sum((mem.get("gpu") or {}).values()) if mem else 0  # this model's own GPU buffers, from the load log
+    if lim.get("vram_mb") and (own or vram_used):
+        sim = cfg.get("vram_limit_mb")
+        cap = sim or lim["vram_mb"]
+        # nvidia-smi's "used" includes other programs (e.g. the Windows desktop); with a simulated limit only our buffers count.
+        free = (cap - own) if sim else (cap - (vram_used or own))
+        per_tok = ctx_mb / cfg["ctx"] if (ctx_mb and cfg.get("ctx")) else None
+        out["headroom"] = {"vram_capacity_mb": cap, "vram_model_mb": round(own), "vram_used_total_mb": vram_used,
+                           "vram_free_mb": round(free), "kv_mb_per_1k_tokens": round(per_tok * 1024, 2) if per_tok else None,
+                           "extra_context_tokens": int(free * 0.9 / per_tok) if (per_tok and free > 0 and cpu_gb < 0.05) else None}
+
+    # The binding constraint for generation, decided from the numbers above.
+    d = out.get("decode") or {}
+    split = d.get("time_split_ms") or {}
+    if cpu_gb > 0.05 and split.get("ram_reads"):
+        out["limiter"] = {"what": "System-RAM bandwidth",
+                          "evidence": f"{split['ram_reads']:.1f} of {d['ms_per_token']:.1f} ms per token is reading {cpu_gb:.2f} GB of weights from RAM at {ram_bw} GB/s"}
+    elif d.get("roof_util") is not None and d["roof_util"] >= 0.6:
+        out["limiter"] = {"what": "VRAM bandwidth", "evidence": f"{d['effective_gbps']} GB/s effective of {bw} GB/s peak ({d['roof_util'] * 100:.0f}%)"}
+    elif d.get("roof_util") is not None:
+        out["limiter"] = {"what": "Software overhead",
+                          "evidence": f"only {d['roof_util'] * 100:.0f}% of the VRAM-bandwidth roof; {split.get('other')} ms per token is spent outside weight reads"}
+    return out
+
+
+def compare(base: dict | None, run: dict) -> dict:
+    """Paired statistics of a run against the experiment's baseline."""
+    if not base or base["id"] == run["id"]:
+        return {}
+    a, b = (base["results"].get("mmlu") or {}), (run["results"].get("mmlu") or {})
+    out = {}
+    if a.get("answers") and b.get("answers"):
+        out["mmlu_p"] = mcnemar_p(a["answers"], b["answers"])
+        out["mmlu_flips"] = {"lost": sum(1 for x, y in zip(a["answers"], b["answers"]) if x == "1" and y == "0"),
+                             "gained": sum(1 for x, y in zip(a["answers"], b["answers"]) if x == "0" and y == "1")}
+    return out
+
+
+def enrich(exp: dict) -> dict:
+    """Recompute analysis and statistics for every run, so old runs benefit from fixes too."""
+    lim = exp["limits"]
+    base = next((r for r in exp["runs_list"] if r["status"] == "done"), None)
+    for r in exp["runs_list"]:
+        if r["status"] == "done":
+            r["results"]["hw"] = analyze(r["results"], r["config"], lim)
+            r["results"].pop("bottleneck", None)
+            r["stats"] = compare(base, r)
+    return exp
+
+
+# ---------- Export ----------
+
+def _flat(d, prefix=""):
+    out = {}
+    for k, v in d.items():
+        key = f"{prefix}{k}"
+        if isinstance(v, dict):
+            out.update(_flat(v, key + "."))
+        elif isinstance(v, list) or k == "answers":
+            continue
         else:
-            findings.append({"kind": "overhead", "severity": "minor",
-                             "title": f"Only {eff * 100:.0f}% of the memory-speed ceiling reached",
-                             "text": f"The hardware could do ~{ceiling:.0f} tok/s for this model size but you get {tg:.0f}. Overheads (small kernels, CPU work, "
-                                     "hybrid layers, KV-cache precision) cost speed. Try flash attention on, f16 KV cache, or all layers on the GPU."})
-    if tel.get("power_max") and lim.get("power_limit_w") and tel["power_max"] >= 0.95 * lim["power_limit_w"]:
-        findings.append({"kind": "power", "severity": "minor", "title": "Hitting the GPU power limit",
-                         "text": f"Peaked at {tel['power_max']:.0f} W of {lim['power_limit_w']:.0f} W. The card slows its clocks to stay under it."})
-    if tel.get("temp_max") and tel["temp_max"] >= 83:
-        findings.append({"kind": "thermal", "severity": "minor", "title": f"Running hot ({tel['temp_max']:.0f}°C)",
-                         "text": "Close to where GPUs throttle. Better airflow keeps clocks (and speed) up."})
-    if tel.get("cpu_avg") and tel["cpu_avg"] > 85 and (tel.get("gpu_avg") or 0) < 60:
-        findings.append({"kind": "cpu", "severity": "major", "title": "CPU is the bottleneck",
-                         "text": f"CPU at {tel['cpu_avg']:.0f}% while the GPU idles at {tel.get('gpu_avg', 0):.0f}%."})
-    free = (lim.get("vram_mb") or 0) - ((res.get("telemetry") or {}).get("quality", {}).get("vram_max_mb") or 0)
-    ctx_mb = (mem.get("gpu", {}).get("context") or 0)
-    if free > 800 and not on_cpu and ctx_mb and cfg["ctx"]:
-        more = int(free * 0.7 / (ctx_mb / cfg["ctx"])) // 1024 * 1024
-        findings.append({"kind": "headroom", "severity": "info", "title": f"{free / 1024:.1f} GB of VRAM unused",
-                         "text": f"Room for roughly {more // 1024}k more tokens of context, or a bigger/higher-precision model."})
-    main = next((f for f in findings if f["severity"] == "major"), None) or (findings[0] if findings else None)
-    return {"findings": findings, "primary": main["kind"] if main else None, "ceiling_tps": round(ceiling, 1) if ceiling else None,
-            "efficiency": round(eff, 3) if eff else None, "gb_per_token": round(gb_per_token, 3),
-            "gpu_bandwidth_gbps": bw, "ram_bandwidth_gbps": ram_bw}
+            out[key] = v
+    return out
+
+
+def export_csv(exp: dict) -> str:
+    import csv
+    import io
+    rows = []
+    for r in exp["runs_list"]:
+        res = {k: v for k, v in r["results"].items() if k not in ("series", "config")}
+        rows.append({"run_id": r["id"], "label": r["label"], "status": r["status"],
+                     "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(r["created_at"])),
+                     **_flat(r["config"], "config."), **_flat(res), **_flat(r.get("stats") or {}, "vs_baseline.")})
+    cols: list[str] = []
+    for row in rows:
+        cols += [c for c in row if c not in cols]
+    buf = io.StringIO()
+    w = csv.DictWriter(buf, fieldnames=cols)
+    w.writeheader()
+    w.writerows(rows)
+    buf.write("\n" + "\n".join(f"# hardware.{k},{v}" for k, v in _flat(exp["limits"]).items()) + "\n")
+    return buf.getvalue()

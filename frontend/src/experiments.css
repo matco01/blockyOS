@@ -92,3 +92,45 @@
   .xt-grid, .xsteps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .xhw { margin-left: 0; }
 }
+
+/* v2: research layout */
+:root { --split-other: #b8bcc6; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --split-other: #5d6270; } }
+:root[data-theme="dark"] { --split-other: #5d6270; }
+.xbar a.btn { text-decoration: none; }
+.xhwline { display: flex; gap: 6px 16px; flex-wrap: wrap; align-items: center; font-size: 12.5px; color: var(--text-2); margin: 14px 0 4px; font-variant-numeric: tabular-nums; }
+.xdot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; flex-shrink: 0; }
+.xboard .sd { font-size: 11px; color: var(--text-2); font-weight: 400; }
+.xboard tr.sel td { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.xnote { margin-top: 10px; line-height: 1.5; }
+.xbar-row { display: grid; grid-template-columns: minmax(110px, 220px) 1fr 64px; gap: 12px; align-items: center; font-size: 13px; color: var(--text-2); }
+.xbar-row > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.xbar-row b { text-align: right; color: var(--text); font-variant-numeric: tabular-nums; }
+.xbar-track { position: relative; height: 12px; border-radius: 4px; background: var(--surface-2); }
+.xbar-track > div { height: 100%; border-radius: 0 4px 4px 0; }
+.xbar-track > i { position: absolute; top: 50%; height: 2px; background: var(--text); opacity: .55; transform: translateY(-50%); }
+.xbar-track.stack { display: flex; gap: 2px; background: none; }
+.xbar-track.stack > div { border-radius: 3px; }
+.xchart, .xsplit { display: flex; flex-direction: column; gap: 8px; }
+.xchart { margin-top: 18px; }
+.xhw-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 24px; }
+.xside { display: flex; flex-direction: column; gap: 22px; }
+.xroof svg { width: 100%; height: auto; display: block; }
+.xroof .grid { stroke: var(--separator, rgba(128,128,128,.18)); stroke-width: 1; }
+.xroof .tick { font-size: 10.5px; fill: var(--text-2); }
+.xroof .axis { font-size: 11px; fill: var(--text-2); }
+.xroof .roof { fill: none; stroke: var(--text); stroke-width: 2; opacity: .75; }
+.xroof .roof.ram { stroke-dasharray: 5 4; opacity: .5; }
+.xroof .roof-label { font-size: 11px; fill: var(--text-2); }
+.xroof .pt { stroke: var(--surface); stroke-width: 2; cursor: pointer; }
+.xlegend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--text-2); margin-top: 6px; }
+.xlegend span { display: inline-flex; align-items: center; gap: 6px; }
+.xlegend i { display: inline-block; width: 10px; height: 10px; background: var(--text-2); }
+.xlegend i.dot { border-radius: 50%; }
+.xlegend i.sq { border-radius: 2px; }
+.xlimiters { display: flex; flex-direction: column; gap: 8px; }
+.xlim { display: flex; gap: 8px; align-items: baseline; font-size: 13px; }
+.xlim > div { display: flex; flex-direction: column; gap: 2px; }
+.xlim span:not(.xdot) { color: var(--text-2); font-size: 12.5px; line-height: 1.4; }
+.tool-charts.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+@media (max-width: 1000px) { .xhw-grid { grid-template-columns: 1fr; } .tool-charts.three { grid-template-columns: 1fr 1fr; } }

@@ -76,20 +76,35 @@ export type ToolRun = {
 export type ExpConfig = { model: string; ctx: number; kv: string; ngl: string | number; vram_limit_mb: number | null; fa: string; threads: number | null };
 export type Finding = { kind: string; severity: "major" | "minor" | "info"; title: string; text: string };
 export type PhaseTelemetry = { gpu_avg?: number; mem_bw_avg?: number; power_avg?: number; power_max?: number; temp_max?: number; vram_max_mb?: number; cpu_avg?: number; ram_max_mb?: number; seconds?: number };
+export type Mmlu = { benchmark: string; protocol: string; n: number; correct: number; acc: number; ci95: [number, number]; p_correct_mean: number;
+  by_category: Record<string, { correct: number; total: number }>; chance: number };
+export type HwAnalysis = {
+  weights_gb_per_token: number; weights_on_gpu_gb: number; weights_on_cpu_gb: number; params_active_b: number | null;
+  peaks: { vram_gbps: number | null; ram_gbps: number | null; tflops: number | null; tflops_kind: string | null; sm_clock_mhz: number | null };
+  decode?: { ms_per_token: number; effective_gbps: number; roof_tps: number | null; roof_util: number | null;
+    time_split_ms: { vram_reads: number | null; ram_reads: number; other: number | null }; achieved_tflops: number | null; arithmetic_intensity: number | null; long_context_ratio: number | null };
+  prefill?: { achieved_tflops: number; arithmetic_intensity: number; roof_tflops: number | null; roof_util: number | null; long_context_ratio: number | null };
+  clocks: { sm_avg_mhz: number | null; sm_max_mhz: number | null; ratio: number | null; temp_max_c: number | null; gpu_util_avg: number | null;
+    mem_util_avg: number | null; cpu_util_avg: number | null; power_avg_w: number | null; cpu_power_avg_w: number | null };
+  headroom?: { vram_capacity_mb: number; vram_model_mb: number; vram_used_total_mb: number | null; vram_free_mb: number; kv_mb_per_1k_tokens: number | null; extra_context_tokens: number | null };
+  limiter?: { what: string; evidence: string };
+};
 export type ExpResults = {
   load_seconds?: number;
   memory?: { gpu: Record<string, number>; ram: Record<string, number>; layers: { gpu: number; total: number } | null; vram_used_mb?: number };
-  quality?: Record<string, { correct: number; total: number; score: number }>; quality_score?: number; chat_tps?: number; ttft_ms?: number;
-  speed?: { pp?: number; tg?: number; pp_d4096?: number; tg_d4096?: number; tg_sd?: number };
-  ppl?: number; kld?: number; same_top?: number;
+  mmlu?: Mmlu; mmlu_progress?: { done: number; total: number; correct: number };
+  speed?: { pp?: number; tg?: number; pp_d4096?: number; tg_d4096?: number; pp_sd?: number; tg_sd?: number; pp_d4096_sd?: number; tg_d4096_sd?: number };
+  ppl?: number; ppl_sd?: number; kld?: number; kld_sd?: number; kld_p99?: number; same_top?: number; same_top_sd?: number;
   telemetry?: Record<string, PhaseTelemetry>;
-  series?: { t: number; phase: string; gpu?: number; mem_bw?: number; power?: number; temp?: number; vram_mb?: number; cpu?: number }[];
-  bottleneck?: { findings: Finding[]; primary: string | null; ceiling_tps: number | null; efficiency: number | null; gb_per_token: number; gpu_bandwidth_gbps: number | null; ram_bandwidth_gbps: number | null };
+  series?: { t: number; phase: string; gpu?: number; mem_bw?: number; power?: number; temp?: number; vram_mb?: number; cpu?: number; sm_clock?: number }[];
+  hw?: HwAnalysis;
 };
-export type ExpRun = { id: number; experiment_id: number; created_at: number; status: string; label: string; config: ExpConfig; results: ExpResults; phase: string | null; error: string | null };
+export type ExpRun = { id: number; experiment_id: number; created_at: number; status: string; label: string; config: ExpConfig; results: ExpResults;
+  phase: string | null; error: string | null; stats?: { mmlu_p?: number | null; mmlu_flips?: { lost: number; gained: number } } };
 export type Experiment = {
   id: number; created_at: number; name: string; model: string; seed: number; runs?: number;
-  runs_list?: ExpRun[]; limits?: { gpu: string | null; gpu_bandwidth_gbps: number | null; vram_mb: number; power_limit_w: number | null; ram_bandwidth_gbps: number | null; ram_mb: number; cpu: string };
+  runs_list?: ExpRun[]; limits?: { gpu: string | null; gpu_bandwidth_gbps: number | null; gpu_tflops: number | null; gpu_tflops_kind: string | null; sm_clock_max: number | null;
+    vram_mb: number; power_limit_w: number | null; ram_bandwidth_gbps: number | null; ram_mb: number; cpu: string; cpu_power_source: string | null };
 };
 
 export type LeaderRow = { label: string; model: string; matches: number; wins: number; ties: number; losses: number; avg_tps: number | null; score: number };
