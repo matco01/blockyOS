@@ -4,7 +4,7 @@ import type { LucideIcon } from "lucide-react";
 import { api, BenchmarkInfo, EvalItem, EvalRun, ModelFile, Status, SuiteInfo } from "./api";
 import { ImportBenchmark, OutsideTools } from "./BenchImport";
 import { BUDGETS } from "./Inspector";
-import { Pro, Term, useMode } from "./ui";
+import { Pro, Tabs, Term, useMode } from "./ui";
 
 const ICONS: Record<string, LucideIcon> = {
   brain: Brain, calculator: Calculator, puzzle: Puzzle, book: BookOpen, "list-checks": ListChecks, code: Code2, user: User,
@@ -345,6 +345,13 @@ export default function TestsPage({ status }: { status: Status | null }) {
   }, [load]);
 
   const running = runs.find((r) => r.status === "running" || r.status === "queued");
+  const [tab, setTab] = useState<"run" | "results" | "tools">("run");
+  // When a run finishes, jump to its results.
+  const wasRunning = useRef(false);
+  useEffect(() => {
+    if (wasRunning.current && !running) setTab("results");
+    wasRunning.current = !!running;
+  }, [running]);
   useEffect(() => {
     const t = setInterval(load, running ? 1500 : 15000);
     return () => clearInterval(t);
@@ -386,9 +393,15 @@ export default function TestsPage({ status }: { status: Status | null }) {
   return (
     <div className="page">
       <div className="page-inner wide">
-        <h1 className="page-title">Tests</h1>
-        <p className="page-sub">How smart is a model, really? Run question sets with known answers. Scoring is done by code, not by another AI, so results are objective and repeatable.</p>
+        <h1 className="page-title">Quality tests</h1>
+        <p className="page-sub">How smart is a model? Run question sets with known answers. Code checks every answer, so scores are objective and repeatable.</p>
+        <Tabs value={tab} onChange={setTab} tabs={[
+          { id: "run", label: running ? "Running…" : "New test" },
+          { id: "results", label: "Results", badge: runs.filter((r) => r.status === "done").length },
+          { id: "tools", label: "Other tools" },
+        ]} />
 
+        {tab === "run" && (<>
         {/* Setup */}
         <div className="group-label">New test run</div>
         <div className="group">
@@ -526,6 +539,9 @@ export default function TestsPage({ status }: { status: Status | null }) {
           </>
         )}
 
+        </>)}
+
+        {tab === "results" && (<>
         {/* Scorecard */}
         {view && view.summary && view.status !== "running" && (
           <>
@@ -554,10 +570,14 @@ export default function TestsPage({ status }: { status: Status | null }) {
           </>
         )}
 
-        {/* Outside tools */}
+        </>)}
+
+        {tab === "tools" && (<>
         <div className="group-label">Beyond Blocky's tests</div>
         <OutsideTools />
+        </>)}
 
+        {tab === "results" && (<>
         {/* History */}
         <div className="group-label">All runs</div>
         <div className="group">
@@ -579,6 +599,7 @@ export default function TestsPage({ status }: { status: Status | null }) {
             </div>
           ))}
         </div>
+        </>)}
       </div>
     </div>
   );

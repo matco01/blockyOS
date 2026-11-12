@@ -1,0 +1,70 @@
+/* =====================================================================
+   Readability and orientation pass (loaded last)
+   - higher-contrast secondary text, larger helper text
+   - section headings you can actually read
+   - tabs that split long pages
+   - sidebar: navigation first, chats below
+   ===================================================================== */
+
+/* Contrast: secondary text was too faint in both themes. */
+:root { --text-2: #55555c; --text-3: #85858c; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --text-2: #b9b9c1; --text-3: #8b8b94; }
+}
+:root[data-theme="dark"] { --text-2: #b9b9c1; --text-3: #8b8b94; }
+
+/* Type scale */
+.page-title { font-size: 32px; margin-top: 14px; }
+.page-sub { font-size: 15.5px; line-height: 1.55; max-width: 64ch; margin-bottom: 4px; }
+.row { font-size: 15px; padding: 13px 18px; }
+.row-sub { font-size: 13.5px; line-height: 1.5; }
+.row-sub.mono { font-size: 12.5px; }
+.small { font-size: 13px; }
+.badge, .fit { font-size: 12px; }
+.kpis span, .lb-num span { font-size: 11.5px; }
+.suite-body { font-size: 13.5px; }
+.suite-body em { font-size: 12.5px; }
+.meta { font-size: 12.5px; }
+
+/* Section headings: sentence case, readable, with room above. */
+.group-label {
+  font-size: 16px; font-weight: 600; letter-spacing: -0.01em; text-transform: none;
+  color: var(--text); margin: 34px 2px 12px; font-family: var(--font-display);
+}
+.group-label .muted { font-family: var(--font); font-size: 13.5px; }
+.sub-head { font-size: 14.5px; }
+.bench-group-head { font-size: 12.5px; }
+
+/* Tabs */
+.tabs {
+  position: sticky; top: -8px; z-index: 8; display: flex; gap: 4px; margin: 18px -4px 0; padding: 8px 4px 0;
+  background: var(--surface); border-bottom: 1px solid var(--hairline);
+}
+.tabs button {
+  position: relative; display: inline-flex; align-items: center; gap: 8px; padding: 10px 14px 12px;
+  font-size: 15px; font-weight: 500; color: var(--text-2); border-radius: 10px 10px 0 0; transition: color 0.15s, background 0.15s;
+}
+.tabs button:hover { color: var(--text); background: var(--hover); }
+.tabs button.on { color: var(--text); font-weight: 600; }
+.tabs button.on::after { content: ""; position: absolute; left: 10px; right: 10px; bottom: -1px; height: 3px; border-radius: 3px 3px 0 0; background: var(--accent); }
+.tab-badge { font-size: 12px; font-weight: 600; padding: 1px 7px; border-radius: 99px; background: var(--surface-2); color: var(--text-2); }
+.tabs button.on .tab-badge { background: var(--accent-soft); color: var(--accent); }
+.tabs + .group-label, .tabs + .error + .group-label { margin-top: 24px; }
+
+/* Sidebar: New chat, then navigation groups, then chats. */
+.new-chat-btn { background: var(--surface); box-shadow: var(--shadow-hair); font-weight: 500; margin-bottom: 6px; }
+.new-chat-btn svg { color: var(--accent); }
+.side-nav { border-top: 0; padding-top: 0; margin-top: 0; }
+.side-btn { font-size: 14.5px; padding: 7px 10px; }
+.sidebar .section-label { font-size: 11px; padding: 16px 10px 6px; }
+.sidebar .search { margin: 0 0 6px; }
+.history { min-height: 80px; }
+.history-item { font-size: 14px; }
+.side-foot { border-top: 1px solid var(--hairline); margin-top: 8px; padding-top: 4px; }
+.mode-switch { display: flex; align-items: center; gap: 10px; padding: 8px 6px 2px; }
+.mode-label { font-size: 12.5px; color: var(--text-2); white-space: nowrap; }
+.mode-switch .segmented { flex: 1; }
+
+/* A little more air between cards on dense pages */
+.hero-grid, .hw-grid { margin-top: 20px; }
+.empty-state { font-size: 14.5px; }

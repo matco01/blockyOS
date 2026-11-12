@@ -11,6 +11,24 @@ export function Pro({ children }: { children: React.ReactNode }) {
   return useMode() === "pro" ? <>{children}</> : null;
 }
 
+// ---------- Tabs ----------
+
+/** Splits a long page into a few clearly named views. */
+export function Tabs<T extends string>({ tabs, value, onChange }: {
+  tabs: { id: T; label: string; badge?: string | number | null }[]; value: T; onChange: (t: T) => void;
+}) {
+  return (
+    <div className="tabs" role="tablist">
+      {tabs.map((t) => (
+        <button key={t.id} role="tab" aria-selected={value === t.id} className={value === t.id ? "on" : ""} onClick={() => onChange(t.id)}>
+          {t.label}
+          {t.badge != null && t.badge !== 0 && <span className="tab-badge">{t.badge}</span>}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 // ---------- Glossary ----------
 
 export const GLOSSARY: Record<string, { title: string; what: string; why: string }> = {

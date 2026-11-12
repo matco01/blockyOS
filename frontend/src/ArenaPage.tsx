@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertCircle, ChevronRight, EyeOff, Loader2, Play, Scale, Square, Swords, Trash2, Trophy } from "lucide-react";
 import { api, ArenaMatch, ArenaResult, Contestant, LeaderRow, ModelFile, Status } from "./api";
 import { Markdown } from "./Chat";
-import { Pro, speedVerdict, Term, useMode } from "./ui";
+import { Pro, speedVerdict, Tabs, Term, useMode } from "./ui";
 
 /* Colors follow the on-screen position (Answer 1 / Answer 2) so blind mode can't leak identity. */
 const SIDE = ["var(--series-1)", "var(--series-2)"];
@@ -134,6 +134,7 @@ export default function ArenaPage({ status }: { status: Status | null }) {
   const [history, setHistory] = useState<ArenaMatch[]>([]);
   const [board, setBoard] = useState<LeaderRow[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [tab, setTab] = useState<"match" | "history">("match");
 
   const loadHistory = useCallback(() => {
     api.arenaList().then(setHistory).catch(() => {});
@@ -214,8 +215,13 @@ export default function ArenaPage({ status }: { status: Status | null }) {
     <div className="page">
       <div className="page-inner wide">
         <h1 className="page-title">Arena</h1>
-        <p className="page-sub">Ask two models (or two settings) the same thing and compare the answers side by side: quality, speed and energy.</p>
+        <p className="page-sub">Ask two models (or two settings) the same question and compare the answers side by side.</p>
+        <Tabs value={tab} onChange={setTab} tabs={[
+          { id: "match", label: "Match" },
+          { id: "history", label: "Leaderboard & history", badge: history.length },
+        ]} />
 
+        {tab === "match" && (<>
         {/* Setup */}
         <div className="group-label">Matchup</div>
         <div className="group">
@@ -300,6 +306,12 @@ export default function ArenaPage({ status }: { status: Status | null }) {
           </>
         )}
 
+        </>)}
+
+        {tab === "history" && (<>
+        {board.length === 0 && history.length === 0 && (
+          <div className="group" style={{ marginTop: 20 }}><div className="empty-state"><Swords /><br />No matches yet. Run one in the Match tab and vote for the better answer.</div></div>
+        )}
         {/* Leaderboard */}
         {board.length > 0 && (
           <>
@@ -327,7 +339,7 @@ export default function ArenaPage({ status }: { status: Status | null }) {
             <div className="group-label">Past matches</div>
             <div className="group">
               {history.map((h) => (
-                <div className="row hist-row" key={h.id} onClick={() => setCurrent(h)}>
+                <div className="row hist-row" key={h.id} onClick={() => { setCurrent(h); setTab("match"); }}>
                   <div className="row-main">
                     <div className="hist-prompt">{h.prompt}</div>
                     <div className="row-sub">#{h.id} · {label(h.contestants[0])} vs {label(h.contestants[1])}
@@ -339,6 +351,7 @@ export default function ArenaPage({ status }: { status: Status | null }) {
             </div>
           </>
         )}
+        </>)}
       </div>
     </div>
   );

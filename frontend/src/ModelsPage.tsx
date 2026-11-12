@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertCircle, Check, Cpu, Download as DownloadIcon, HardDrive, Loader2, MemoryStick, RotateCw, Search, Trash2, X } from "lucide-react";
 import { api, CatalogItem, Download, Fit, Hardware, HfFile, ModelFile, Runtime, Status } from "./api";
 import { BLOCK_COLORS } from "./settings";
-import { Pro, Term, useMode } from "./ui";
+import { Pro, Tabs, Term, useMode } from "./ui";
 
 const GB = 2 ** 30;
 const fmtGB = (bytes: number) => `${(bytes / GB).toFixed(bytes >= 10 * GB ? 0 : 1)} GB`;
@@ -47,6 +47,7 @@ export default function ModelsPage({ status }: { status: Status | null }) {
   const [hfState, setHfState] = useState<"idle" | "loading" | string>("idle");
   const switching = status?.busy === "switching";
   const mode = useMode();
+  const [tab, setTab] = useState<"mine" | "get">("mine");
 
   const load = useCallback(() => {
     api.models().then((d) => { setData(d); setDraft((cur) => cur ?? d.runtime); }).catch((e) => setError(e.message));
@@ -125,15 +126,48 @@ export default function ModelsPage({ status }: { status: Status | null }) {
     <div className="page">
       <div className="page-inner wide">
         <h1 className="page-title">Models</h1>
-        <p className="page-sub">What's on this machine, how it runs, and what else would fit.</p>
-
-        {data && <HardwareCard hw={data.hardware} />}
+        <p className="page-sub">The AI models on this computer, how they run, and which others would fit.</p>
+        <Tabs value={tab} onChange={setTab} tabs={[
+          { id: "mine", label: "My models", badge: data?.models.length },
+          { id: "get", label: "Get more", badge: activeDownloads.length || null },
+        ]} />
         {(error || status?.switch_error) && (
           <div className="error" style={{ marginTop: 16 }}><AlertCircle /> {error ?? status?.switch_error}</div>
         )}
 
+        {tab === "mine" && (<>
+        {/* Local models */}
+        <div className="group-label">On this computer</div>
+        <div className="group">
+          {data?.models.length === 0 && <div className="row"><div className="row-main muted">No models yet. Open "Get more" to download one.</div></div>}
+          {data?.models.map((m, i) => (
+            <div className="row model-row" key={m.file}>
+              <span className="model-tile" style={{ "--c": BLOCK_COLORS[i % BLOCK_COLORS.length] } as React.CSSProperties}>{m.size_label ?? "?"}</span>
+              <div className="row-main">
+                <div className="model-name">{m.name ?? m.file} {m.experts ? <span className="badge"><Term k="moe">MoE</Term> {m.experts_used}/{m.experts}</span> : null}</div>
+                {mode === "pro" ? (
+                  <div className="row-sub mono">
+                    {[m.architecture, m.quant, fmtGB(m.size_bytes), m.layers && `${m.layers} layers`, m.context_length && `${fmtCtx(m.context_length)} trained ctx`, m.license].filter(Boolean).join(" · ")}
+                  </div>
+                ) : (
+                  <div className="row-sub">
+                    {m.size_label ? `${m.size_label.replace("B", " billion")} parameters` : "Model"} · {fmtGB(m.size_bytes)} on disk · <Term k="quant">{m.quant ?? "?"}</Term> compression
+                  </div>
+                )}
+              </div>
+              <FitBadge fit={m.fit} />
+              {m.active ? (
+                <span className="badge you"><Check size={12} /> Running</span>
+              ) : (
+                <button className="btn small" disabled={switching || !!status?.busy} onClick={() => data && apply({ ...data.runtime, model: m.file })}>Load</button>
+              )}
+              <button className="icon-btn danger" title="Delete" disabled={m.active} onClick={() => remove(m)}><Trash2 /></button>
+            </div>
+          ))}
+        </div>
+
         {/* Runtime */}
-        <div className="group-label">Runtime</div>
+        <div className="group-label">How the running model is set up</div>
         {data && rt && (
           <div className="group">
             <div className="row">
@@ -198,35 +232,11 @@ export default function ModelsPage({ status }: { status: Status | null }) {
           </div>
         )}
 
-        {/* Local models */}
-        <div className="group-label">On this computer</div>
-        <div className="group">
-          {data?.models.length === 0 && <div className="row"><div className="row-main muted">No models yet. Download one below.</div></div>}
-          {data?.models.map((m, i) => (
-            <div className="row model-row" key={m.file}>
-              <span className="model-tile" style={{ "--c": BLOCK_COLORS[i % BLOCK_COLORS.length] } as React.CSSProperties}>{m.size_label ?? "?"}</span>
-              <div className="row-main">
-                <div className="model-name">{m.name ?? m.file} {m.experts ? <span className="badge"><Term k="moe">MoE</Term> {m.experts_used}/{m.experts}</span> : null}</div>
-                {mode === "pro" ? (
-                  <div className="row-sub mono">
-                    {[m.architecture, m.quant, fmtGB(m.size_bytes), m.layers && `${m.layers} layers`, m.context_length && `${fmtCtx(m.context_length)} trained ctx`, m.license].filter(Boolean).join(" · ")}
-                  </div>
-                ) : (
-                  <div className="row-sub">
-                    {m.size_label ? `${m.size_label.replace("B", " billion")} parameters` : "Model"} · {fmtGB(m.size_bytes)} on disk · <Term k="quant">{m.quant ?? "?"}</Term> compression
-                  </div>
-                )}
-              </div>
-              <FitBadge fit={m.fit} />
-              {m.active ? (
-                <span className="badge you"><Check size={12} /> Running</span>
-              ) : (
-                <button className="btn small" disabled={switching || !!status?.busy} onClick={() => data && apply({ ...data.runtime, model: m.file })}>Load</button>
-              )}
-              <button className="icon-btn danger" title="Delete" disabled={m.active} onClick={() => remove(m)}><Trash2 /></button>
-            </div>
-          ))}
-        </div>
+        <div className="group-label">This computer</div>
+        {data && <HardwareCard hw={data.hardware} />}
+        </>)}
+
+        {tab === "get" && (<>
 
         {/* Downloads */}
         {activeDownloads.length > 0 && (
@@ -296,6 +306,7 @@ export default function ModelsPage({ status }: { status: Status | null }) {
           })}
           <div className="row"><div className="row-main row-sub">Downloads come straight from huggingface.co. That's the only time Blocky uses the internet.</div></div>
         </div>
+        </>)}
       </div>
     </div>
   );

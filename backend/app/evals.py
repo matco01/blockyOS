@@ -171,7 +171,12 @@ def score_text(text: str, accept: list[str]) -> tuple[bool, str]:
 
 
 def _strip_fences(text: str) -> str:
-    m = re.search(r"```(?:\w+)?\s*\n(.*?)```", text, re.S)
+    """Code from a fenced block. Prefers the last complete block (models often revise);
+    if the answer was cut off mid-block, takes what there is after the opening fence."""
+    blocks = re.findall(r"```(?:\w+)?[ \t]*\n(.*?)```", text, re.S)
+    if blocks:
+        return blocks[-1]
+    m = re.search(r"```(?:\w+)?[ \t]*\n(.*)", text, re.S)
     return m.group(1) if m else text
 
 
@@ -376,7 +381,9 @@ async def score(q: dict, text: str) -> dict:
                  "run.py": _LCB_RUNNER, "fn.py": _LCB_FN}
         res = await sandbox(files, "run.py", len(q["tests"]), cpu=120, wall=150, mem_mb=1024)
         ok = res["passed"] == res["total"]
-        return {"correct": ok, "got": f"{res['passed']}/{res['total']} tests passed" + (f" · {res['error']}" if res.get("error") else ""),
+        cut = "```" in text and text.count("```") % 2 == 1  # answer ended inside the code block
+        return {"correct": ok, "got": ("answer was cut off before the code was finished" if cut and not ok else
+                                       f"{res['passed']}/{res['total']} tests passed" + (f" · {res['error']}" if res.get("error") else "")),
                 "expected": f"all {len(q['tests'])} tests pass"}
     if kind == "humaneval":
         code = _strip_fences(text)
@@ -564,8 +571,9 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
                     long_answer = q["kind"] in ("code", "humaneval", "math", "mbpp", "lcb", "crux")
                     info = await generate.complete(
                         client, [{"role": "user", "content": prompt_for(q)}], think=think, sampling=sampling, seed=42,
-                        budget=budget, max_tokens=(16384 if think else (2048 if long_answer else 1024)),
-                        answer_tokens=2048 if long_answer else 1024,
+                        # Contest problems need room: small models "think in comments" and ran out at 2k.
+                        budget=budget, max_tokens=(16384 if think else (4096 if q["kind"] == "lcb" else 2048 if long_answer else 1024)),
+                        answer_tokens=4096 if q["kind"] == "lcb" else 2048 if long_answer else 1024,
                         should_stop=lambda: run_id in _cancel)  # Stop acts immediately, mid-answer
                     text = info["content"]
                     t1 = time.monotonic()

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, ChevronDown, Download, FlaskConical, Loader2, Play, Square, Trash2 } from "lucide-react";
 import { api, BenchResult, BenchRun, ModelFile, Status } from "./api";
-import { Pro, speedVerdict, Term, useMode } from "./ui";
+import { Pro, speedVerdict, Tabs, Term, useMode } from "./ui";
 
 /* Chart series colors: brand hues stepped for data marks (validated: lightness band,
    chroma, CVD + normal-vision separation, >=3:1 contrast, light and dark). */
@@ -172,6 +172,13 @@ export default function BenchPage({ status }: { status: Status | null }) {
   }, [loadRuns]);
 
   const running = runs.find((r) => r.status === "running" || r.status === "queued");
+  const [tab, setTab] = useState<"run" | "results">(window.location.hash.includes("compare=") ? "results" : "run");
+  // When a run finishes, jump to the results.
+  const wasRunning = useRef(false);
+  useEffect(() => {
+    if (wasRunning.current && !running) setTab("results");
+    wasRunning.current = !!running;
+  }, [running]);
   useEffect(() => {
     window.clearInterval(pollRef.current);
     pollRef.current = window.setInterval(loadRuns, running ? 1500 : 10000);
@@ -214,9 +221,14 @@ export default function BenchPage({ status }: { status: Status | null }) {
   return (
     <div className="page">
       <div className="page-inner wide">
-        <h1 className="page-title">Benchmarks</h1>
-        <p className="page-sub">llama-bench on this machine with live GPU power sampling. Every run is saved with a hardware fingerprint so results stay comparable.</p>
+        <h1 className="page-title">Speed tests</h1>
+        <p className="page-sub">How fast is a model on this machine? Measures reading speed, writing speed, power and efficiency.</p>
+        <Tabs value={tab} onChange={setTab} tabs={[
+          { id: "run", label: running ? "Running…" : "New test" },
+          { id: "results", label: "Results", badge: runs.filter((r) => r.status === "done").length },
+        ]} />
 
+        {tab === "run" && (<>
         {/* New run */}
         <div className="group-label">New run</div>
         <div className="group">
@@ -282,6 +294,9 @@ export default function BenchPage({ status }: { status: Status | null }) {
           </>
         )}
 
+        </>)}
+
+        {tab === "results" && (<>
         {/* Compare */}
         {compared.length > 0 && (
           <>
@@ -317,7 +332,7 @@ export default function BenchPage({ status }: { status: Status | null }) {
 
         {/* History */}
         <div className="group-label history-head">
-          <span>History</span>
+          <span>All runs <span className="muted" style={{ fontWeight: 400 }}>· tick up to 4 to compare them in a chart</span></span>
           {runs.some((r) => r.results?.length) && (
             <span className="exports">
               <a href="/api/bench/export?format=csv"><Download size={12} /> CSV</a>
@@ -370,6 +385,7 @@ export default function BenchPage({ status }: { status: Status | null }) {
           })}
         </div>
         <p className="row-sub" style={{ marginTop: 12 }}>Power is whole-GPU board power sampled every 0.5 s while each test runs (includes the desktop's share on a shared GPU). tok/J = tokens per second ÷ watts.</p>
+        </>)}
       </div>
     </div>
   );

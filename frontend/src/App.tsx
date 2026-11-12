@@ -21,12 +21,18 @@ const PAGES = [
   { id: "home", label: "Overview", icon: LayoutDashboard },
   { id: "models", label: "Models", icon: Boxes },
   { id: "arena", label: "Arena", icon: Swords },
-  { id: "tests", label: "Tests", icon: ClipboardCheck },
-  { id: "bench", label: "Benchmarks", icon: FlaskConical },
+  { id: "tests", label: "Quality tests", icon: ClipboardCheck },
+  { id: "bench", label: "Speed tests", icon: FlaskConical },
   { id: "memory", label: "Memory", icon: Brain },
   { id: "system", label: "System", icon: Activity },
   { id: "settings", label: "Settings", icon: SettingsIcon },
 ] as const;
+
+/** Sidebar groups: what you do with models, then the device itself. */
+const NAV_GROUPS: { label: string; ids: readonly Page[] }[] = [
+  { label: "Lab", ids: ["home", "models", "arena", "tests", "bench"] },
+  { label: "Device", ids: ["memory", "system", "settings"] },
+];
 
 /** Renders a search snippet, highlighting the [matched] words. */
 function Snippet({ text }: { text: string }) {
@@ -138,7 +144,7 @@ export default function App() {
   const title =
     page === "chat"
       ? conversations.find((c) => c.id === activeId)?.title ?? ""
-      : PAGES.find((p) => p.id === page)?.label ?? "";
+      : ""; // pages show their own big title; no need to repeat it in the top bar
 
   return (
     <ModeContext.Provider value={mode}>
@@ -150,20 +156,34 @@ export default function App() {
             <span className="brand-name">Blocky</span>
           </div>
 
-          <button className="side-btn" onClick={() => open(null)}>
+          <button className={`side-btn new-chat-btn ${page === "chat" && activeId == null ? "active" : ""}`} onClick={() => open(null)}>
             <Plus /> New chat
           </button>
+
+          {NAV_GROUPS.map((g) => (
+            <div className="side-nav" key={g.label}>
+              <div className="section-label">{g.label}</div>
+              {g.ids.map((id) => {
+                const p = PAGES.find((x) => x.id === id)!;
+                return (
+                  <button key={id} className={`side-btn ${page === id ? "active" : ""}`} onClick={() => go(id)}>
+                    <p.icon /> {p.label}
+                  </button>
+                );
+              })}
+            </div>
+          ))}
+
+          <div className="section-label">{hits !== null ? "Search results" : "Chats"}</div>
           <div className="search">
             <Search />
             <input
               type="search"
-              placeholder="Search"
+              placeholder="Search chats"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
           </div>
-
-          <div className="section-label">{hits !== null ? "Results" : "Recents"}</div>
           <nav className="history">
             {hits !== null ? (
               hits.length === 0 ? (
@@ -202,13 +222,9 @@ export default function App() {
             )}
           </nav>
 
-          <div className="side-nav">
-            {PAGES.map(({ id, label, icon: Icon }) => (
-              <button key={id} className={`side-btn ${page === id ? "active" : ""}`} onClick={() => go(id)}>
-                <Icon /> {label}
-              </button>
-            ))}
+          <div className="side-foot">
             <div className="mode-switch" title="Simple: plain language and the essentials. Pro: every number and setting.">
+              <span className="mode-label">Detail level</span>
               <div className="segmented">
                 <button className={mode === "simple" ? "on" : ""} onClick={() => setMode("simple")}>Simple</button>
                 <button className={mode === "pro" ? "on" : ""} onClick={() => setMode("pro")}>Pro</button>
