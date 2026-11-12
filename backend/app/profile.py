@@ -346,10 +346,17 @@ def create_run(exp_id: int, body: dict) -> int:
                          (exp_id, time.time(), label, json.dumps(cfg))).lastrowid
 
 
+def weights_label(model: str) -> str:
+    """'Qwen3.5-9B-Q3_K_M-imat-custom.gguf' -> 'Q3_K_M-imat-custom' (the part that tells variants apart)."""
+    stem = model.removesuffix(".gguf")
+    m = re.search(r"-((?:UD-)?(?:I?Q\d|BF16|F16|F32).*)$", stem, re.I)
+    return m.group(1) if m else stem
+
+
 def describe_change(base: dict, cfg: dict) -> str:
     parts = []
     if cfg["model"] != base.get("model"):
-        parts.append(gguf.metadata(lab.MODELS_DIR / cfg["model"]).get("quant") or cfg["model"])
+        parts.append(weights_label(cfg["model"]))
     if cfg["kv"] != base.get("kv"):
         parts.append(f"KV {cfg['kv']}")
     if cfg["ctx"] != base.get("ctx"):
