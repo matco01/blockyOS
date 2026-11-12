@@ -119,6 +119,12 @@ def _info(key: str) -> tuple[int, dict]:
     return _counts[key][1], _counts[key][2]
 
 
+# When each benchmark's questions became public. Models trained after this have
+# very likely seen them (contamination), which inflates their scores.
+PUBLISHED = {"gsm8k": "2021", "arc": "2018", "mmlu_pro": "2024", "math500": "2021", "humaneval": "2021", "aime": "2024–25",
+             "humaneval_plus": "2023", "mbpp_plus": "2023", "cruxeval": "2024", "livecodebench": "2025"}
+
+
 def summary() -> list[dict]:
     out = []
     for key, b in catalog().items():
@@ -127,6 +133,7 @@ def summary() -> list[dict]:
         out.append({"key": f"bench:{key}", "id": key, "title": b["title"], "icon": b["icon"], "color": b["color"],
                     "about": b["about"], "difficulty": b["difficulty"], "baseline": b.get("baseline"),
                     "group": b.get("group", "custom" if b.get("custom") else "general"), "custom": bool(b.get("custom")),
+                    "published": PUBLISHED.get(key),
                     "downloaded": have, "count": n, "download": downloads.get(key), **extra})
     return out
 

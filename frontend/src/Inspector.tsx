@@ -99,10 +99,11 @@ function ContextMeter({ s, ctx }: { s: MessageStats; ctx: number }) {
 
 export const BUDGETS = [1024, 2048, 4096, 8192, 16384];
 
-export default function Inspector({ sampling, setSampling, systemPrompt, setSystemPrompt, thinkBudget, setThinkBudget, last, ctx, onClose }: {
+export default function Inspector({ sampling, setSampling, systemPrompt, setSystemPrompt, thinkBudget, setThinkBudget, confidence, setConfidence, last, ctx, onClose }: {
   sampling: Sampling; setSampling: (s: Sampling) => void;
   systemPrompt: string; setSystemPrompt: (s: string) => void;
   thinkBudget: number; setThinkBudget: (n: number) => void;
+  confidence: boolean; setConfidence: (b: boolean) => void;
   last: MessageStats | null; ctx: number | null; onClose: () => void;
 }) {
   const mode = useMode();
@@ -120,6 +121,11 @@ export default function Inspector({ sampling, setSampling, systemPrompt, setSyst
       <div className="insp-body">
         <div className="insp-section">Live</div>
         <LiveView />
+
+        <label className="insp-switch">
+          <div><b>Show confidence</b><span>Color every word by how sure the model was, and see the words it almost picked.</span></div>
+          <input type="checkbox" className="switch" checked={confidence} onChange={(e) => setConfidence(e.target.checked)} />
+        </label>
 
         <div className="insp-section">Last answer</div>
         {last ? (

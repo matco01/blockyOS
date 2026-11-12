@@ -72,6 +72,7 @@ export default function App() {
   const [lastStats, setLastStats] = useState<MessageStats | null>(null);
   const [mode, setMode] = useSetting<Mode>("mode", "simple");
   const [thinkBudget, setThinkBudget] = useSetting("thinkBudget", 4096);
+  const [confidence, setConfidence] = useSetting("confidence", false);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -266,12 +267,14 @@ export default function App() {
                 sampling={sampling}
                 systemPrompt={systemPrompt}
                 thinkBudget={thinkBudget}
+                confidence={confidence}
                 contextSize={status?.context_size ?? null}
                 onStats={setLastStats}
               />
               {inspectorOpen && (
                 <Inspector sampling={sampling} setSampling={setSampling} systemPrompt={systemPrompt} setSystemPrompt={setSystemPrompt}
                   thinkBudget={thinkBudget} setThinkBudget={setThinkBudget}
+                  confidence={confidence} setConfidence={setConfidence}
                   last={lastStats} ctx={status?.context_size ?? null} onClose={() => setInspectorOpen(false)} />
               )}
             </div>

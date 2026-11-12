@@ -8,6 +8,7 @@ CPU and memory limits.
 import asyncio
 import json
 import logging
+import random
 import re
 import shutil
 import tempfile
@@ -16,7 +17,7 @@ from pathlib import Path
 
 import httpx
 
-from . import arena, benchmarks, db, generate, lab
+from . import arena, benchmarks, db, fresh, generate, lab
 from .eval_suites import ANSWER_HINT, CODE_HINT, SUITES
 
 log = logging.getLogger("blocky.evals")
@@ -69,8 +70,10 @@ def parse_spec(spec: str) -> tuple[str, int | None]:
     return key, (int(n) if n.isdigit() else None)
 
 
-def questions_for(spec: str) -> list[dict]:
+def questions_for(spec: str, seed: int = 0) -> list[dict]:
     key, limit = parse_spec(spec)
+    if key.startswith("fresh:"):
+        return fresh.generate(key[6:], limit or 25, seed)
     qs = all_suites()[key]["questions"] if not key.startswith("bench:") else bench_questions(key[6:])
     return qs[:limit] if limit else qs
 
@@ -93,6 +96,8 @@ def suite_title(key: str) -> str:
     k, _ = parse_spec(key)
     if k.startswith("bench:"):
         return benchmarks.catalog().get(k[6:], {}).get("title", k)
+    if k.startswith("fresh:"):
+        return fresh.SETS.get(k[6:], {}).get("title", k)
     return all_suites().get(k, {}).get("title", k)
 
 
@@ -489,15 +494,18 @@ def create(body: dict) -> int:
     keys = []
     for spec in body.get("suites") or []:
         key, limit = parse_spec(str(spec))
-        if key in known or (key.startswith("bench:") and benchmarks.is_downloaded(key[6:])):
+        if key in known or (key.startswith("bench:") and benchmarks.is_downloaded(key[6:])) \
+                or (key.startswith("fresh:") and key[6:] in fresh.SETS):
             keys.append(f"{key}@{max(1, min(20000, limit))}" if limit else key)
     if not keys:
         raise ValueError("Pick at least one test set")
-    code_sets = ("coding", "bench:humaneval", "bench:humaneval_plus", "bench:mbpp_plus", "bench:livecodebench")
+    code_sets = ("coding", "bench:humaneval", "bench:humaneval_plus", "bench:mbpp_plus", "bench:livecodebench", "fresh:code")
     if any(parse_spec(k)[0] in code_sets for k in keys) and not sandbox_available():
         raise ValueError("The coding tests need the sandbox (bubblewrap). Re-run the installer.")
     budget = body.get("think_budget")
-    options = {"think_budget": int(budget) if budget else None}
+    # Fresh questions are generated from this seed: new every run, but reproducible.
+    seed = int(body.get("seed") or random.randint(1, 2**31 - 1))
+    options = {"think_budget": int(budget) if budget else None, "seed": seed}
     with db.connect() as c:
         return c.execute(
             "INSERT INTO eval_runs (created_at, status, model, think, suites, results, options) VALUES (?, 'queued', ?, ?, ?, '[]', ?)",
@@ -564,7 +572,7 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
                     raise RuntimeError(f"Couldn't load {rec['model']}. It may not fit in memory.")
             sampler = asyncio.create_task(lab._sample_gpu(samples, stop))
             for key in rec["suites"]:
-                for i, q in enumerate(questions_for(key)):
+                for i, q in enumerate(questions_for(key, rec["options"].get("seed") or 0)):
                     if run_id in _cancel:
                         raise asyncio.CancelledError
                     t0 = time.monotonic()

@@ -12,8 +12,12 @@ export type Message = {
   remembered?: string[]; // UI only: facts learned from this exchange
   thought_secs?: number; // UI only: how long the model reasoned
   budget_hit?: boolean;  // UI only: thinking was cut off by the budget
+  probs?: TokenProb[];   // UI only: per-word confidence (when the confidence view was on)
   stats?: MessageStats | null;
 };
+
+/** One generated word-piece with the model's confidence and the alternatives it almost picked. */
+export type TokenProb = { t: string; p: number; alts: [string, number][] };
 
 export type Status = {
   model_ready: boolean; model: string | null; context_size: number | null;
@@ -35,8 +39,9 @@ export type BenchmarkInfo = {
   key: string; id: string; title: string; icon: string; color: string; about: string; difficulty: string;
   baseline: number | null; downloaded: boolean; count: number | null;
   download: { done: number; total: number; status: string; error: string | null } | null;
-  group: "general" | "coding" | "custom"; custom: boolean; date_from?: string; date_to?: string;
+  group: "general" | "coding" | "custom"; custom: boolean; date_from?: string; date_to?: string; published?: string | null;
 };
+export type FreshSet = { key: string; id: string; title: string; about: string; color: string; icon: string };
 export type HfPreview = { splits: { config: string; split: string }[]; columns: string[]; sample: Record<string, string>[] };
 
 export type SuiteInfo = { key: string; title: string; icon: string; color: string; about: string; count: number; custom: boolean; available: boolean };
@@ -53,7 +58,19 @@ export type EvalSummary = {
 export type EvalRun = {
   id: number; created_at: number; finished_at: number | null; status: "queued" | "running" | "done" | "error" | "cancelled";
   model: string; think: boolean; suites: string[]; results: EvalItem[]; summary: EvalSummary | null; error: string | null;
-  options: { think_budget?: number | null };
+  options: { think_budget?: number | null; seed?: number };
+};
+
+export type QuantResult = {
+  model: string; quant: string | null; size_bytes: number; bits: number; reference: boolean; state: string;
+  ppl?: number | null; ppl_err?: number | null; kld?: number | null; kld_err?: number | null; kld_99?: number | null;
+  same_top?: number | null; pp_tps?: number; tg_tps?: number;
+};
+export type QuantRun = { id: number; created_at: number; status: string; models: string[]; reference: string; results: QuantResult[]; log: string | null; error: string | null };
+export type QuantJob = { id: string; source: string; type: string; output: string; status: string; error: string | null; note: string | null; progress: number };
+export type ToolRun = {
+  id: number; created_at: number; kind: string; status: string; params: Record<string, unknown>;
+  results: Record<string, number | string | null>[]; log: string | null; error: string | null;
 };
 
 export type LeaderRow = { label: string; model: string; matches: number; wins: number; ties: number; losses: number; avg_tps: number | null; score: number };
@@ -189,12 +206,16 @@ export const api = {
   deleteBench: (id: number) => json(`/api/bench/${id}`, { method: "DELETE" }),
   logs: (lines = 300) => json<{ text: string }>(`/api/logs?lines=${lines}`),
   memoryMap: () => json<MemoryMapData>("/api/memory-map"),
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  modelAnatomy: (file: string) => json<any>(`/api/models/${encodeURIComponent(file)}/anatomy`),
   benchmarks: () => json<BenchmarkInfo[]>("/api/benchmarks"),
   benchmarkDownload: (id: string) => json(`/api/benchmarks/${id}/download`, send("POST", {})),
   benchmarkDelete: (id: string) => json(`/api/benchmarks/${id}`, { method: "DELETE" }),
   hfDataset: (repo: string) => json<HfPreview>(`/api/hf/dataset?repo=${encodeURIComponent(repo)}`),
   benchmarkImport: (b: Record<string, unknown>) => json<{ key: string }>("/api/benchmarks/custom", send("POST", b)),
   evalSuites: () => json<SuiteInfo[]>("/api/evals/suites"),
+  freshSets: () => json<FreshSet[]>("/api/evals/fresh"),
+  freshPreview: (id: string) => json<{ q: string; kind: string }[]>(`/api/evals/fresh/${id}/preview?n=3`),
   evalCreateSuite: (name: string, questions: { q: string; answer: string }[]) => json<{ key: string }>("/api/evals/suites", send("POST", { name, questions })),
   evalDeleteSuite: (key: string) => json(`/api/evals/suites/${encodeURIComponent(key)}`, { method: "DELETE" }),
   evalRuns: () => json<EvalRun[]>("/api/evals"),
@@ -202,6 +223,15 @@ export const api = {
   evalStart: (b: { model: string; think: boolean; suites: string[]; think_budget?: number }) => json<{ id: number }>("/api/evals", send("POST", b)),
   evalCancel: (id: number) => json(`/api/evals/${id}/cancel`, send("POST", {})),
   evalDelete: (id: number) => json(`/api/evals/${id}`, { method: "DELETE" }),
+  quantLab: () => json<{ runs: QuantRun[]; jobs: QuantJob[]; types: string[] }>("/api/quantlab"),
+  quantStart: (models: string[]) => json<{ id: number }>("/api/quantlab", send("POST", { models })),
+  quantCancel: (id: number) => json(`/api/quantlab/${id}/cancel`, send("POST", {})),
+  quantDelete: (id: number) => json(`/api/quantlab/${id}`, { method: "DELETE" }),
+  quantMake: (source: string, type: string) => json<{ id: string }>("/api/quantlab/quantize", send("POST", { source, type })),
+  toolRuns: (kind: "throughput" | "speculative") => json<ToolRun[]>(`/api/tools/${kind}`),
+  toolStart: (kind: "throughput" | "speculative", body: Record<string, unknown>) => json<{ id: number }>(`/api/tools/${kind}`, send("POST", body)),
+  toolCancel: (id: number) => json(`/api/tools/run/${id}/cancel`, send("POST", {})),
+  toolDelete: (id: number) => json(`/api/tools/run/${id}`, { method: "DELETE" }),
   arenaList: () => json<ArenaMatch[]>("/api/arena"),
   arenaGet: (id: number) => json<ArenaMatch>(`/api/arena/${id}`),
   arenaStart: (b: { prompt: string; contestants: Partial<Contestant>[]; blind: boolean; max_tokens?: number }) => json<{ id: number }>("/api/arena", send("POST", b)),
@@ -219,11 +249,12 @@ export type ChatEvent =
   | { type: "done"; tokens: number | null; tokens_per_sec: number | null; seconds: number; stats?: MessageStats }
   | { type: "memory"; added: Memory[] }
   | { type: "budget"; tokens: number }
+  | { type: "probs"; items: TokenProb[] }
   | { type: "error"; message: string };
 
 /** Sends a message and calls onEvent for every streamed piece of the answer. */
 export async function streamChat(
-  body: { message: string; conversation_id: number | null; think: boolean; sampling?: Sampling; system_prompt?: string; think_budget?: number },
+  body: { message: string; conversation_id: number | null; think: boolean; sampling?: Sampling; system_prompt?: string; think_budget?: number; confidence?: boolean },
   onEvent: (e: ChatEvent) => void,
   signal?: AbortSignal,
 ) {

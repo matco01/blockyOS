@@ -9,6 +9,7 @@ Also applies model-recommended sampling when the caller didn't set any:
 small models' thinking gets much more erratic with generic settings.
 """
 import json
+import math
 import time
 from collections.abc import AsyncIterator
 
@@ -71,7 +72,12 @@ async def stream(client: httpx.AsyncClient, messages: list[dict], *, think: bool
             timings = chunk.get("timings") or timings
             for ch in chunk.get("choices", []):
                 finish = ch.get("finish_reason") or finish
+                lp = (ch.get("logprobs") or {}).get("content")
                 d = ch.get("delta") or {}
+                if lp and d.get("content"):  # per-word confidence, answer text only (not thinking)
+                    yield "probs", [{"t": x["token"], "p": round(math.exp(x["logprob"]), 4),
+                                     "alts": [[a["token"], round(math.exp(a["logprob"]), 4)] for a in (x.get("top_logprobs") or [])
+                                              if a["token"] != x["token"]][:4]} for x in lp]
                 if d.get("reasoning_content"):
                     first = first or time.monotonic()
                     reasoning.append(d["reasoning_content"])

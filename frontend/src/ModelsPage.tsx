@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertCircle, Check, Cpu, Download as DownloadIcon, HardDrive, Loader2, MemoryStick, RotateCw, Search, Trash2, X } from "lucide-react";
 import { api, CatalogItem, Download, Fit, Hardware, HfFile, ModelFile, Runtime, Status } from "./api";
 import { BLOCK_COLORS } from "./settings";
+import Anatomy from "./Anatomy";
+import QuantLab from "./QuantLab";
 import { Pro, Tabs, Term, useMode } from "./ui";
 
 const GB = 2 ** 30;
@@ -47,7 +49,7 @@ export default function ModelsPage({ status }: { status: Status | null }) {
   const [hfState, setHfState] = useState<"idle" | "loading" | string>("idle");
   const switching = status?.busy === "switching";
   const mode = useMode();
-  const [tab, setTab] = useState<"mine" | "get">("mine");
+  const [tab, setTab] = useState<"mine" | "get" | "inside" | "compress">(() => (new URLSearchParams(window.location.hash.split("?")[1] ?? "").get("tab") as "mine" | "get" | "inside" | "compress") || "mine");
 
   const load = useCallback(() => {
     api.models().then((d) => { setData(d); setDraft((cur) => cur ?? d.runtime); }).catch((e) => setError(e.message));
@@ -130,6 +132,8 @@ export default function ModelsPage({ status }: { status: Status | null }) {
         <Tabs value={tab} onChange={setTab} tabs={[
           { id: "mine", label: "My models", badge: data?.models.length },
           { id: "get", label: "Get more", badge: activeDownloads.length || null },
+          { id: "inside", label: "Inside the model" },
+          { id: "compress", label: "Compression lab" },
         ]} />
         {(error || status?.switch_error) && (
           <div className="error" style={{ marginTop: 16 }}><AlertCircle /> {error ?? status?.switch_error}</div>
@@ -235,6 +239,13 @@ export default function ModelsPage({ status }: { status: Status | null }) {
         <div className="group-label">This computer</div>
         {data && <HardwareCard hw={data.hardware} />}
         </>)}
+
+        {tab === "inside" && data && (<>
+        <div className="group-label">The model's real structure</div>
+        <div className="group pad"><Anatomy models={data.models} active={data.runtime.model} /></div>
+        </>)}
+
+        {tab === "compress" && data && <QuantLab models={data.models} status={status} />}
 
         {tab === "get" && (<>
 

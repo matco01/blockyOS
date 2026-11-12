@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, ChevronDown, Download, FlaskConical, Loader2, Play, Square, Trash2 } from "lucide-react";
 import { api, BenchResult, BenchRun, ModelFile, Status } from "./api";
 import { Pro, speedVerdict, Tabs, Term, useMode } from "./ui";
+import { Speculative, Throughput } from "./SpeedTools";
 
 /* Chart series colors: brand hues stepped for data marks (validated: lightness band,
    chroma, CVD + normal-vision separation, >=3:1 contrast, light and dark). */
@@ -159,6 +160,7 @@ export default function BenchPage({ status }: { status: Status | null }) {
   const [metric, setMetric] = useState<"speed" | "efficiency">("speed");
   const pollRef = useRef<number | undefined>(undefined);
   const [stopping, setStopping] = useState<number | null>(null);
+  const [activeModel, setActiveModel] = useState<string | null>(null);
   const mode = useMode();
 
   const loadRuns = useCallback(() => api.benchRuns().then(setRuns).catch(() => {}), []);
@@ -166,13 +168,14 @@ export default function BenchPage({ status }: { status: Status | null }) {
   useEffect(() => {
     api.models().then((d) => {
       setModels(d.models);
+      setActiveModel(d.runtime.model);
       setForm((f) => ({ ...f, model: f.model || d.runtime.model || d.models[0]?.file || "", kv: d.runtime.kv }));
     }).catch(() => {});
     loadRuns();
   }, [loadRuns]);
 
   const running = runs.find((r) => r.status === "running" || r.status === "queued");
-  const [tab, setTab] = useState<"run" | "results">(window.location.hash.includes("compare=") ? "results" : "run");
+  const [tab, setTab] = useState<"run" | "results" | "users" | "draft">(window.location.hash.includes("compare=") ? "results" : "run");
   // When a run finishes, jump to the results.
   const wasRunning = useRef(false);
   useEffect(() => {
@@ -226,7 +229,11 @@ export default function BenchPage({ status }: { status: Status | null }) {
         <Tabs value={tab} onChange={setTab} tabs={[
           { id: "run", label: running ? "Running…" : "New test" },
           { id: "results", label: "Results", badge: runs.filter((r) => r.status === "done").length },
+          { id: "users", label: "Many users" },
+          { id: "draft", label: "Draft speed-up" },
         ]} />
+        {tab === "users" && <Throughput models={models} active={activeModel} status={status} />}
+        {tab === "draft" && <Speculative models={models} active={activeModel} status={status} />}
 
         {tab === "run" && (<>
         {/* New run */}

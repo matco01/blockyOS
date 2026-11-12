@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, BookOpen, Brain, Calculator, Check, ClipboardCheck, Code2, Download, FlaskConical, GraduationCap, ListChecks, Loader2, Play, Plus, Puzzle, Sigma, Square, Trash2, Trophy, User, X } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { api, BenchmarkInfo, EvalItem, EvalRun, ModelFile, Status, SuiteInfo } from "./api";
+import { api, BenchmarkInfo, EvalItem, EvalRun, FreshSet, ModelFile, Status, SuiteInfo } from "./api";
 import { ImportBenchmark, OutsideTools } from "./BenchImport";
+import { ContaminationTag, FreshPicker, MEMORIZATION_SPECS, MemorizationCheck } from "./Fresh";
 import { BUDGETS } from "./Inspector";
 import { Pro, Tabs, Term, useMode } from "./ui";
 
@@ -14,8 +15,10 @@ const SIZES = [25, 50, 100, 250, 0]; // 0 = all
 
 /** Display info for a suite spec like "math" or "bench:gsm8k@50". */
 type SuiteMeta = { title: string; icon: string; color: string; baseline?: number | null };
-function metaFor(spec: string, suites: Record<string, SuiteInfo>, benches: Record<string, BenchmarkInfo>): SuiteMeta {
+function metaFor(spec: string, suites: Record<string, SuiteInfo>, benches: Record<string, BenchmarkInfo>, fresh: Record<string, FreshSet> = {}): SuiteMeta {
   const [key, n] = spec.split("@");
+  const f = fresh[key];
+  if (f) return { title: `${f.title}${n ? ` · ${n}` : ""}`, icon: f.icon, color: f.color };
   const b = benches[key];
   if (b) return { title: `${b.title}${n ? ` · ${n}` : " · all"}`, icon: b.icon, color: b.color, baseline: b.baseline };
   const s = suites[key];
@@ -313,7 +316,9 @@ export default function TestsPage({ status }: { status: Status | null }) {
   const [suites, setSuites] = useState<SuiteInfo[]>([]);
   const [model, setModel] = useState("");
   const [think, setThink] = useState(false);
-  const [picked, setPicked] = useState<string[]>(["math", "logic", "hard", "knowledge", "instructions", "coding"]);
+  const [picked, setPicked] = useState<string[]>([]);
+  const [freshSets, setFreshSets] = useState<FreshSet[]>([]);
+  const [freshPick, setFreshPick] = useState<Record<string, number>>({ math: 25, logic: 25, code: 10 });
   const [runs, setRuns] = useState<EvalRun[]>([]);
   const [viewId, setViewId] = useState<number | null>(null);
   const [slots, setSlots] = useState<Record<number, number>>({});
@@ -329,6 +334,7 @@ export default function TestsPage({ status }: { status: Status | null }) {
     api.evalRuns().then((rs) => { setRuns(rs); setViewId((v) => v ?? rs.find((r) => r.status !== "error")?.id ?? null); }).catch(() => {});
     api.evalSuites().then(setSuites).catch(() => {});
     api.benchmarks().then(setBenches).catch(() => {});
+    api.freshSets().then(setFreshSets).catch(() => {});
   }, []);
 
   // Poll while a benchmark downloads.
@@ -359,15 +365,32 @@ export default function TestsPage({ status }: { status: Status | null }) {
 
   const byKey = useMemo(() => Object.fromEntries(suites.map((s) => [s.key, s])), [suites]);
   const benchByKey = useMemo(() => Object.fromEntries(benches.map((b) => [b.key, b])), [benches]);
-  const meta = useCallback((spec: string) => metaFor(spec, byKey, benchByKey), [byKey, benchByKey]);
+  const freshByKey = useMemo(() => Object.fromEntries(freshSets.map((f) => [f.key, f])), [freshSets]);
+  const meta = useCallback((spec: string) => metaFor(spec, byKey, benchByKey, freshByKey), [byKey, benchByKey, freshByKey]);
   const specCount = useCallback((spec: string) => {
     const [key, n] = spec.split("@");
+    if (key.startsWith("fresh:")) return Number(n) || 25;
     const total = byKey[key]?.count ?? benchByKey[key]?.count ?? 0;
     return n ? Math.min(Number(n), total) : total;
   }, [byKey, benchByKey]);
 
   const benchSpecs = Object.entries(benchPick).map(([id, n]) => (n ? `bench:${id}@${n}` : `bench:${id}`));
-  const specs = [...picked, ...benchSpecs];
+  const freshSpecs = Object.entries(freshPick).map(([id, n]) => `fresh:${id}@${n}`);
+  const specs = [...freshSpecs, ...picked, ...benchSpecs];
+
+  // One click: same skills on famous (public) questions and on fresh ones.
+  const memorizationPreset = () => {
+    setPicked([]);
+    setFreshPick({ math: 25, code: 25 });
+    const want: Record<string, number> = {};
+    for (const s of MEMORIZATION_SPECS.filter((x) => x.startsWith("bench:"))) {
+      const [k, n] = s.split("@");
+      if (benchByKey[k]?.downloaded) want[k.slice(6)] = Number(n);
+    }
+    setBenchPick(want);
+  };
+  const missingForPreset = MEMORIZATION_SPECS.filter((s) => s.startsWith("bench:") && !benchByKey[s.split("@")[0]]?.downloaded)
+    .map((s) => benchByKey[s.split("@")[0]]?.title ?? s);
   const view = runs.find((r) => r.id === viewId) ?? null;
   const qCount = specs.reduce((a, k) => a + specCount(k), 0);
   const perQ = think ? Math.min(budget, 8192) / 55 + 3 : 3; // rough: tokens / ~55 tok/s
@@ -424,7 +447,21 @@ export default function TestsPage({ status }: { status: Status | null }) {
             </div>
           )}
           <div className="row block">
-            <div className="sub-head">Quick checks <span className="muted">· Blocky's own small sets</span></div>
+            <div className="preset-row">
+              <div>
+                <b>Memorization check</b>
+                <div className="row-sub">Tests the same skills on famous public benchmarks and on fresh questions. A big gap means the model memorized the benchmark.
+                  {missingForPreset.length > 0 && <> Needs {missingForPreset.join(" and ")} downloaded first (below).</>}</div>
+              </div>
+              <button className="btn small ghost" onClick={memorizationPreset}>Use this preset</button>
+            </div>
+          </div>
+          <div className="row block">
+            <div className="sub-head">Fresh questions <span className="muted">· recommended</span></div>
+            <FreshPicker sets={freshSets} picked={freshPick} setPicked={setFreshPick} />
+          </div>
+          <div className="row block">
+            <div className="sub-head">Quick checks <span className="muted">· Blocky's own small fixed sets (same questions every time)</span></div>
             <div className="suite-grid">
               {suites.map((s) => {
                 const Icon = ICONS[s.icon] ?? User;
@@ -471,6 +508,7 @@ export default function TestsPage({ status }: { status: Status | null }) {
                     <span className="suite-icon"><Icon /></span>
                     <div className="bench-body">
                       <div className="bench-title"><b>{b.title}</b><span className={`diff diff-${b.difficulty.replace(/\s/g, "").toLowerCase()}`}>{b.difficulty}</span>
+                        <ContaminationTag published={b.published} />
                         {b.downloaded && <span className="muted small">{b.count?.toLocaleString()} questions</span>}
                         {b.date_from && <span className="muted small" title="If a model was trained after these dates it may have seen the problems">· problems from {b.date_from.slice(0, 7)} to {b.date_to?.slice(0, 7)}</span>}
                         {b.custom && <button className="icon-btn danger tiny" title="Remove" onClick={() => { if (confirm(`Remove "${b.title}"?`)) api.benchmarkDelete(b.id).then(load); }}><Trash2 /></button>}</div>
@@ -542,6 +580,9 @@ export default function TestsPage({ status }: { status: Status | null }) {
         </>)}
 
         {tab === "results" && (<>
+        <div className="group-label">Memorization check</div>
+        <div className="group pad"><MemorizationCheck runs={runs} label={runLabel} /></div>
+
         {/* Scorecard */}
         {view && view.summary && view.status !== "running" && (
           <>

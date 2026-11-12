@@ -6,6 +6,7 @@ import rehypeKatex from "rehype-katex";
 import "katex/dist/katex.min.css";
 import BlockField from "./BlockField";
 import Logo from "./Logo";
+import ConfidenceView from "./Confidence";
 import { AlertCircle, ArrowUp, Brain, Check, ChevronRight, Copy, Lightbulb, ListChecks, PenLine, ShieldCheck, Sparkles, Square } from "lucide-react";
 import { api, Message, MessageStats, Sampling, streamChat } from "./api";
 import { useSetting } from "./settings";
@@ -20,6 +21,7 @@ type Props = {
   sampling: Sampling;
   systemPrompt: string;
   thinkBudget: number;
+  confidence: boolean;
   contextSize: number | null;
   onStats: (s: MessageStats) => void;
 };
@@ -134,7 +136,8 @@ function Thinking({ text, live, secs, budgetHit }: { text: string; live: boolean
   );
 }
 
-export default function Chat({ initialId, onCreated, onUpdated, onOpenMemory, sampling, systemPrompt, thinkBudget, contextSize, onStats }: Props) {
+export default function Chat({ initialId, onCreated, onUpdated, onOpenMemory, sampling, systemPrompt, thinkBudget, confidence, contextSize, onStats }: Props) {
+  const [confView, setConfView] = useState<Set<number>>(new Set()); // answers shown as confidence heatmap
   const [convId, setConvId] = useState<number | null>(initialId);
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(initialId != null);
@@ -194,7 +197,8 @@ export default function Chat({ initialId, onCreated, onUpdated, onOpenMemory, sa
         ...(Object.keys(sampling).length ? { sampling } : {}),
         ...(systemPrompt.trim() ? { system_prompt: systemPrompt } : {}),
       };
-      await streamChat({ message, conversation_id: convId, think, think_budget: thinkBudget, ...extra }, (e) => {
+      if (confidence) setConfView((s) => new Set(s).add(at)); // show the heatmap right away
+      await streamChat({ message, conversation_id: convId, think, think_budget: thinkBudget, confidence, ...extra }, (e) => {
         if (e.type === "meta" && convId == null) {
           setConvId(e.conversation_id);
           onCreated(e.conversation_id);
@@ -216,6 +220,8 @@ export default function Chat({ initialId, onCreated, onUpdated, onOpenMemory, sa
           setBusy(false); // answer is complete; memory may still be updating in the background
           update((m) => ({ ...m, tokens: e.tokens, tokens_per_sec: e.tokens_per_sec, stats: e.stats }));
           if (e.stats) onStats(e.stats);
+        } else if (e.type === "probs") {
+          update((m) => ({ ...m, probs: [...(m.probs ?? []), ...e.items] }));
         } else if (e.type === "budget") {
           update((m) => ({ ...m, budget_hit: true }));
         } else if (e.type === "memory") {
@@ -316,11 +322,14 @@ export default function Chat({ initialId, onCreated, onUpdated, onOpenMemory, sa
                       budgetHit={m.budget_hit || m.stats?.budget_hit} />
                   )}
                   {m.content ? (
-                    <div className="markdown">
-                      <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]} components={MD_COMPONENTS}>{m.content}</ReactMarkdown>
-                    </div>
+                    m.probs?.length && confView.has(i) ? <ConfidenceView probs={m.probs} /> : <Markdown text={m.content} />
                   ) : busy && i === messages.length - 1 && !m.reasoning ? (
                     <div className="typing"><span /><span /><span /></div>
+                  ) : null}
+                  {m.probs?.length ? (
+                    <button className="conf-toggle" onClick={() => setConfView((s) => { const n = new Set(s); if (n.has(i)) n.delete(i); else n.add(i); return n; })}>
+                      {confView.has(i) ? "Show normal text" : "Show confidence"}
+                    </button>
                   ) : null}
                   <MetaLine m={m} ctx={contextSize} />
                   {m.remembered && m.remembered.length > 0 && (

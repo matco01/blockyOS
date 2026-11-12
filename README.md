@@ -24,6 +24,13 @@ On the machine: models in `/opt/blocky/models`, data in `/opt/blocky/data`, sett
 | **Benchmarks** | `llama-bench` presets or custom sweeps (pp / tg / depth / repetitions / KV / flash-attn / ngl / threads / MoE offload); GPU power sampled every 0.5 s → tokens per joule; peak VRAM; hardware fingerprint saved per run; compare up to 4 runs (shareable `#/bench?compare=3,4`); CSV/JSON export |
 | **Chat Inspector** | Sampling (temperature, top-p/k, min-p, penalties, max tokens, seed), presets, custom system prompt; per-answer TTFT, prompt/gen speed, cached tokens, context used |
 | **System** | Live CPU/GPU/RAM/VRAM/power plus the model server log with filter |
+| **Quality tests** | Fresh questions generated at run time (can't be memorized), Blocky's quick checks, established benchmarks (GSM8K, ARC, MMLU-Pro, MATH-500, AIME, HumanEval(+), MBPP+, CRUXEval, LiveCodeBench) with "public since" contamination warnings, a memorization check (famous vs fresh), custom Hugging Face imports, and an OpenAI-compatible `/v1` endpoint for outside harnesses |
+| **Models → Inside the model** | The real network structure read from the GGUF tensor table: every layer's attention / linear-attention / feed-forward / expert parts, sized by memory |
+| **Models → Compression lab** | Compare quantizations of one model (perplexity, KL divergence, same-top-token %, speed, size) with llama-perplexity; make new quantizations locally with llama-quantize |
+| **Speed tests → Many users / Draft speed-up** | Parallel throughput with llama-batched-bench; speculative decoding with a small same-family draft model |
+| **Chat → Inspector → Show confidence** | Per-word probability heatmap with the alternatives the model almost picked |
+
+Auto-start on Windows: copy `scripts/windows/blocky-autostart.vbs` into your Startup folder (Win+R → `shell:startup`).
 
 The web app restarts `blocky-llm` through a narrow sudoers rule (`/etc/sudoers.d/blocky-services`); runtime choices are saved to `/opt/blocky/data/llm.env`.
 

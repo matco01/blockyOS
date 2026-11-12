@@ -86,6 +86,104 @@ def _read(path: str, mtime: float) -> dict:
     return kv
 
 
+GGML_TYPES = {0: "F32", 1: "F16", 2: "Q4_0", 3: "Q4_1", 6: "Q5_0", 7: "Q5_1", 8: "Q8_0", 9: "Q8_1", 10: "Q2_K", 11: "Q3_K",
+              12: "Q4_K", 13: "Q5_K", 14: "Q6_K", 15: "Q8_K", 16: "IQ2_XXS", 17: "IQ2_XS", 18: "IQ3_XXS", 19: "IQ1_S",
+              20: "IQ4_NL", 21: "IQ3_S", 22: "IQ2_S", 23: "IQ4_XS", 24: "I8", 25: "I16", 26: "I32", 27: "I64", 28: "F64",
+              29: "IQ1_M", 30: "BF16", 34: "TQ1_0", 35: "TQ2_0", 39: "MXFP4"}
+
+
+@lru_cache(maxsize=16)
+def _tensors(path: str, mtime: float) -> dict:
+    """Every tensor's name, shape, type and size in bytes (from the header's tensor table)."""
+    import os
+    with open(path, "rb") as f:
+        if f.read(4) != b"GGUF":
+            raise ValueError("not a GGUF file")
+        r = _Reader(f)
+        r.unpack("<I")
+        n_tensors = r.unpack("<Q")
+        n_kv = r.unpack("<Q")
+        align = 32
+        for _ in range(n_kv):
+            key = r.string()
+            val = r.value(r.unpack("<I"), keep_arrays=False)
+            if key == "general.alignment" and isinstance(val, int):
+                align = val
+        infos = []
+        for _ in range(n_tensors):
+            name = r.string()
+            dims = [r.unpack("<Q") for _ in range(r.unpack("<I"))]
+            ttype = r.unpack("<I")
+            offset = r.unpack("<Q")
+            infos.append({"name": name, "shape": dims, "type": GGML_TYPES.get(ttype, str(ttype)), "offset": offset})
+        data_start = -(-f.tell() // align) * align
+    size = os.path.getsize(path)
+    order = sorted(range(len(infos)), key=lambda i: infos[i]["offset"])
+    for j, i in enumerate(order):  # size = distance to the next tensor (exact, includes alignment padding)
+        end = infos[order[j + 1]]["offset"] if j + 1 < len(order) else size - data_start
+        infos[i]["bytes"] = end - infos[i]["offset"]
+        n = 1
+        for d in infos[i]["shape"]:
+            n *= d
+        infos[i]["params"] = n
+    return {"tensors": infos}
+
+
+def _part(name: str) -> str:
+    """Which part of the network a tensor belongs to, in plain terms."""
+    n = name.split(".", 2)[-1] if name.startswith("blk.") else name
+    if "exps" in n or "ffn_gate_inp" in n or "shexp" in n:
+        return "experts"
+    if n.startswith(("ssm_", "time_mix", "attn_qkv_lin", "linear_attn")) or ".ssm_" in name:
+        return "linear"
+    if n.startswith("attn_") and "norm" not in n:
+        return "attention"
+    if n.startswith("ffn_") and "norm" not in n:
+        return "ffn"
+    return "other"
+
+
+def anatomy(path: Path) -> dict:
+    """The network's real structure: embedding, each layer's parts (sized by bytes), output."""
+    t = _tensors(str(path), path.stat().st_mtime)["tensors"]
+    layers: dict[int, dict] = {}
+    embedding = {"bytes": 0, "params": 0, "types": set()}
+    output = {"bytes": 0, "params": 0, "types": set()}
+    for x in t:
+        if x["name"].startswith("blk."):
+            idx = int(x["name"].split(".")[1])
+            L = layers.setdefault(idx, {"index": idx, "parts": {}})
+            p = L["parts"].setdefault(_part(x["name"]), {"bytes": 0, "params": 0, "types": set(), "tensors": 0})
+            p["bytes"] += x["bytes"]; p["params"] += x["params"]; p["types"].add(x["type"]); p["tensors"] += 1
+        elif x["name"].startswith("token_embd"):
+            embedding["bytes"] += x["bytes"]; embedding["params"] += x["params"]; embedding["types"].add(x["type"])
+        else:  # output, output_norm, rope tables…
+            output["bytes"] += x["bytes"]; output["params"] += x["params"]; output["types"].add(x["type"])
+    out_layers = []
+    for idx in sorted(layers):
+        raw = layers[idx]["parts"]
+        if "linear" in raw and "attention" in raw:
+            # Hybrid layers name their linear-attention projections attn_qkv/attn_gate: they belong to the linear block.
+            a, l = raw.pop("attention"), raw["linear"]
+            l["bytes"] += a["bytes"]; l["params"] += a["params"]; l["types"] |= a["types"]; l["tensors"] += a["tensors"]
+        parts = {k: {**v, "types": sorted(v["types"])} for k, v in raw.items()}
+        mixer = "linear" if "linear" in parts else "attention"
+        out_layers.append({"index": idx, "mixer": mixer, "parts": parts,
+                           "bytes": sum(p["bytes"] for p in parts.values()), "params": sum(p["params"] for p in parts.values())})
+    info = metadata(path)
+    return {
+        "file": path.name, "name": info.get("name"), "architecture": info.get("architecture"),
+        "layers": out_layers,
+        "embedding": {**embedding, "types": sorted(embedding["types"])},
+        "output": {**output, "types": sorted(output["types"])},
+        "total_params": sum(x["params"] for x in t), "total_bytes": sum(x["bytes"] for x in t),
+        "experts": info.get("experts"), "experts_used": info.get("experts_used"),
+        "heads": info.get("heads"), "kv_heads": info.get("kv_heads"), "embedding_length": info.get("embedding"),
+        "tensor_count": len(t),
+        "tied_output": not any(x["name"] == "output.weight" for x in t),  # output reuses the embedding matrix
+    }
+
+
 def metadata(path: Path) -> dict:
     """Summary of a model file. Never raises: errors are reported in the result."""
     info: dict = {"file": path.name, "size_bytes": path.stat().st_size}

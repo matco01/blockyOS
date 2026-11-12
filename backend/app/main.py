@@ -10,6 +10,7 @@ import asyncio
 import csv
 import io
 import json
+import random
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -22,7 +23,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import arena, benchmarks, config, db, evals, generate, lab, memory, system
+from . import arena, benchmarks, config, db, evals, generate, lab, memory, quantlab, system, tools
 
 
 @asynccontextmanager
@@ -30,6 +31,8 @@ async def lifespan(app: FastAPI):
     db.init()
     arena.init()
     evals.init()
+    quantlab.init()
+    tools.init()
     psutil.cpu_percent(interval=None)  # prime the CPU counter so the first reading isn't 0
     app.state.llm = httpx.AsyncClient(base_url=config.LLM_URL, timeout=httpx.Timeout(10, read=300))
     app.state.background = set()  # keep references so tasks aren't garbage-collected
@@ -143,6 +146,7 @@ class ChatIn(BaseModel):
     sampling: Sampling | None = None
     system_prompt: str | None = Field(None, max_length=20_000)  # replaces the default persona
     think_budget: int | None = Field(4096, ge=64, le=65_536)  # max thinking tokens before forcing an answer
+    confidence: bool = False  # stream per-word probabilities (for the confidence view)
 
 
 def _sse(event: dict) -> str:
@@ -211,7 +215,9 @@ async def chat(body: ChatIn):
         if lab.busy:
             msg = {"benchmark": "A benchmark is running. Chat is paused until it finishes.",
                    "arena": "An Arena match is running. Chat is paused until it finishes.",
-                   "eval": "A quality test is running. Chat is paused until it finishes."}.get(
+                   "eval": "A quality test is running. Chat is paused until it finishes.",
+                   "quantlab": "The quantization lab is running. Chat is paused until it finishes.",
+                   "throughput": "A throughput test is running. Chat is paused until it finishes."}.get(
                 lab.busy, "The model is being switched. Try again in a moment.")
             yield _sse({"type": "error", "message": msg})
             return
@@ -244,8 +250,12 @@ async def chat(body: ChatIn):
             return s
 
         try:
+            extra = {"logprobs": True, "top_logprobs": 5} if body.confidence else None
             async for kind, val in generate.stream(app.state.llm, messages, think=body.think, sampling=used_sampling,
-                                                   budget=budget, answer_tokens=4096):
+                                                   budget=budget, answer_tokens=4096, extra=extra):
+                if kind == "probs":
+                    yield _sse({"type": "probs", "items": val})
+                    continue
                 if kind in ("reasoning", "content") and first_token is None:
                     first_token = time.monotonic()
                 if kind == "reasoning":
@@ -365,6 +375,18 @@ async def models():
     await lab.refresh_measured()
     return {"models": lab.list_models(), "runtime": lab.read_runtime(), "catalog": lab.catalog(),
             "hardware": lab.hardware(), "kv_types": lab.KV_TYPES}
+
+
+@app.get("/api/models/{name}/anatomy")
+def model_anatomy(name: str):
+    from . import gguf
+    path = lab.MODELS_DIR / Path(name).name
+    if not path.is_file() or path.suffix != ".gguf":
+        raise HTTPException(404, "Model not found")
+    try:
+        return gguf.anatomy(path)
+    except (OSError, ValueError) as e:
+        raise HTTPException(400, f"Couldn't read the model file: {e}")
 
 
 @app.post("/api/models/runtime")
@@ -563,6 +585,21 @@ def eval_suites():
     return evals.suites_summary()
 
 
+@app.get("/api/evals/fresh")
+def eval_fresh_sets():
+    from . import fresh
+    return [{"key": f"fresh:{k}", "id": k, **v} for k, v in fresh.SETS.items()]
+
+
+@app.get("/api/evals/fresh/{kind}/preview")
+def eval_fresh_preview(kind: str, n: int = 3):
+    """A few freshly generated example questions (new every call), so users can see what they look like."""
+    from . import fresh
+    if kind not in fresh.SETS:
+        raise HTTPException(404, "Unknown fresh set")
+    return [{"q": q["q"], "kind": q["kind"]} for q in fresh.generate(kind, max(1, min(10, n)), random.randint(1, 2**31))]
+
+
 @app.get("/api/evals/suites/{key}")
 def eval_suite(key: str):
     s = evals.all_suites().get(key)
@@ -624,6 +661,82 @@ def eval_cancel(run_id: int):
 @app.delete("/api/evals/{run_id}")
 def eval_delete(run_id: int):
     evals.delete(run_id)
+    return {"ok": True}
+
+
+# ---------- Lab: quantization ----------
+
+@app.get("/api/quantlab")
+def quant_runs():
+    return {"runs": quantlab.list_runs(), "jobs": sorted(quantlab.jobs.values(), key=lambda j: j["started"], reverse=True),
+            "types": quantlab.QUANT_TYPES}
+
+
+@app.post("/api/quantlab")
+async def quant_start(body: dict):  # async: starts a background task
+    if lab.busy:
+        raise HTTPException(409, f"Busy: {lab.busy}")
+    try:
+        run_id = quantlab.create(body)
+    except (ValueError, TypeError) as e:
+        _bad(e)
+    _spawn(quantlab.run(run_id, app.state.llm))
+    return {"id": run_id}
+
+
+@app.post("/api/quantlab/{run_id}/cancel")
+def quant_cancel(run_id: int):
+    quantlab.cancel(run_id)
+    return {"ok": True}
+
+
+@app.delete("/api/quantlab/{run_id}")
+def quant_delete(run_id: int):
+    quantlab.delete(run_id)
+    return {"ok": True}
+
+
+class QuantizeIn(BaseModel):
+    source: str
+    type: str
+
+
+@app.post("/api/quantlab/quantize")
+async def quant_make(body: QuantizeIn):  # async: starts a background task
+    try:
+        return {"id": quantlab.start_quantize(body.source, body.type)}
+    except ValueError as e:
+        _bad(e)
+
+
+# ---------- Lab: throughput & speculative decoding ----------
+
+@app.get("/api/tools/{kind}")
+def tool_runs(kind: str):
+    return tools.list_runs(kind)
+
+
+@app.post("/api/tools/{kind}")
+async def tool_start(kind: str, body: dict):  # async: starts a background task
+    if lab.busy:
+        raise HTTPException(409, f"Busy: {lab.busy}")
+    try:
+        run_id = tools.create(kind, body)
+    except (ValueError, TypeError) as e:
+        _bad(e)
+    _spawn(tools.run(run_id, app.state.llm))
+    return {"id": run_id}
+
+
+@app.post("/api/tools/run/{run_id}/cancel")
+def tool_cancel(run_id: int):
+    tools.cancel(run_id)
+    return {"ok": True}
+
+
+@app.delete("/api/tools/run/{run_id}")
+def tool_delete(run_id: int):
+    tools.delete(run_id)
     return {"ok": True}
 
 
