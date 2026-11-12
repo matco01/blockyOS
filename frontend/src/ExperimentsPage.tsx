@@ -22,7 +22,7 @@ const METRICS: Metric[] = [
   { key: "load", group: "Memory", label: "Load time", unit: "s", better: "lower", get: (r) => r.load_seconds },
   { key: "power", group: "Energy", label: "GPU power while writing", unit: "W", better: "lower", get: (r) => r.telemetry?.speed?.power_avg, fmt: (v) => v.toFixed(0) },
   { key: "tpj", group: "Energy", label: "Efficiency", term: "tpj", unit: "tok/J", better: "higher", get: (r) => (r.speed?.tg && r.telemetry?.speed?.power_avg ? r.speed.tg / r.telemetry.speed.power_avg : null), fmt: (v) => v.toFixed(2) },
-  { key: "hw", group: "Hardware", label: "Share of hardware limit", unit: "%", better: "higher", get: (r) => (r.bottleneck?.efficiency != null ? r.bottleneck.efficiency * 100 : null), fmt: (v) => v.toFixed(0) },
+  { key: "hw", group: "Hardware", label: "Share of hardware limit", unit: "%", better: "higher", get: (r) => (r.bottleneck?.efficiency != null ? Math.min(1, r.bottleneck.efficiency) * 100 : null), fmt: (v) => v.toFixed(0) },
 ];
 
 const PHASES = [
@@ -138,27 +138,33 @@ function Board({ runs }: { runs: ExpRun[] }) {
       <div className="table-wrap xboard">
         <table className="data">
           <thead>
-            <tr><th />{groups.map((g) => <th key={g} colSpan={METRICS.filter((x) => x.group === g).length} className="grp">{g}</th>)}</tr>
-            <tr><th>Run</th>{METRICS.map((x) => <th key={x.key} className={`r ${metric === x.key ? "sel" : ""}`} onClick={() => setMetric(x.key)} title="Click to chart">{x.label}{x.unit && <span className="u"> {x.unit}</span>}</th>)}</tr>
+            <tr><th>Metric</th>{done.map((r, i) => <th key={r.id} className="r run-label" title={r.label}>{i === 0 ? "Baseline" : r.label}</th>)}</tr>
           </thead>
-          <tbody>
-            {done.map((r, i) => (
-              <tr key={r.id}>
-                <td className="run-label">{i === 0 ? <b>{r.label}</b> : r.label}</td>
-                {METRICS.map((x) => {
-                  const v = x.get(r.results);
-                  const d = i === 0 ? null : delta(x, v, x.get(base.results));
-                  const best = done.length > 1 && v != null && v === (x.better === "higher" ? Math.max : Math.min)(...done.map((q) => x.get(q.results) ?? (x.better === "higher" ? -Infinity : Infinity)));
-                  return (
-                    <td key={x.key} className={`r ${best ? "best" : ""} ${metric === x.key ? "sel" : ""}`}>
-                      {v == null ? "–" : (x.fmt ?? n1)(v)}
-                      {d && <span className={`d ${d.tone}`}>{d.text}</span>}
-                    </td>
-                  );
-                })}
-              </tr>
-            ))}
-          </tbody>
+          {groups.map((g) => (
+            <tbody key={g}>
+              <tr className="grp-row"><td colSpan={done.length + 1}>{g}</td></tr>
+              {METRICS.filter((x) => x.group === g).map((x) => {
+                const all = done.map((q) => x.get(q.results));
+                const nums = all.filter((v): v is number => v != null);
+                const bestV = nums.length > 1 ? (x.better === "higher" ? Math.max : Math.min)(...nums) : null;
+                return (
+                  <tr key={x.key} className={metric === x.key ? "sel" : ""} onClick={() => setMetric(x.key)} title="Click to chart">
+                    <td className="mlabel">{x.term ? <Term k={x.term}>{x.label}</Term> : x.label}{x.unit && <span className="u"> {x.unit}</span>}</td>
+                    {done.map((r, i) => {
+                      const v = all[i];
+                      const d = i === 0 ? null : delta(x, v, all[0]);
+                      return (
+                        <td key={r.id} className={`r ${v != null && v === bestV ? "best" : ""}`}>
+                          {v == null ? "–" : (x.fmt ?? n1)(v)}
+                          {d && <span className={`d ${d.tone}`}>{d.text}</span>}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                );
+              })}
+            </tbody>
+          ))}
         </table>
       </div>
       <div className="xchart">
@@ -171,7 +177,7 @@ function Board({ runs }: { runs: ExpRun[] }) {
           </div>
         ))}
       </div>
-      <div className="row-sub">Green = better than the baseline, red = worse, bold = best in its column. Differences under 2% show as “same”. Click a column to chart it.</div>
+      <div className="row-sub">Green = better than the baseline, red = worse, bold = best in its column. Differences under 2% show as “same”. Click a row to chart it.</div>
     </>
   );
 }
@@ -190,7 +196,7 @@ function Bottlenecks({ run }: { run: ExpRun }) {
           <div className="xceil-bar"><div style={{ width: `${pct}%` }} /><span style={{ left: "100%" }} /></div>
           <div className="xceil-legend">
             <span>You get <b>{n1(run.results.speed.tg)} tok/s</b></span>
-            <span>Physical limit ≈ <b>{n1(b.ceiling_tps)} tok/s</b> ({b.gpu_bandwidth_gbps} GB/s ÷ {b.gb_per_token} GB read per word)</span>
+            <span>Physical limit ≈ <b>{n1(b.ceiling_tps)} tok/s</b> (memory speed ÷ {b.gb_per_token} GB read per word{run.results.memory?.layers && run.results.memory.layers.gpu < run.results.memory.layers.total ? ", part of it from slower system RAM" : ""})</span>
           </div>
         </div>
       )}

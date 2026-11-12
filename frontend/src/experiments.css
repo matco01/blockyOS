@@ -52,6 +52,11 @@
 .xc-foot { display: flex; gap: 14px; align-items: center; justify-content: space-between; padding-top: 14px; flex-wrap: wrap; }
 
 /* Compare board */
+.xboard .grp-row td { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-2); font-weight: 600; padding-top: 14px; }
+.xboard tbody tr:not(.grp-row) { cursor: pointer; }
+.xboard td.mlabel { white-space: nowrap; }
+.xboard th.r { text-align: right; max-width: 200px; }
+.xboard .d { display: inline-block; margin-left: 8px; min-width: 44px; text-align: right; }
 .xboard th.grp { text-align: center; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-2); border-bottom: 1px solid var(--separator, rgba(128,128,128,.2)); }
 .xboard th.r { cursor: pointer; white-space: normal; min-width: 76px; vertical-align: bottom; }
 .xboard th .u { font-weight: 400; color: var(--text-2); }

@@ -320,7 +320,9 @@ async def _bench(cfg: dict, vram_total: float, run_id: int, log: list[str]) -> d
         if line.startswith("{"):
             x = json.loads(line)
             key = ("pp" if x.get("n_prompt") and not x.get("n_gen") else "tg") + ("_d4096" if x.get("n_depth") else "")
-            res[key] = round(x.get("avg_ts") or 0, 2)
+            # Median of the repetitions: one hiccup (a timer glitch, a throttling spike) can't skew the result.
+            samples = sorted(x.get("samples_ts") or [])
+            res[key] = round(samples[len(samples) // 2] if samples else (x.get("avg_ts") or 0), 2)
             res[key + "_sd"] = round(x.get("stddev_ts") or 0, 2)
     return res
 
@@ -495,7 +497,8 @@ def analyze(res: dict, cfg: dict, lim: dict) -> dict:
     if eff is not None:
         if eff >= 0.5:
             findings.append({"kind": "bandwidth", "severity": "info",
-                             "title": f"Memory-bandwidth bound at {eff * 100:.0f}% of the hardware ceiling",
+                             "title": "Memory-bandwidth bound, right at the hardware ceiling" if eff >= 0.95
+                                      else f"Memory-bandwidth bound at {eff * 100:.0f}% of the hardware ceiling",
                              "text": f"Writing each word means reading ~{gb_per_token:.2f} GB of weights. At {bw} GB/s the physical limit is ~{ceiling:.0f} tok/s; you get {tg:.0f}. "
                                      "That's normal and close to optimal: only a smaller model/quantization or faster memory can make it much faster."})
         else:
