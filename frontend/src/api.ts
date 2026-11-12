@@ -113,7 +113,13 @@ export type Provenance = {
 };
 export type ExpRun = { id: number; experiment_id: number; created_at: number; status: string; label: string; config: ExpConfig; results: ExpResults;
   phase: string | null; error: string | null; stats?: { mmlu_p?: number | null; mmlu_flips?: { lost: number; gained: number }; env_mismatch?: string[] } };
-export type CanvasNote = { id: string; x: number; y: number; text: string };
+export type WeightFile = { file: string; quant: string | null; bits: number; size_bytes: number; layers: number | null; recipe: Record<string, unknown> | null };
+export type TensorGroup = { pattern: string; count: number; bytes: number; types: string[]; part: string };
+export type VariantSpec = { source: string; qtype: string; imatrix: boolean; overrides: Record<string, string>; output_type?: string | null;
+  embedding_type?: string | null; prune: number[]; name?: string };
+export type WeightJob = VariantSpec & { id: string; out: string; status: string; step: string | null; error: string | null; started: number;
+  size_bytes?: number; imatrix_cached?: boolean; log_tail: string[] };
+export type CanvasNote ={ id: string; x: number; y: number; text: string };
 export type CanvasState = { pos: Record<string, { x: number; y: number }>; notes: CanvasNote[]; view?: { x: number; y: number; k: number } };
 export type Experiment = {
   id: number; created_at: number; name: string; model: string; seed: number; runs?: number; canvas?: CanvasState | null;
@@ -277,6 +283,11 @@ export const api = {
   experimentDelete: (id: number) => json(`/api/experiments/${id}`, { method: "DELETE" }),
   experimentRun: (id: number, label: string, config: Partial<ExpConfig>) => json<{ id: number }>(`/api/experiments/${id}/runs`, send("POST", { label, config })),
   experimentSweep: (id: number, grid: Record<string, unknown[]>, repeats: number) => json<{ ids: number[] }>(`/api/experiments/${id}/sweep`, send("POST", { grid, repeats })),
+  weightsFamily: (model: string) => json<{ files: WeightFile[]; base_types: string[]; tensor_types: string[]; needs_imatrix: string[] }>(`/api/weights/family?model=${encodeURIComponent(model)}`),
+  weightsTensors: (model: string) => json<TensorGroup[]>(`/api/weights/tensors?model=${encodeURIComponent(model)}`),
+  weightsCreate: (spec: VariantSpec) => json<{ id: string }>("/api/weights/variants", send("POST", spec)),
+  weightsJobs: () => json<WeightJob[]>("/api/weights/jobs"),
+  weightsCancel: (id: string) => json(`/api/weights/jobs/${id}/cancel`, send("POST", {})),
   experimentCanvas: (id: number, canvas: CanvasState) => json(`/api/experiments/${id}/canvas`, send("PUT", canvas)),
   experimentCancelQueue: (id: number) => json(`/api/experiments/${id}/cancel-queue`, send("POST", {})),
   experimentCancel: (runId: number) => json(`/api/experiments/runs/${runId}/cancel`, send("POST", {})),

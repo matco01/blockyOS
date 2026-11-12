@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertCircle, Check, Cpu, Download, FlaskConical, Gauge, Loader2, MemoryStick, Play, Plus, Sparkles, Square, Trash2, Zap } from "lucide-react";
+import { AlertCircle, Check, Cpu, Download, FlaskConical, Gauge, Hammer, Loader2, MemoryStick, Play, Plus, Sparkles, Square, Trash2, Zap } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { api, ExpConfig, Experiment, ExpRun, ModelFile, Provenance, Status } from "./api";
 import { LineChart, Term } from "./ui";
 import ResearchCanvas from "./ResearchCanvas";
+import WeightsWorkshop from "./WeightsWorkshop";
 import { colorOf, delta, METRICS, Metric, n1, nameOf } from "./expmetrics";
 
 const PHASES = [
@@ -64,14 +65,16 @@ const VRAM_SIM = [null, 6144, 4096, 2048];
 
 type SweepGrid = Partial<Record<keyof ExpConfig, unknown[]>>;
 
-function ChangePanel({ base, models, onRun, onSweep }: { base: ExpConfig; models: ModelFile[]; onRun: (label: string, cfg: Partial<ExpConfig>) => void; onSweep: (grid: SweepGrid, repeats: number) => void }) {
+function ChangePanel({ base, models, onRun, onSweep, onModels }: { base: ExpConfig; models: ModelFile[]; onRun: (label: string, cfg: Partial<ExpConfig>) => void;
+  onSweep: (grid: SweepGrid, repeats: number) => void; onModels: () => void }) {
   const [mode, setMode] = useState<"single" | "sweep">("single");
+  const [shop, setShop] = useState(() => window.location.hash.includes("workshop=1"));
   const [cfg, setCfg] = useState<ExpConfig>(base);
   const [grid, setGrid] = useState<SweepGrid>({});
   const [repeats, setRepeats] = useState(1);
   useEffect(() => setCfg(base), [base]);
   const baseModel = models.find((m) => m.file === base.model);
-  const family = models.filter((m) => baseModel && m.architecture === baseModel.architecture && m.layers === baseModel.layers);
+  const family = models.filter((m) => baseModel && m.architecture === baseModel.architecture && (m.name ?? "") === (baseModel.name ?? ""));
   const changed = (Object.keys(cfg) as (keyof ExpConfig)[]).filter((k) => String(cfg[k] ?? "") !== String(base[k] ?? ""));
   const set = (patch: Partial<ExpConfig>) => setCfg((c) => ({ ...c, ...patch }));
   const inGrid = (k: keyof ExpConfig, v: unknown) => (grid[k] ?? []).some((x) => String(x ?? "") === String(v ?? ""));
@@ -93,8 +96,12 @@ function ChangePanel({ base, models, onRun, onSweep }: { base: ExpConfig; models
         <span className="row-sub">{mode === "single" ? "Change one setting and profile it against the baseline."
           : "Select several values per setting. Every combination gets queued and profiled one after another; leave it running."}</span>
       </div>
-      <div className="xc-row"><div><b>Weights</b><span>Same model, different <Term k="quant">quantization</Term>{family.length < 2 && <> · create more in <a href="#/models?tab=compress">Models → Compress</a></>}</span></div>
-        <div className="segmented wrap">{family.map((m) => <Opt key={m.file} k="model" v={m.file} label={`${m.quant} · ${(m.size_bytes / 2 ** 30).toFixed(1)} GB`} />)}</div></div>
+      <div className="xc-row"><div><b>Weights</b><span>Versions of this model's weights: downloaded, or built in the workshop</span></div>
+        <div className="ws-opts">
+          <div className="segmented wrap">{family.map((m) => <Opt key={m.file} k="model" v={m.file} label={`${m.file.replace(".gguf", "").replace(/^.*?-(?=(UD-)?(I?Q\d|BF16|F16))/i, "")} · ${(m.size_bytes / 2 ** 30).toFixed(1)} GB`} />)}</div>
+          <button className={`btn small ${shop ? "" : "ghost"}`} onClick={() => setShop(!shop)}><Hammer /> {shop ? "Close workshop" : "Make a variant"}</button>
+        </div></div>
+      {shop && <div className="xc-shop"><WeightsWorkshop model={base.model} onBuilt={onModels} /></div>}
       <div className="xc-row"><div><b><Term k="kv">KV cache type</Term></b><span>-ctk / -ctv</span></div>
         <div className="segmented"><Opt k="kv" v="f16" label="f16" /><Opt k="kv" v="q8_0" label="q8_0" /><Opt k="kv" v="q4_0" label="q4_0" /></div></div>
       <div className="xc-row"><div><b><Term k="context">Context size</Term></b><span>-c</span></div>
@@ -541,7 +548,7 @@ export default function ExperimentsPage({ status }: { status: Status | null }) {
             {baseline && (
               <>
                 <div className="group-label">2 · Change one variable</div>
-                <div className="group pad"><ChangePanel base={baseline.config} models={models} onRun={runProfile} onSweep={runSweep} /></div>
+                <div className="group pad"><ChangePanel base={baseline.config} models={models} onRun={runProfile} onSweep={runSweep} onModels={() => api.models().then((d) => setModels(d.models)).catch(() => {})} /></div>
 
                 <div className="group-label">3 · Results</div>
                 <div className="group pad">

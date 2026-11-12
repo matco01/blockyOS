@@ -251,6 +251,7 @@ export default function App() {
                 : status?.busy === "arena" ? "Arena match…"
                 : status?.busy === "eval" ? "Running tests…"
                 : status?.busy === "experiment" ? "Profiling…"
+                : status?.busy === "weights" ? "Building weights…"
                 : status?.busy ? "Lab busy…"
                 : status?.model_ready ? status.model : "Starting model…"}
             </button>

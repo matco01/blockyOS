@@ -24,7 +24,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import arena, benchmarks, config, db, evals, generate, lab, memory, profile, quantlab, system, tools
+from . import arena, benchmarks, config, db, evals, generate, lab, memory, profile, quantlab, system, tools, weights
 
 
 @asynccontextmanager
@@ -35,6 +35,7 @@ async def lifespan(app: FastAPI):
     quantlab.init()
     tools.init()
     profile.init()
+    weights.init()
     psutil.cpu_percent(interval=None)  # prime the CPU counter so the first reading isn't 0
     app.state.llm = httpx.AsyncClient(base_url=config.LLM_URL, timeout=httpx.Timeout(10, read=300))
     app.state.background = set()  # keep references so tasks aren't garbage-collected
@@ -223,7 +224,8 @@ async def chat(body: ChatIn):
                    "eval": "A quality test is running. Chat is paused until it finishes.",
                    "quantlab": "The quantization lab is running. Chat is paused until it finishes.",
                    "throughput": "A throughput test is running. Chat is paused until it finishes.",
-                   "experiment": "An experiment profile is running. Chat is paused until it finishes."}.get(
+                   "experiment": "An experiment profile is running. Chat is paused until it finishes.",
+                   "weights": "New model weights are being built. Chat is paused until it finishes."}.get(
                 lab.busy, "The model is being switched. Try again in a moment.")
             yield _sse({"type": "error", "message": msg})
             return
@@ -781,6 +783,44 @@ def experiments_sweep(exp_id: int, body: dict):
     except (ValueError, TypeError) as e:
         _bad(e)
     return {"ids": ids}
+
+
+# ---------- Weights workshop ----------
+
+@app.get("/api/weights/family")
+def weights_family(model: str):
+    try:
+        return {"files": weights.family(model), "base_types": weights.BASE_TYPES, "tensor_types": weights.TENSOR_TYPES,
+                "needs_imatrix": sorted(weights.NEEDS_IMATRIX)}
+    except (OSError, ValueError) as e:
+        _bad(e)
+
+
+@app.get("/api/weights/tensors")
+def weights_tensors(model: str):
+    try:
+        return weights.tensor_groups(model)
+    except (OSError, ValueError) as e:
+        _bad(e)
+
+
+@app.post("/api/weights/variants")
+async def weights_create(body: dict):  # async: starts a background task
+    try:
+        return {"id": weights.start(body)}
+    except (ValueError, TypeError) as e:
+        _bad(e)
+
+
+@app.get("/api/weights/jobs")
+def weights_jobs():
+    return weights.list_jobs()
+
+
+@app.post("/api/weights/jobs/{job_id}/cancel")
+def weights_cancel(job_id: str):
+    weights.cancel(job_id)
+    return {"ok": True}
 
 
 @app.put("/api/experiments/{exp_id}/canvas")

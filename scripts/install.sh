@@ -35,7 +35,7 @@ if [[ ! -x "$PREFIX/llama.cpp/bin/llama-server" ]]; then
     echo "    no CUDA toolkit found, building CPU-only"
   fi
   sudo -u blocky env PATH="$PATH" cmake -S "$LLAMA_SRC" -B "$LLAMA_SRC/build" "${CMAKE_ARGS[@]}" >/dev/null
-  sudo -u blocky env PATH="$PATH" cmake --build "$LLAMA_SRC/build" --config Release -j"$(nproc)" --target llama-server llama-bench llama-perplexity llama-quantize llama-batched-bench
+  sudo -u blocky env PATH="$PATH" cmake --build "$LLAMA_SRC/build" --config Release -j"$(nproc)" --target llama-server llama-bench llama-perplexity llama-quantize llama-batched-bench llama-imatrix
   # Copy the server, benchmark tool and their shared libraries.
   mkdir -p "$PREFIX/llama.cpp/bin"
   # --remove-destination replaces files instead of overwriting them in place: a running

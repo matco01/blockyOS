@@ -608,6 +608,15 @@ def file_sha256(path: Path) -> str | None:
     return cache[key]
 
 
+def _recipe(model: str) -> dict | None:
+    """How a weights-workshop variant was made (source, imatrix, overrides), if it was made here."""
+    p = (lab.MODELS_DIR / model).with_suffix(".recipe.json")
+    try:
+        return json.loads(p.read_text()) if p.is_file() else None
+    except (OSError, ValueError):
+        return None
+
+
 def provenance(cfg: dict) -> dict:
     from . import benchmarks
     hw = lab.hardware()
@@ -627,7 +636,8 @@ def provenance(cfg: dict) -> dict:
         "llama_cpp": {"version": m.group(1) if m else None, "commit": m.group(2) if m else None,
                       "built_with": next((l.strip() for l in ver.splitlines() if l.startswith("built with")), None)},
         "model": {"file": cfg["model"], "sha256": file_sha256(lab.MODELS_DIR / cfg["model"]),
-                  "bytes": (lab.MODELS_DIR / cfg["model"]).stat().st_size},
+                  "bytes": (lab.MODELS_DIR / cfg["model"]).stat().st_size,
+                  "recipe": _recipe(cfg["model"])},
         "data": {"mmlu_pro_sha256": file_sha256(benchmarks.path("mmlu_pro")), "mmlu_seed": MMLU_SEED,
                  "wikitext_sha256": file_sha256(text) if text.is_file() else None},
         "gpu": {"name": g.get("name"), "driver": g.get("driver"), "vram_mb": g.get("vram_mb"), "pcie": g.get("pcie"),
