@@ -207,7 +207,7 @@ async def _gpu(jid: int, fn, *args) -> None:
 async def _activations(jid: int, log: list[str], d: Path, prompt: str) -> dict:
     _save(jid, step="running the prompt")
     out = WORK / f"act-{jid}.json"
-    if await _py(jid, [str(TOOLS / "activations.py"), "--model", str(d), "--prompt", prompt, "--out", str(out)], log, timeout=1800):
+    if await _py(jid, [str(TOOLS / "activations.py"), "--model", str(d), "--prompt", prompt, "--out", str(out), "--timing", "--knockout"], log, timeout=1800):
         raise RuntimeError(" | ".join(log[-3:])[-400:])
     res = json.loads(out.read_text())
     out.unlink(missing_ok=True)
@@ -224,7 +224,8 @@ def start_lora(body: dict) -> int:
          "lr": float(body.get("lr") or 2e-4), "rank": max(1, min(256, int(body.get("rank") or 16))),
          "batch": max(1, min(64, int(body.get("batch") or 4))), "max_len": max(64, min(8192, int(body.get("max_len") or 512))),
          "outtype": body.get("outtype") if body.get("outtype") in ("q8_0", "f16", "bf16") else "q8_0",
-         "name": re.sub(r"[^A-Za-z0-9._-]+", "-", str(body.get("name") or "")).strip("-")[:40]}
+         "name": re.sub(r"[^A-Za-z0-9._-]+", "-", str(body.get("name") or "")).strip("-")[:40],
+         "qlora": bool(body.get("qlora"))}
     if not re.match(r"^[A-Za-z0-9_-]{1,40}$", p["split"]):
         raise ValueError("Bad split name")
     jid = _new("lora", p)
@@ -252,6 +253,8 @@ async def _lora(jid: int, log: list[str], d: Path, p: dict) -> dict:
         _save(jid, step="loading data")
         args = [str(TOOLS / "lora.py"), "--model", str(d), "--data", p["data"], "--split", p["split"], "--rows", str(p["rows"]), "--steps", str(p["steps"]),
                 "--lr", str(p["lr"]), "--rank", str(p["rank"]), "--batch", str(p["batch"]), "--max_len", str(p["max_len"]), "--out", str(out)]
+        if p["qlora"]:
+            args.append("--qlora")
         if await _py(jid, args, log):
             raise RuntimeError(" | ".join(log[-3:])[-400:])
     finally:
@@ -261,7 +264,7 @@ async def _lora(jid: int, log: list[str], d: Path, p: dict) -> dict:
 
     # Back to GGUF with the same llama.cpp tree the engine was built from.
     _save(jid, step="converting to GGUF")
-    tag = p["name"] or f"lora-r{p['rank']}-{p['steps']}s"
+    tag = p["name"] or f"{'q' if p['qlora'] else ''}lora-r{p['rank']}-{p['steps']}s"
     name = f"{d.name.split('--', 1)[-1]}-{tag}-{p['outtype'].upper()}.gguf"
     dest = lab.MODELS_DIR / name
     if dest.exists():

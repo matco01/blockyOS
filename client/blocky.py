@@ -200,6 +200,54 @@ class Experiment:
                 return
             time.sleep(poll)
 
+    # ---- Experiment trackers ----
+    def _tracker_rows(self):
+        import re
+        clean = lambda k: re.sub(r"[^A-Za-z0-9_.\- /]", "_", k)[:250]  # noqa: E731
+        info = self.info()
+        for r in info["runs_list"]:
+            if r["status"] != "done":
+                continue
+            metrics = {clean(k): float(v) for k, v in Run(r).metrics.items()
+                       if isinstance(v, (int, float)) and not isinstance(v, bool) and not k.startswith(("provenance.", "hardware.", "imported_from."))}
+            params = {clean(k): str(v) for k, v in _flat(r["config"]).items()}
+            prov = {clean(f"blocky.{k}"): str(v)[:500] for k, v in _flat({"provenance": r["results"].get("provenance") or {},
+                                                                        "hardware": r["results"].get("hardware") or {}}).items() if v is not None}
+            tags = {"blocky.run_id": str(r["id"]), "blocky.parent_id": str(r.get("parent_id") or ""), "blocky.experiment": info["name"], **prov}
+            yield r, metrics, params, tags
+
+    def to_mlflow(self, tracking_uri: str | None = None, experiment_name: str | None = None) -> list[str]:
+        """Log every finished run to MLflow: config as params, every number as metrics, provenance + hardware as tags.
+
+        Default: a local SQLite file `./mlflow.db` (open it with `mlflow ui --backend-store-uri sqlite:///mlflow.db`).
+        Pass a tracking server URI to log there instead. Needs `pip install mlflow` (or mlflow-skinny + sqlalchemy + alembic).
+        """
+        import mlflow
+        mlflow.set_tracking_uri(tracking_uri or "sqlite:///mlflow.db")
+        exp = mlflow.set_experiment(experiment_name or f"blocky · {self.info()['name']}")
+        ids = []
+        for r, metrics, params, tags in self._tracker_rows():
+            with mlflow.start_run(experiment_id=exp.experiment_id, run_name=r["label"]) as run:
+                mlflow.log_params(params)
+                mlflow.log_metrics(metrics)
+                mlflow.set_tags(tags)
+                mlflow.log_dict({k: v for k, v in r["results"].items() if k != "series"}, "blocky_results.json")
+                ids.append(run.info.run_id)
+        return ids
+
+    def to_wandb(self, project: str = "blocky", mode: str = "offline", entity: str | None = None) -> int:
+        """Log every finished run to Weights & Biases. Offline by default: nothing leaves this machine until you
+        run `wandb sync` yourself. Needs `pip install wandb`."""
+        import wandb
+        name = self.info()["name"]
+        n = 0
+        for r, metrics, params, tags in self._tracker_rows():
+            run = wandb.init(project=project, entity=entity, name=r["label"], group=name, config={**params, **tags}, mode=mode, reinit="finish_previous")
+            run.summary.update(metrics)
+            run.finish()
+            n += 1
+        return n
+
     def export_csv(self, path: str) -> str:
         with urllib.request.urlopen(f"{self.c.url}/api/experiments/{self.id}/export.csv", timeout=self.c.timeout) as r, open(path, "wb") as f:
             f.write(r.read())

@@ -44,8 +44,19 @@ WSL stops Linux when no terminal is attached. Keep `wsl -d blocky` open while us
   `bash scripts/setup-ml.sh` (as the `blocky` user; installs into `/opt/blocky/ml-venv`, PyTorch CUDA 12.6 wheels so Pascal GPUs still work)
 - **Notebooks** (JupyterLab on 127.0.0.1:8888 with a token, the `blocky` Python client importable):
   `sudo bash scripts/setup-notebooks.sh`
+- **vLLM** as a second framework in Experiments (NVIDIA RTX 20-series or newer): `bash scripts/setup-vllm.sh`
+  (as the `blocky` user; its own environment in `/opt/blocky/vllm-venv`)
+- **GPU kernel profiles** use NVIDIA Nsight Systems (`nsys`, part of the CUDA toolkit). Kernel tracing works on a regular
+  Linux install, not inside WSL.
 - **Custom engines** (llama.cpp builds) and **weight variants** need nothing extra: they're built from the UI into
   `/opt/blocky/engines` and the models folder. Building an engine runs that repository's code, so only add ones you trust.
+
+## Tests
+
+- Backend: `python -m venv .venv && .venv/bin/pip install -r backend/requirements-dev.txt && .venv/bin/python -m pytest backend/tests`
+  (runs anywhere: no GPU, no models; everything happens in a temporary folder)
+- Frontend: `cd frontend && npm test`
+- GitHub Actions runs both, plus the type check and build, on every push (`.github/workflows/ci.yml`).
 
 ## What is NOT in this repository (on purpose)
 

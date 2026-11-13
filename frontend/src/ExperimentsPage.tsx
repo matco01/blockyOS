@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, Check, Cpu, Download, FlaskConical, Gauge, Hammer, Loader2, MemoryStick, Play, Plus, Sparkles, Square, Trash2, Upload, Zap } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { api, Engine, ExpConfig, Experiment, ExpRun, ModelFile, Provenance, Status } from "./api";
+import { api, Engine, ExpConfig, Experiment, ExpRun, KernelProfile, ModelFile, Provenance, Status, TorchStatus } from "./api";
 import { LineChart, Term } from "./ui";
 import ResearchCanvas from "./ResearchCanvas";
 import WeightsWorkshop from "./WeightsWorkshop";
@@ -29,7 +29,8 @@ function Tile({ icon: Icon, color, label, value, unit, sub }: { icon: LucideIcon
 }
 
 function Profile({ run }: { run: ExpRun }) {
-  const r = run.results, s = r.speed, m = r.mmlu, hw = r.hw;
+  const r = run.results, s = r.speed ?? (r.serving ? { tg: r.serving.tg ?? undefined, tg_sd: r.serving.tg_sd ?? undefined, pp: r.serving.pp ?? undefined, pp_sd: r.serving.pp_sd ?? undefined } : undefined),
+    m = r.mmlu, hw = r.hw;
   return (
     <div className="xt-grid">
       <Tile icon={Gauge} color="#7c5cff" label={<Term k="tg">Decode</Term>} value={s?.tg ? n1(s.tg) : "–"} unit={s?.tg_sd ? `± ${s.tg_sd.toFixed(1)} tok/s` : "tok/s"}
@@ -74,7 +75,8 @@ function ChangePanel({ base: rawBase, models, onRun, onSweep, onModels }: { base
   const [engineList, setEngineList] = useState<Engine[]>([]);
   const [eng, setEng] = useState(false);
   const loadEngines = () => api.engines().then(setEngineList).catch(() => {});
-  useEffect(() => { loadEngines(); }, []);
+  const [ckpts, setCkpts] = useState<TorchStatus["checkpoints"]>([]);
+  useEffect(() => { loadEngines(); api.torchStatus().then((s) => setCkpts(s.checkpoints)).catch(() => {}); }, []);
   const [mode, setMode] = useState<"single" | "sweep">("single");
   const [shop, setShop] = useState(() => window.location.hash.includes("workshop=1"));
   const [cfg, setCfg] = useState<ExpConfig>(base);
@@ -85,7 +87,13 @@ function ChangePanel({ base: rawBase, models, onRun, onSweep, onModels }: { base
   const family = models.filter((m) => baseModel && m.architecture === baseModel.architecture && (m.name ?? "") === (baseModel.name ?? ""));
   const others = models.filter((m) => !family.includes(m) && !m.error);
   const changed = (Object.keys(cfg) as (keyof ExpConfig)[]).filter((k) => String(cfg[k] ?? "") !== String(base[k] ?? ""));
-  const set = (patch: Partial<ExpConfig>) => setCfg((c) => ({ ...c, ...patch }));
+  const set = (patch: Partial<ExpConfig>) => setCfg((c) => {
+    const next = { ...c, ...patch };
+    // Engines run different formats: vLLM takes checkpoints, llama.cpp takes GGUF. Keep the pair valid.
+    if (patch.engine === "vllm" && !next.model.startsWith("hf:") && ckpts[0]) next.model = `hf:${ckpts[0].id}`;
+    if (patch.engine && patch.engine !== "vllm" && next.model.startsWith("hf:")) next.model = base.model.startsWith("hf:") ? (family[0]?.file ?? models[0]?.file ?? next.model) : base.model;
+    return next;
+  });
   const inGrid = (k: keyof ExpConfig, v: unknown) => (grid[k] ?? []).some((x) => String(x ?? "") === String(v ?? ""));
   const toggle = (k: keyof ExpConfig, v: unknown) => setGrid((g) => {
     const cur = g[k] ?? [];
@@ -121,6 +129,11 @@ function ChangePanel({ base: rawBase, models, onRun, onSweep, onModels }: { base
           <button className={`btn small ${eng ? "" : "ghost"}`} onClick={() => setEng(!eng)}><Cpu /> {eng ? "Close" : "Add engine"}</button>
         </div></div>
       {eng && <div className="xc-shop"><EnginesPanel onChange={loadEngines} /></div>}
+      {(mode === "sweep" ? (grid.engine ?? []).includes("vllm") : cfg.engine === "vllm") && (
+        <div className="xc-row"><div><b>Checkpoint (vLLM)</b><span>vLLM runs original Hugging Face weights (16-bit). Download more in Internals → Checkpoints.</span></div>
+          <div className="segmented wrap">{ckpts.length ? ckpts.map((c) => <Opt key={c.id} k="model" v={`hf:${c.id}`} label={`${c.repo} · ${(c.size_bytes / 2 ** 30).toFixed(1)} GB`} />)
+            : <span className="row-sub" style={{ padding: "4px 10px" }}>No checkpoints yet</span>}</div></div>
+      )}
       <div className="xc-row"><div><b><Term k="kv">KV cache type</Term></b><span>-ctk / -ctv</span></div>
         <div className="segmented"><Opt k="kv" v="f16" label="f16" /><Opt k="kv" v="q8_0" label="q8_0" /><Opt k="kv" v="q4_0" label="q4_0" /></div></div>
       <div className="xc-row"><div><b><Term k="context">Context size</Term></b><span>-c</span></div>
@@ -294,28 +307,64 @@ function TestProtocol({ exp, onSaved }: { exp: Experiment; onSaved: () => void }
   const [open, setOpen] = useState(false);
   const [tasks, setTasks] = useState(cur?.tasks ?? "");
   const [limit, setLimit] = useState(cur?.limit ?? 100);
+  const [kern, setKern] = useState(!!exp.protocol?.kernels);
   const [err, setErr] = useState<string | null>(null);
-  useEffect(() => { setTasks(exp.protocol?.lm_eval?.tasks ?? ""); setLimit(exp.protocol?.lm_eval?.limit ?? 100); }, [exp.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { setTasks(exp.protocol?.lm_eval?.tasks ?? ""); setLimit(exp.protocol?.lm_eval?.limit ?? 100); setKern(!!exp.protocol?.kernels); }, [exp.id]); // eslint-disable-line react-hooks/exhaustive-deps
   const save = async () => {
     setErr(null);
-    try { await api.experimentProtocol(exp.id, tasks.trim() ? { tasks, limit } : null); setOpen(false); onSaved(); } catch (e) { setErr((e as Error).message); }
+    try { await api.experimentProtocol(exp.id, tasks.trim() ? { tasks, limit } : null, kern); setOpen(false); onSaved(); } catch (e) { setErr((e as Error).message); }
   };
   return (
     <div className="tp">
-      <span className="row-sub"><b>Every run measures:</b> memory · MMLU-Pro (560) · long context (2k…ctx) · speed (llama-bench) · perplexity & KLD · telemetry{cur ? <> · <b>lm-eval: {cur.tasks}</b> (limit {cur.limit})</> : ""}</span>
+      <span className="row-sub"><b>Every run measures:</b> memory · MMLU-Pro (560) · long context (2k…ctx) · serving speed · llama-bench speed · perplexity & KLD · telemetry
+        {cur ? <> · <b>lm-eval: {cur.tasks}</b> (limit {cur.limit})</> : ""}{exp.protocol?.kernels ? <> · <b>GPU kernel profile</b></> : ""}</span>
       <button className="btn small ghost" onClick={() => setOpen(!open)}>{open ? "Close" : "Add tests"}</button>
       {open && (
         <div className="tp-edit">
-          <div className="row-sub">Run <b>lm-evaluation-harness</b> tasks too, the field's standard tool, against each run's exact server (greedy, seed 0). Use generative tasks such as <code>gsm8k</code>, <code>ifeval</code>, <code>bbh_cot_fewshot</code>, <code>minerva_math</code>. Multiple-choice log-likelihood tasks need prompt log-probs, which this endpoint doesn't provide; MMLU-Pro above already covers that style. Applies to runs queued from now on.</div>
+          <div className="row-sub">Run <b>lm-evaluation-harness</b> tasks too, the field's standard tool, against each run's exact server (greedy, seed 0). Use generative tasks such as <code>gsm8k</code>, <code>ifeval</code>, <code>bbh_cot_fewshot</code>, <code>minerva_math</code>. Multiple-choice log-likelihood tasks need prompt log-probs, which these servers don't provide; MMLU-Pro above already covers that style. Applies to runs queued from now on.</div>
           <div className="ws-grid">
             <label><span>Tasks</span><input className="field" value={tasks} onChange={(e) => setTasks(e.target.value)} placeholder="gsm8k,ifeval" /></label>
             <label><span>Questions per task (limit)</span><input className="field" type="number" min={1} max={5000} value={limit} onChange={(e) => setLimit(Number(e.target.value))} />
-              <em>gsm8k at 100 ≈ 3–5 min on a 9B at 60 tok/s.</em></label>
+              <em>gsm8k at 100 takes a few minutes on a fast 9B setup.</em></label>
+            <label className="ws-check"><input type="checkbox" checked={kern} onChange={(e) => setKern(e.target.checked)} />
+              <span><b>GPU kernel profile</b><em>Traces every GPU kernel with NVIDIA Nsight Systems during short prefill and decode runs, and groups the time by operation (matrix multiply, attention, normalization…). llama.cpp runs only; needs a system where CUDA kernel tracing works (regular Linux; not WSL).</em></span></label>
           </div>
-          <div className="xc-btns"><button className="btn small" onClick={save}>Save</button>{cur && <button className="btn small ghost" onClick={() => { setTasks(""); api.experimentProtocol(exp.id, null).then(onSaved); setOpen(false); }}>Remove lm-eval</button>}</div>
+          <div className="xc-btns"><button className="btn small" onClick={save}>Save</button>{(cur || exp.protocol?.kernels) && <button className="btn small ghost" onClick={() => { setTasks(""); setKern(false); api.experimentProtocol(exp.id, null, false).then(onSaved); setOpen(false); }}>Remove extra tests</button>}</div>
           {err && <div className="error"><AlertCircle /> {err}</div>}
         </div>
       )}
+    </div>
+  );
+}
+
+/* ---------- GPU kernels ---------- */
+
+const KCOLORS: Record<string, string> = { "Matrix multiply (weights)": "var(--series-1)", "Attention": "var(--series-2)", "Linear attention / state": "var(--series-4)",
+  "Normalization": "var(--series-3)" };
+
+function KernelBars({ runs }: { runs: ExpRun[] }) {
+  const rs = runs.filter((r) => r.results.kernels);
+  if (!rs.length) return null;
+  const cats = Array.from(new Set(rs.flatMap((r) => [...(r.results.kernels?.decode?.categories ?? []), ...(r.results.kernels?.prefill?.categories ?? [])].map((c) => c.category))));
+  const bar = (k: KernelProfile | undefined) => k && (
+    <div className="xbar-track stack">{k.categories.map((c) => c.share > 0.004 &&
+      <div key={c.category} style={{ flex: c.share, background: KCOLORS[c.category] ?? "var(--split-other)" }} title={`${c.category}: ${(c.share * 100).toFixed(1)}% · ${c.ms.toFixed(1)} ms · ${c.calls} launches`} />)}</div>
+  );
+  return (
+    <div className="xsplit2">
+      <div className="mini-title">GPU time by operation <span className="muted">(Nsight Systems kernel trace; hover for details)</span></div>
+      <div className="xlegend top">{cats.map((c) => <span key={c}><i className="sq" style={{ background: KCOLORS[c] ?? "var(--split-other)" }} />{c}</span>)}</div>
+      {rs.map((r, i) => r.results.kernels!.available ? (
+        <div key={r.id} className="kb-run">
+          <div className="xs-name"><span className="xdot" style={{ background: colorOf(i) }} />{nameOf(r, runs.indexOf(r))}</div>
+          <div className="kb-row"><span>Decode</span>{bar(r.results.kernels!.decode)}</div>
+          <div className="kb-row"><span>Prefill</span>{bar(r.results.kernels!.prefill)}</div>
+          <details className="kb-top"><summary>Top kernels (decode)</summary>
+            <table className="data"><tbody>{(r.results.kernels!.decode?.top ?? []).slice(0, 8).map((k) => (
+              <tr key={k.name}><td className="mono-cell">{k.name}</td><td>{k.category}</td><td className="r">{(k.share * 100).toFixed(1)}%</td><td className="r">{k.calls}×</td></tr>))}</tbody></table>
+          </details>
+        </div>
+      ) : <div key={r.id} className="row-sub">{nameOf(r, runs.indexOf(r))}: {r.results.kernels!.note}</div>)}
     </div>
   );
 }
@@ -392,7 +441,7 @@ function LimitTable({ runs }: { runs: ExpRun[] }) {
           <div className="xlt-row" key={r.id}>
             <div className="xlt-run"><span className="xdot" style={{ background: colorOf(i) }} />{nameOf(r, i)}</div>
             <div className="xlt-lim">{lim ? <><span className={`xchip k${lim.what.length % 3}`}>{t?.short ?? lim.what}</span><em title={t?.fix}>{lim.evidence}</em></> : "–"}</div>
-            <div>{d?.roof_tps && r.results.speed?.tg ? <UseBar value={r.results.speed.tg} max={d.roof_tps} color="var(--series-1)" text={`${n1(r.results.speed.tg)} of ~${n1(d.roof_tps)} tok/s possible`} /> : "–"}</div>
+            <div>{(() => { const tg = r.results.speed?.tg ?? r.results.serving?.tg; return d?.roof_tps && tg ? <UseBar value={tg} max={d.roof_tps} color="var(--series-1)" text={`${n1(tg)} of ~${n1(d.roof_tps)} tok/s possible`} /> : "–"; })()}</div>
             <div>{p?.roof_tflops ? <UseBar value={p.achieved_tflops} max={p.roof_tflops} color="var(--series-3)" text={`${p.achieved_tflops} of ${p.roof_tflops} TFLOPS`} /> : "–"}</div>
           </div>
         );
@@ -694,7 +743,7 @@ export default function ExperimentsPage({ status }: { status: Status | null }) {
                 <div className="group pad"><LimitTable runs={done} /></div>
 
                 <div className="group-label">Where the time goes, per generated token</div>
-                <div className="group pad"><TimeSplit runs={done} /></div>
+                <div className="group pad"><TimeSplit runs={done} />{done.some((r) => r.results.kernels) && <div className="kb-wrap"><KernelBars runs={done} /></div>}</div>
 
                 <details className="group pad xadv" open={new URLSearchParams(window.location.hash.split("?")[1] ?? "").has("roofline") || undefined}>
                   <summary><b>Roofline</b> <span className="row-sub">the standard performance-engineering chart, one run at a time</span></summary>

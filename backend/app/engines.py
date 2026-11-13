@@ -52,10 +52,40 @@ def init() -> None:
         c.execute("UPDATE engines SET status = 'error', error = 'Interrupted by a restart' WHERE status IN ('queued', 'building')")
 
 
+VLLM_VENV = config.DATA_DIR.parent / "vllm-venv"
+
+
+def vllm_installed() -> bool:
+    return (VLLM_VENV / "bin" / "vllm").is_file()
+
+
+def kind(engine: str | None) -> str:
+    """'llamacpp' for stock and built llama.cpp engines, 'vllm' for the vLLM framework."""
+    return "vllm" if engine == "vllm" else "llamacpp"
+
+
+_vllm_version: str | None = None
+
+
+def vllm_version() -> str | None:
+    global _vllm_version
+    if _vllm_version is None and vllm_installed():
+        try:
+            _vllm_version = subprocess.run([str(VLLM_VENV / "bin" / "python"), "-c", "import vllm; print(vllm.__version__)"],
+                                           capture_output=True, text=True, timeout=120).stdout.strip() or ""
+        except (OSError, subprocess.SubprocessError):
+            _vllm_version = ""
+    return _vllm_version or None
+
+
 def bin_dir(engine: str | None) -> Path:
     """Where an engine's binaries live. 'stock' (or nothing) = the build Blocky installed."""
     if not engine or engine == "stock":
         return lab.LLAMA_BIN
+    if engine == "vllm":
+        if not vllm_installed():
+            raise ValueError("vLLM isn't installed (scripts/setup-vllm.sh)")
+        return VLLM_VENV / "bin"
     if not re.fullmatch(r"[a-z0-9-]{1,40}", engine):
         raise ValueError("Unknown engine")
     d = ROOT / engine / "bin"
@@ -73,9 +103,13 @@ def _row(r) -> dict:
 def list_engines() -> list[dict]:
     with db.connect() as c:
         rows = [_row(r) for r in c.execute("SELECT * FROM engines ORDER BY created_at")]
-    stock = {"id": "stock", "name": "stock", "repo": "https://github.com/ggml-org/llama.cpp", "ref": "installed",
+    stock = {"id": "stock", "name": "stock", "kind": "llamacpp", "repo": "https://github.com/ggml-org/llama.cpp", "ref": "installed",
              "commit_sha": _stock_commit(), "status": "ready", "built_at": None}
-    return [stock] + rows
+    out = [stock] + [{**r, "kind": "llamacpp"} for r in rows]
+    if vllm_installed():
+        out.append({"id": "vllm", "name": "vLLM", "kind": "vllm", "repo": "https://github.com/vllm-project/vllm", "ref": vllm_version() or "installed",
+                    "commit_sha": None, "status": "ready", "built_at": None})
+    return out
 
 
 def get_log(engine_id: str) -> str:

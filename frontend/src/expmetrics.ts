@@ -20,6 +20,10 @@ export const METRICS: Metric[] = [
   { key: "tg_long", group: "Speed", label: "Decode at 4k context", unit: "tok/s", better: "higher", get: (r) => r.speed?.tg_d4096, sd: (r) => r.speed?.tg_d4096_sd },
   { key: "pp", group: "Speed", label: "Prefill (reading)", term: "pp", unit: "tok/s", better: "higher", get: (r) => r.speed?.pp, sd: (r) => r.speed?.pp_sd, fmt: (v) => v.toFixed(0) },
   { key: "pp_long", group: "Speed", label: "Prefill at 4k context", unit: "tok/s", better: "higher", get: (r) => r.speed?.pp_d4096, sd: (r) => r.speed?.pp_d4096_sd, fmt: (v) => v.toFixed(0) },
+  { key: "srv_tg", group: "Speed", label: "Serving: decode (any engine)", unit: "tok/s", better: "higher", get: (r) => r.serving?.tg, sd: (r) => r.serving?.tg_sd,
+    note: "Measured the same way for every engine: streaming through the chat API, 512-token prompt, 128 tokens" },
+  { key: "srv_pp", group: "Speed", label: "Serving: prefill (any engine)", unit: "tok/s", better: "higher", get: (r) => r.serving?.pp, sd: (r) => r.serving?.pp_sd, fmt: (v) => v.toFixed(0) },
+  { key: "srv_ttft", group: "Speed", label: "Serving: time to first token", unit: "ms", better: "lower", get: (r) => r.serving?.ttft_ms, sd: (r) => r.serving?.ttft_sd, fmt: (v) => v.toFixed(0) },
   { key: "ttft", group: "Speed", label: "Latency, 512-token prompt", unit: "ms", better: "lower", get: (r) => (r.speed?.pp ? (512 / r.speed.pp) * 1000 : null), fmt: (v) => v.toFixed(0) },
   { key: "mmlu", group: "Quality", label: "MMLU-Pro accuracy", unit: "%", better: "higher", get: (r) => (r.mmlu ? r.mmlu.acc * 100 : null), fmt: pct,
     sig: (c) => {

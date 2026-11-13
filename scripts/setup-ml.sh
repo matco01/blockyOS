@@ -15,7 +15,10 @@ REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 echo "==> PyTorch (CUDA 12.6 wheels)"
 "$VENV/bin/pip" install -q torch --index-url https://download.pytorch.org/whl/cu126
 echo "==> transformers, peft, datasets, lm-eval, gguf tools"
-"$VENV/bin/pip" install -q transformers peft accelerate datasets safetensors sentencepiece "lm-eval[api]" gguf numpy
+"$VENV/bin/pip" install -q transformers peft accelerate datasets safetensors sentencepiece "lm-eval[api]" gguf numpy bitsandbytes
+# Fast kernels for linear-attention models (e.g. Qwen3.5); without them transformers falls back to slow reference code,
+# which would distort per-layer timing.
+"$VENV/bin/pip" install -q flash-linear-attention || echo "    flash-linear-attention not installed (optional)"
 SITE=$("$VENV/bin/python" -c "import site; print(site.getsitepackages()[0])")
 echo "$REPO_DIR/client" > "$SITE/blocky-client.pth"
 "$VENV/bin/python" -c "import torch, transformers, peft, lm_eval; print('torch', torch.__version__, 'cuda', torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else '-'); print('transformers', transformers.__version__, 'peft', peft.__version__)"

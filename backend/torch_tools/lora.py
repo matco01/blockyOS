@@ -41,6 +41,7 @@ def main():
     ap.add_argument("--max_len", type=int, default=512)
     ap.add_argument("--targets", default="q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--qlora", action="store_true", help="load the base model in 4-bit (NF4) for training: fits ~4× bigger models")
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
     random.seed(a.seed); torch.manual_seed(a.seed)
@@ -75,9 +76,18 @@ def main():
 
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     bf16 = dev == "cuda" and torch.cuda.is_bf16_supported()
-    model = AutoModelForCausalLM.from_pretrained(a.model, torch_dtype=torch.bfloat16 if bf16 else torch.float32).to(dev)
-    model.gradient_checkpointing_enable()
-    model.enable_input_require_grads()
+    if a.qlora:
+        # QLoRA: frozen base weights in 4-bit NF4, LoRA adapters trained in 16-bit on top.
+        from peft import prepare_model_for_kbit_training
+        from transformers import BitsAndBytesConfig
+        qc = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_use_double_quant=True,
+                                bnb_4bit_compute_dtype=torch.bfloat16 if bf16 else torch.float16)
+        model = AutoModelForCausalLM.from_pretrained(a.model, quantization_config=qc, device_map={"": 0})
+        model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
+    else:
+        model = AutoModelForCausalLM.from_pretrained(a.model, torch_dtype=torch.bfloat16 if bf16 else torch.float32).to(dev)
+        model.gradient_checkpointing_enable()
+        model.enable_input_require_grads()
     names = {n.split(".")[-1] for n, _ in model.named_modules()}
     targets = [t for t in a.targets.split(",") if t in names] or "all-linear"
     model = get_peft_model(model, LoraConfig(r=a.rank, lora_alpha=2 * a.rank, lora_dropout=0.05, target_modules=targets, task_type="CAUSAL_LM"))
@@ -102,7 +112,17 @@ def main():
         opt.step(); sched.step(); opt.zero_grad(set_to_none=True)
         prog.write(json.dumps({"step": step + 1, "loss": round(loss.item(), 4), "lr": sched.get_last_lr()[0], "t": round(time.time() - t0, 1)}) + "\n")
 
-    model = model.merge_and_unload()
+    if a.qlora:
+        # A 4-bit model can't be merged exactly: save the adapter, reload the base in 16-bit on the CPU, merge there.
+        model.save_pretrained(out / "adapter")
+        del model, opt
+        torch.cuda.empty_cache()
+        from peft import PeftModel
+        prog.write(json.dumps({"event": "merging", "note": "reloading the base in 16-bit on the CPU to merge the adapter"}) + "\n")
+        base = AutoModelForCausalLM.from_pretrained(a.model, torch_dtype=torch.float16, low_cpu_mem_usage=True)
+        model = PeftModel.from_pretrained(base, out / "adapter").merge_and_unload()
+    else:
+        model = model.merge_and_unload()
     model.save_pretrained(out / "merged", safe_serialization=True)
     tok.save_pretrained(out / "merged")
     prog.write(json.dumps({"event": "merged", "seconds": round(time.time() - t0, 1)}) + "\n")

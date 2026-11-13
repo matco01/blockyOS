@@ -101,6 +101,8 @@ function Activations({ status }: { status: TorchStatus | null }) {
           <Heat title="How much each layer changes it" sub="(‖layer output − layer input‖ per token)" rows={r.delta_norm} tokens={r.tokens} log />
           {r.attn_entropy && r.attn_entropy.some(Boolean) && <Heat title="Attention spread" sub="(entropy of each token's attention, mean over heads; high = looks everywhere, low = focused)" rows={[null, ...r.attn_entropy]} tokens={r.tokens} />}
           {!r.attn_entropy && <div className="row-sub">This architecture doesn't expose attention maps (e.g. linear-attention layers), so only residual-stream views are shown.</div>}
+          {r.knockout && <Knockout k={r.knockout} />}
+          {r.timing && <LayerTiming t={r.timing} />}
           <div className="mini-title">Largest residual dimensions <span className="muted">(mean |activation| over the prompt; a few “massive activation” dimensions often dominate every layer)</span></div>
           <div className="td-grid">{r.top_dims.slice(1).map((d, i) => (
             <div key={i}><span className="hm-l">{i + 1}</span>{d.slice(0, 3).map((x) => <span key={x.dim} className="lens-tok">#{x.dim} <em>{x.mean_abs.toFixed(2)}</em></span>)}</div>
@@ -111,18 +113,59 @@ function Activations({ status }: { status: TorchStatus | null }) {
   );
 }
 
+type LayerTime = { layer: number; total: number; attention: number; ffn: number; other: number };
 type ActResult = { tokens: string[]; hidden_norm: number[][]; delta_norm: (number[] | null)[]; logit_lens: { token: string; p: number }[][];
-  attn_entropy: (number[] | null)[] | null; top_dims: { dim: number; mean_abs: number }[][] };
+  attn_entropy: (number[] | null)[] | null; top_dims: { dim: number; mean_abs: number }[][];
+  timing?: { prefill: LayerTime[]; decode: LayerTime[]; prompt_tokens: number; note: string };
+  knockout?: { answer: string; p_answer: number; layers: { layer: number; kl: number; p_answer: number; new_top: string; changed: boolean }[] } };
+
+function LayerTiming({ t }: { t: NonNullable<ActResult["timing"]> }) {
+  const [which, setWhich] = useState<"decode" | "prefill">("decode");
+  const rows = t[which];
+  const max = Math.max(...rows.map((r) => r.total), 1e-6);
+  const total = rows.reduce((a, r) => a + r.total, 0);
+  const sum = (k: "attention" | "ffn" | "other") => rows.reduce((a, r) => a + r[k], 0);
+  const P = [{ k: "attention" as const, label: "Attention / mixer", c: "var(--series-2)" }, { k: "ffn" as const, label: "Feed-forward", c: "var(--series-1)" }, { k: "other" as const, label: "Rest (norms, residual)", c: "var(--split-other)" }];
+  return (
+    <div className="lt">
+      <div className="lt-head"><div className="mini-title">GPU time per layer <span className="muted">({which === "decode" ? "one next token, with the KV cache" : `the ${t.prompt_tokens}-token prompt`}; total {total.toFixed(2)} ms)</span></div>
+        <div className="segmented"><button className={which === "decode" ? "on" : ""} onClick={() => setWhich("decode")}>Decode</button><button className={which === "prefill" ? "on" : ""} onClick={() => setWhich("prefill")}>Prefill</button></div></div>
+      <div className="xlegend top">{P.map((p) => <span key={p.k}><i className="sq" style={{ background: p.c }} />{p.label} {(sum(p.k) / total * 100).toFixed(0)}%</span>)}</div>
+      <div className="lt-bars">{rows.map((r) => (
+        <div key={r.layer} className="lt-row" title={`Layer ${r.layer}: ${r.total.toFixed(3)} ms (attention ${r.attention.toFixed(3)}, feed-forward ${r.ffn.toFixed(3)}, rest ${r.other.toFixed(3)})`}>
+          <span className="hm-l">{r.layer}</span>
+          <div className="lt-track" style={{ width: `${(r.total / max) * 100}%` }}>{P.map((p) => r[p.k] > 0 && <div key={p.k} style={{ flex: r[p.k], background: p.c }} />)}</div>
+        </div>))}</div>
+      <div className="row-sub">{t.note}</div>
+    </div>
+  );
+}
+
+function Knockout({ k }: { k: NonNullable<ActResult["knockout"]> }) {
+  const max = Math.max(...k.layers.map((l) => l.kl), 1e-6);
+  return (
+    <div className="lt">
+      <div className="mini-title">Layer knockout <span className="muted">(skip one layer, keep everything else: how much does the prediction move? Original answer {JSON.stringify(k.answer)} at {(k.p_answer * 100).toFixed(0)}%)</span></div>
+      <div className="lt-bars">{k.layers.map((l) => (
+        <div key={l.layer} className="lt-row" title={`Without layer ${l.layer}: KL ${l.kl.toFixed(4)} · p(${k.answer}) ${(l.p_answer * 100).toFixed(1)}%${l.changed ? ` · answer becomes ${JSON.stringify(l.new_top)}` : ""}`}>
+          <span className="hm-l">{l.layer}</span>
+          <div className="lt-track" style={{ width: `${Math.max(1, (l.kl / max) * 100)}%` }}><div style={{ flex: 1, background: l.changed ? "var(--series-2)" : "var(--series-4)" }} /></div>
+          <em className="lt-note">{l.changed ? `→ ${JSON.stringify(l.new_top)}` : `${(l.p_answer * 100).toFixed(0)}%`}</em>
+        </div>))}</div>
+      <div className="xlegend"><span><i className="sq" style={{ background: "var(--series-2)" }} />answer changes</span><span><i className="sq" style={{ background: "var(--series-4)" }} />answer kept (bar = KL divergence; right: probability of the original answer)</span></div>
+    </div>
+  );
+}
 
 function FineTune({ status }: { status: TorchStatus | null }) {
   const [jobs, setJobs] = useJobs("lora");
-  const [f, setF] = useState({ checkpoint: "", data: "yahma/alpaca-cleaned", split: "train", rows: 2000, steps: 200, lr: 0.0002, rank: 16, batch: 4, max_len: 512, outtype: "q8_0", name: "" });
+  const [f, setF] = useState({ checkpoint: "", data: "yahma/alpaca-cleaned", split: "train", rows: 2000, steps: 200, lr: 0.0002, rank: 16, batch: 4, max_len: 512, outtype: "q8_0", name: "", qlora: false });
   const [sel, setSel] = useState<number | null>(null);
   const [err, setErr] = useState<string | null>(null);
   useEffect(() => { if (!f.checkpoint && status?.checkpoints[0]) setF((x) => ({ ...x, checkpoint: status.checkpoints[0].id })); }, [status]); // eslint-disable-line react-hooks/exhaustive-deps
   const shown = jobs.find((j) => j.id === sel) ?? jobs[0];
   const curve = useMemo(() => ((shown?.results?.curve as { step: number; loss: number }[]) ?? []).map((p) => ({ x: p.step, y: p.loss })), [shown]);
-  const set = (k: string, v: string | number) => setF((x) => ({ ...x, [k]: v }));
+  const set = (k: string, v: string | number | boolean) => setF((x) => ({ ...x, [k]: v }));
   const start = async () => {
     setErr(null);
     try { const { id } = await api.torchLora(f); setSel(id); setJobs(await api.torchJobs("lora")); } catch (e) { setErr((e as Error).message); }
@@ -143,6 +186,8 @@ function FineTune({ status }: { status: TorchStatus | null }) {
           <input className="field" type="number" value={f.rank} onChange={(e) => set("rank", Number(e.target.value))} />
           <input className="field" type="number" step="0.00005" value={f.lr} onChange={(e) => set("lr", Number(e.target.value))} />
           <input className="field" type="number" value={f.max_len} onChange={(e) => set("max_len", Number(e.target.value))} /></div></label>
+        <label className="ws-check"><input type="checkbox" checked={f.qlora} onChange={(e) => setF((x) => ({ ...x, qlora: e.target.checked }))} />
+          <span><b>QLoRA (4-bit base)</b><em>Loads the frozen base model in 4-bit while training, so roughly 4× bigger models fit in the same GPU memory. Merging afterwards reloads the base in 16-bit on the CPU, so it needs about 2 bytes of system RAM per parameter.</em></span></label>
         <label><span>GGUF type · name</span><div className="ft-row">
           <select className="field select" value={f.outtype} onChange={(e) => set("outtype", e.target.value)}><option>q8_0</option><option>f16</option><option>bf16</option></select>
           <input className="field" placeholder="optional" value={f.name} onChange={(e) => set("name", e.target.value)} /></div></label>

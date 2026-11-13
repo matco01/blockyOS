@@ -51,14 +51,21 @@ const FEATURES: { group: string; intro: string; items: Feature[] }[] = [
       { icon: Radar, title: "Layer sensitivity scan", hash: "#/experiments?workshop=1", tag: "In the weights workshop",
         what: "Finds which layers are fragile and which can be squeezed.",
         can: ["Quantizes (or removes) one layer at a time and measures the drift", "Control run gives the noise floor", "Bar chart per layer; one click protects the most sensitive ones"] },
-      { icon: Cpu, title: "Engines", hash: "#/experiments", tag: "Experiments → Inference engine",
-        what: "The program that runs the model (llama.cpp) as a variable you can test.",
-        can: ["Build any version: upstream, a branch, a commit, your own fork", "Profile it against the installed (stock) engine with identical tests", "Only add repositories you trust: building runs their code"] },
+      { icon: Cpu, title: "Engines & frameworks", hash: "#/experiments", tag: "Experiments → Inference engine",
+        what: "The software that runs the model, as a variable you can test.",
+        can: ["llama.cpp: build any version (upstream, a branch, a commit, your own fork) and compare it with the installed one",
+          "vLLM: run original Hugging Face checkpoints on the same tests (needs an RTX 20-series or newer GPU)",
+          "Serving speed is measured the same way for every engine, so frameworks compare fairly",
+          "Optional GPU kernel profile: time per operation (matrix multiply, attention, …) from an Nsight trace",
+          "Only add repositories you trust: building runs their code"] },
       { icon: Microscope, title: "Internals", hash: "#/internals", what: "The PyTorch side: look inside a model and fine-tune it.",
         can: ["Download original Hugging Face weights", "Activations: signal size per layer and token, how much each layer changes it, attention spread",
-          "Logit lens: what the model would answer after each layer", "LoRA fine-tuning → merged → converted to GGUF → test it in Experiments"] },
+          "Logit lens: what the model would answer after each layer", "Layer knockout: skip one layer at a time and see how the answer changes",
+          "GPU time per layer, split into attention and feed-forward, for prefill and decode",
+          "LoRA or QLoRA (4-bit) fine-tuning → merged → converted to GGUF → test it in Experiments"] },
       { icon: BookOpen, title: "Notebooks", hash: "#/notebooks", what: "JupyterLab on the box and a Python client for everything above.",
-        can: ["Every result as a pandas table", "Queue runs, sweeps, weight builds, scans and engine builds from code", "REST API reference at /docs"] },
+        can: ["Every result as a pandas table", "Queue runs, sweeps, weight builds, scans and engine builds from code",
+          "Send experiments to MLflow or Weights & Biases (local / offline by default)", "REST API reference at /docs"] },
       { icon: LayoutDashboard, title: "Overview", hash: "#/home", what: "Live dashboard of the box: model, speed, memory, recent activity.", can: ["What's loaded and how fast it is", "GPU and RAM use at a glance"] },
     ],
   },
@@ -93,7 +100,9 @@ const MEASURES = [
   ["Quality", "MMLU-Pro: 560 fixed questions (40 per subject), 10 options, 5-shot", "Probability of each answer letter (Open LLM Leaderboard method)", "95% interval; paired McNemar test vs baseline and parent"],
   ["Long context", "A code hidden at 5 depths in texts from 2k tokens up to the run's context", "Exact retrieval of the code", "Fixed seed: identical haystacks for every run"],
   ["lm-eval (optional)", "Any generative lm-evaluation-harness task you add, e.g. gsm8k, ifeval", "The field's standard harness, against this run's own server", "Its standard error"],
-  ["Speed", "Prompt reading and writing speed, at 0 and 4k tokens of context", "llama-bench, 5 repetitions", "Median; robust spread; impossible repetitions dropped"],
+  ["Serving speed", "Prefill, decode and time to first token as an application sees them", "Streaming through the chat API, same client for every engine (llama.cpp, vLLM)", "Median of 5 after a warm-up; robust spread"],
+  ["Speed (llama.cpp)", "Prompt reading and writing speed, at 0 and 4k tokens of context", "llama-bench, 5 repetitions", "Median; robust spread; impossible repetitions dropped"],
+  ["GPU kernels (optional)", "Time per operation type: matrix multiply, attention, normalization, …", "Nsight Systems trace of short llama-bench runs", "Regular Linux only; not available in WSL"],
   ["Fidelity", "Perplexity, and KL divergence + same-top-token vs the baseline's outputs", "llama-perplexity on WikiText-2 (16k tokens)", "Its ± values; only between models with the same tokenizer"],
   ["Telemetry", "GPU and memory-controller load, clocks, temperature, VRAM, CPU, RAM, power", "nvidia-smi and the OS, every 0.5 s", "Per phase"],
   ["Hardware analysis", "Share of the memory-speed limit and of peak compute; time per token split; the binding limit", "Measured numbers vs the GPU's spec sheet and measured RAM speed", "Recomputed from stored data"],
@@ -113,7 +122,9 @@ const LIMITS = [
   "Power and energy appear only when the GPU driver reports power draw. Some drivers and virtual machines don't; Blocky then marks energy as not measurable instead of guessing.",
   "Other programs using the same GPU add noise to speed measurements. Use “Repeat this setup” to measure it; Blocky then only highlights bigger changes.",
   "560 MMLU-Pro questions detect differences of roughly 3–4 points. For smaller effects, look at KL divergence, which is far more sensitive.",
-  "KL divergence and perplexity only compare models with the same tokenizer; others show “not comparable”.",
+  "KL divergence and perplexity only compare models with the same tokenizer; others show “not comparable”. They're measured with llama.cpp's tools, so vLLM runs don't have them.",
+  "vLLM needs an NVIDIA GPU of the RTX 20-series or newer, and loads slowly the first time (it compiles kernels for the model).",
+  "GPU kernel profiles need CUDA kernel tracing, which works on a regular Linux install but not inside WSL.",
   "lm-eval runs generative tasks only (the model writes an answer). Multiple-choice tasks scored by log-probabilities need features this server doesn't offer; MMLU-Pro covers that style.",
   "Fine-tuning at full precision needs a lot of GPU memory: as a rule of thumb, an 8 GB GPU handles models up to about 1–2B parameters; bigger models need bigger GPUs.",
   "Change one thing at a time. With several changes at once, Blocky warns you: effects can't be told apart.",
@@ -300,7 +311,10 @@ exp.wait()
 
 b.variant("Qwen3.5-9B-Q8_0.gguf", "Q3_K_M", imatrix=True).wait()
 b.scan("Qwen3.5-0.8B-Q8_0.gguf", mode="quantize", qtype="q2_k").wait()
-b.build_engine("https://github.com/you/llama.cpp", "my-branch").wait()`}</pre>
+b.build_engine("https://github.com/you/llama.cpp", "my-branch").wait()
+
+exp.to_mlflow()                                  # → ./mlflow.db   (or a tracking server URI)
+exp.to_wandb(project="blocky")                   # offline; upload later with \`wandb sync\``}</pre>
               <p className="row-sub">The full REST API is documented at <a href="/docs" target="_blank" rel="noreferrer">/docs</a>.</p>
             </Section>
 

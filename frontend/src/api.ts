@@ -101,6 +101,9 @@ export type ExpResults = {
   provenance?: Provenance;
   commands?: Record<string, string>;
   token_note?: string;
+  fidelity_note?: string;
+  serving?: { pp: number | null; pp_sd: number | null; tg: number | null; tg_sd: number | null; ttft_ms: number | null; ttft_sd: number | null; method?: string };
+  kernels?: { available: boolean; note?: string; prefill?: KernelProfile; decode?: KernelProfile };
   hardware?: { gpu: string | null; gpu_bandwidth_gbps: number | null; gpu_tflops: number | null; vram_mb: number; ram_mb: number; ram_bandwidth_gbps: number | null;
     cpu: string; cpu_threads: number; power_limit_w: number | null; sm_clock_max: number | null; compute_capability?: string | null; device?: string };
   imported_from?: { device: string | null; gpu: string; experiment: string; imported_at: number };
@@ -119,7 +122,9 @@ export type Provenance = {
   blocky: { commit: string | null; dirty: boolean };
   started_at: string;
 };
-export type ExpRun = { id: number; experiment_id: number; created_at: number; status: string; label: string; config: ExpConfig; results: ExpResults;
+export type KernelProfile = { total_ms: number; categories: { category: string; ms: number; share: number; calls: number; kernels: number }[];
+  top: { name: string; ms: number; share: number; calls: number; category: string }[] };
+export type ExpRun ={ id: number; experiment_id: number; created_at: number; status: string; label: string; config: ExpConfig; results: ExpResults;
   phase: string | null; error: string | null; parent_id?: number | null;
   stats?: { mmlu_p?: number | null; mmlu_flips?: { lost: number; gained: number }; env_mismatch?: string[]; hw_diff?: string[]; baseline_id?: number;
     vs_parent?: { mmlu_p?: number | null; mmlu_flips?: { lost: number; gained: number } } } };
@@ -131,7 +136,7 @@ export type LayerMeasure ={ layer: number; kld: number | null; kld_p99: number |
 export type LayerScan = { id: number; created_at: number; model: string; mode: "quantize" | "prune"; qtype: string | null; status: string; step: string | null; error: string | null;
   results: { layers?: LayerMeasure[]; n_layers?: number; source_type?: string; control?: { kld: number | null; same_top: number | null }; reference?: { ppl: number | null };
     most_sensitive?: number[]; least_sensitive?: number[] } };
-export type Engine ={ id: string; name: string; repo: string; ref: string; commit_sha: string | null; status: string; step?: string | null;
+export type Engine = { id: string; name: string; kind?: "llamacpp" | "vllm"; repo: string; ref: string; commit_sha: string | null; status: string; step?: string | null;
   error?: string | null; built_at: number | null; created_at?: number };
 export type WeightFile ={ file: string; quant: string | null; bits: number; size_bytes: number; layers: number | null; recipe: Record<string, unknown> | null };
 export type TensorGroup = { pattern: string; count: number; bytes: number; types: string[]; part: string };
@@ -143,7 +148,7 @@ export type CanvasNote ={ id: string; x: number; y: number; text: string };
 export type CanvasState = { pos: Record<string, { x: number; y: number }>; notes: CanvasNote[]; view?: { x: number; y: number; k: number } };
 export type Experiment = {
   id: number; created_at: number; name: string; model: string; seed: number; runs?: number; canvas?: CanvasState | null;
-  protocol?: { lm_eval?: { tasks: string; limit: number } } | null;
+  protocol?: { lm_eval?: { tasks: string; limit: number }; kernels?: boolean } | null;
   runs_list?: ExpRun[]; limits?: { gpu: string | null; gpu_bandwidth_gbps: number | null; gpu_tflops: number | null; gpu_tflops_kind: string | null; sm_clock_max: number | null;
     vram_mb: number; power_limit_w: number | null; ram_bandwidth_gbps: number | null; ram_mb: number; cpu: string; cpu_power_source: string | null };
 };
@@ -334,7 +339,8 @@ export const api = {
     if (!r.ok) throw new Error(d.detail || `Import failed (${r.status})`);
     return d as { experiment_id: number; runs: number; from: { device: string | null; gpu: string } };
   },
-  experimentProtocol: (id: number, lm_eval: { tasks: string; limit: number } | null) => json(`/api/experiments/${id}/protocol`, send("PUT", { lm_eval })),
+  experimentProtocol: (id: number, lm_eval: { tasks: string; limit: number } | null, kernels = false) =>
+    json(`/api/experiments/${id}/protocol`, send("PUT", { lm_eval, kernels })),
   experimentCanvas: (id: number, canvas: CanvasState) => json(`/api/experiments/${id}/canvas`, send("PUT", canvas)),
   experimentCancelQueue: (id: number) => json(`/api/experiments/${id}/cancel-queue`, send("POST", {})),
   experimentCancel: (runId: number) => json(`/api/experiments/runs/${runId}/cancel`, send("POST", {})),

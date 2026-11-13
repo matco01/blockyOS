@@ -11,7 +11,7 @@ NB="$PREFIX/data/notebooks"
 echo "==> Notebook environment"
 [[ -d "$VENV" ]] || sudo -u blocky python3 -m venv "$VENV"
 sudo -u blocky "$VENV/bin/pip" install -q --upgrade pip
-sudo -u blocky "$VENV/bin/pip" install -q jupyterlab pandas matplotlib numpy
+sudo -u blocky "$VENV/bin/pip" install -q jupyterlab pandas matplotlib numpy mlflow-skinny sqlalchemy alembic wandb
 # Make `import blocky` work, always pointing at the repo's current client.
 SITE=$("$VENV/bin/python" -c "import site; print(site.getsitepackages()[0])")
 echo "$REPO_DIR/client" | sudo -u blocky tee "$SITE/blocky-client.pth" >/dev/null

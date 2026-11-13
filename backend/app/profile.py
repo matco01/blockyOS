@@ -25,7 +25,7 @@ from pathlib import Path
 import httpx
 import psutil
 
-from . import arena, config, db, engines, evals, gguf, lab, quantlab
+from . import arena, config, db, engines, evals, gguf, kernels, lab, quantlab
 
 DIR = config.DATA_DIR / "experiments"
 PORT = arena.TEMP_PORT
@@ -215,8 +215,9 @@ def get_experiment(exp_id: int) -> dict | None:
 
 def create_experiment(name: str, model: str) -> int:
     import random
-    model = Path(model).name
-    if not (lab.MODELS_DIR / model).is_file():
+    model = HF_PREFIX + Path(model[len(HF_PREFIX):]).name if model.startswith(HF_PREFIX) else Path(model).name
+    mp = model_path(model)
+    if not ((mp / "config.json").is_file() if model.startswith(HF_PREFIX) else mp.is_file()):
         raise ValueError("Model not found")
     with db.connect() as c:
         return c.execute("INSERT INTO experiments (created_at, name, model, seed) VALUES (?, ?, ?, ?)",
@@ -273,10 +274,20 @@ def create_sweep(exp_id: int, body: dict) -> list[int]:
     combos = [dict(zip(keys, vals)) for vals in itertools.product(*(grid[k] for k in keys))]
     if len(combos) * repeats > MAX_SWEEP:
         raise ValueError(f"That's {len(combos) * repeats} runs; the limit is {MAX_SWEEP} per sweep")
+    # Validate first: a grid mixing engines and model formats contains pairs that can't run (vLLM + GGUF file).
+    # Those are skipped; anything else invalid is an error.
+    valid = []
+    for combo in combos:
+        try:
+            valid.append(normalize_config(exp, {**base, **combo}))
+        except ValueError as e:
+            if "GGUF" not in str(e) and "checkpoint" not in str(e):
+                raise
+    if not valid:
+        raise ValueError("None of these combinations can run: vLLM needs Hugging Face checkpoints, llama.cpp needs GGUF files")
     ids = []
     for rep in range(repeats):
-        for combo in combos:
-            cfg = normalize_config(exp, {**base, **combo})
+        for cfg in valid:
             label = describe_change(base, cfg)
             if label == "Repeat of baseline" and parent:
                 label = f"Repeat of {parent['label']}"[:60]
@@ -330,10 +341,33 @@ def _save(run_id: int, **f) -> None:
 DEFAULTS = {"ctx": 8192, "kv": "q8_0", "ngl": "auto", "vram_limit_mb": None, "fa": "auto", "threads": None, "engine": "stock"}
 
 
+HF_PREFIX = "hf:"  # models given as "hf:<owner>--<name>" are Hugging Face checkpoints (for vLLM), others are GGUF files
+
+
+def model_path(model: str) -> Path:
+    if model.startswith(HF_PREFIX):
+        from . import torchlab
+        return torchlab.HF / Path(model[len(HF_PREFIX):]).name
+    return lab.MODELS_DIR / Path(model).name
+
+
+def checkpoint_bytes(d: Path) -> int:
+    return sum(f.stat().st_size for f in d.glob("*.safetensors"))
+
+
 def normalize_config(exp: dict, cfg: dict) -> dict:
     out = {**DEFAULTS, "model": exp["model"], **{k: v for k, v in (cfg or {}).items() if v not in (None, "")}}
-    out["model"] = Path(str(out["model"])).name
-    if not (lab.MODELS_DIR / out["model"]).is_file():
+    m = str(out["model"])
+    out["model"] = HF_PREFIX + Path(m[len(HF_PREFIX):]).name if m.startswith(HF_PREFIX) else Path(m).name
+    out["engine"] = str(out.get("engine") or "stock")
+    hf = out["model"].startswith(HF_PREFIX)
+    if hf and engines.kind(out["engine"]) == "llamacpp" and not (cfg or {}).get("engine"):
+        out["engine"] = "vllm"  # a checkpoint with no engine chosen: the framework that runs checkpoints
+    if engines.kind(out["engine"]) == "vllm" and not hf:
+        raise ValueError("vLLM runs original Hugging Face checkpoints, not GGUF files: pick a checkpoint (Internals → Checkpoints)")
+    if engines.kind(out["engine"]) == "llamacpp" and hf:
+        raise ValueError("llama.cpp runs GGUF files: pick a GGUF model, or choose vLLM as the engine for a checkpoint")
+    if not (model_path(out["model"]) / "config.json" if hf else model_path(out["model"])).is_file():
         raise ValueError("Model not found")
     out["ctx"] = max(1024, min(262144, int(out["ctx"])))
     if out["kv"] not in lab.KV_TYPES:
@@ -346,7 +380,6 @@ def normalize_config(exp: dict, cfg: dict) -> dict:
         raise ValueError("Flash attention must be auto, on or off")
     if out["threads"]:
         out["threads"] = max(1, min(256, int(out["threads"])))
-    out["engine"] = str(out.get("engine") or "stock")
     engines.bin_dir(out["engine"])  # raises if unknown or not built
     return out
 
@@ -388,9 +421,12 @@ def weights_label(model: str) -> str:
 def describe_change(base: dict, cfg: dict) -> str:
     parts = []
     if cfg["model"] != base.get("model"):
-        a, b = (gguf.metadata(lab.MODELS_DIR / m) for m in (base.get("model") or cfg["model"], cfg["model"]))
-        # Same model, other weights -> "Q3_K_M-imat"; a different model altogether -> its full name.
-        parts.append(weights_label(cfg["model"]) if a.get("name") == b.get("name") else cfg["model"].removesuffix(".gguf"))
+        if cfg["model"].startswith(HF_PREFIX) or str(base.get("model") or "").startswith(HF_PREFIX):
+            parts.append(cfg["model"].removesuffix(".gguf"))  # a checkpoint on one side: name it in full
+        else:
+            a, b = (gguf.metadata(lab.MODELS_DIR / m) for m in (base.get("model") or cfg["model"], cfg["model"]))
+            # Same model, other weights -> "Q3_K_M-imat"; a different model altogether -> its full name.
+            parts.append(weights_label(cfg["model"]) if a.get("name") == b.get("name") else cfg["model"].removesuffix(".gguf"))
     if cfg["kv"] != base.get("kv"):
         parts.append(f"KV {cfg['kv']}")
     if cfg["ctx"] != base.get("ctx"):
@@ -552,30 +588,43 @@ def _mc_block(q: dict, answer: bool) -> str:
     return f"Question: {q['q'].strip()}\nOptions:\n{opts}\nAnswer:" + (f" {q['answer']}\n\n" if answer else "")
 
 
-async def mmlu_eval(client: httpx.AsyncClient, seed: int, should_stop, progress) -> dict:
+async def _next_token_logprobs(client: httpx.AsyncClient, prompt: str, api: str) -> list[tuple[str, float]]:
+    """Top next-token log-probabilities after `prompt`, from llama.cpp's /completion or an OpenAI-style /v1/completions."""
+    if api == "openai":
+        r = await client.post("/v1/completions", json={"model": "blocky", "prompt": prompt, "max_tokens": 1, "temperature": 0, "logprobs": 20})
+        r.raise_for_status()
+        top = ((r.json()["choices"][0].get("logprobs") or {}).get("top_logprobs") or [{}])[0] or {}
+        return list(top.items())
+    r = await client.post("/completion", json={"prompt": prompt, "n_predict": 1, "n_probs": 50, "temperature": 0, "cache_prompt": True})
+    r.raise_for_status()
+    top = (r.json().get("completion_probabilities") or [{}])[0].get("top_logprobs") or []
+    return [(t["token"], t["logprob"]) for t in top]
+
+
+def letter_choice(top: list[tuple[str, float]], n_options: int, answer: str) -> tuple[str | None, float]:
+    """Predicted letter and the probability of the correct one, renormalized over the option letters only."""
     import math
+    lp: dict[str, float] = {}
+    for tok, v in top:
+        t = tok.strip()
+        if len(t) == 1 and t in LETTERS[:n_options] and t not in lp:
+            lp[t] = v
+    if not lp:
+        return None, 0.0
+    m = max(lp.values())
+    z = sum(math.exp(v - m) for v in lp.values())
+    return max(lp, key=lp.get), (math.exp(lp[answer] - m) / z if answer in lp else 0.0)
+
+
+async def mmlu_eval(client: httpx.AsyncClient, seed: int, should_stop, progress, api: str = "llamacpp") -> dict:
     shots, sample = mmlu_sample(seed)
     prefix = "The following are multiple choice questions (with answers).\n\n" + "".join(_mc_block(s, True) for s in shots)
     correct, p_true, cats = [], [], {}
     for i, q in enumerate(sample):
         if should_stop():
             raise asyncio.CancelledError
-        r = await client.post("/completion", json={"prompt": prefix + _mc_block(q, False), "n_predict": 1, "n_probs": 50,
-                                                   "temperature": 0, "cache_prompt": True})
-        r.raise_for_status()
-        top = (r.json().get("completion_probabilities") or [{}])[0].get("top_logprobs") or []
-        lp = {}
-        for t in top:
-            tok = t["token"].strip()
-            if len(tok) == 1 and tok in LETTERS[:len(q["options"])] and tok not in lp:
-                lp[tok] = t["logprob"]
-        if lp:
-            m = max(lp.values())
-            z = sum(math.exp(v - m) for v in lp.values())
-            pred = max(lp, key=lp.get)
-            pt = math.exp(lp[q["answer"]] - m) / z if q["answer"] in lp else 0.0
-        else:
-            pred, pt = None, 0.0
+        top = await _next_token_logprobs(client, prefix + _mc_block(q, False), api)
+        pred, pt = letter_choice(top, len(q["options"]), q["answer"])
         ok = int(pred == q["answer"])
         correct.append(ok); p_true.append(pt)
         c = cats.setdefault(q["tag"], [0, 0]); c[0] += ok; c[1] += 1
@@ -603,6 +652,8 @@ def set_protocol(exp_id: int, body: dict) -> dict:
         if not _TASKS.match(tasks):
             raise ValueError("Tasks: comma-separated lm-eval task names, e.g. gsm8k,ifeval")
         proto["lm_eval"] = {"tasks": tasks, "limit": max(1, min(5000, int(lm.get("limit") or 100)))}
+    if body.get("kernels"):
+        proto["kernels"] = True  # GPU kernel profile with Nsight Systems (llama.cpp runs)
     with db.connect() as c:
         c.execute("UPDATE experiments SET protocol = ? WHERE id = ?", (json.dumps(proto), exp_id))
     return proto
@@ -644,19 +695,26 @@ NEEDLE_LENGTHS = [2048, 4096, 8192, 16384, 32768, 65536]
 _CITIES = ["Lisbon", "Oslo", "Nairobi", "Lima", "Hanoi", "Quito", "Riga", "Perth", "Dakar", "Bergen", "Porto", "Cusco", "Tallinn", "Hobart", "Valletta"]
 
 
-async def needle_eval(client: httpx.AsyncClient, ctx: int, should_stop, progress) -> dict:
+async def chars_per_token(client: httpx.AsyncClient, api: str) -> float:
+    """How many characters of WikiText one token covers for this model's tokenizer (to size prompts in tokens)."""
+    sample = (await quantlab.ensure_text()).read_text()[:40000]
+    body = {"model": "blocky", "prompt": sample} if api == "openai" else {"content": sample}
+    r = await client.post("/tokenize", json=body)
+    r.raise_for_status()
+    d = r.json()
+    return len(sample) / max(1, d.get("count") or len(d.get("tokens", [])))
+
+
+async def needle_eval(client: httpx.AsyncClient, ctx: int, should_stop, progress, api: str = "llamacpp") -> dict:
     import random
     from . import generate
     text = (await quantlab.ensure_text()).read_text()
-    sample = text[:40000]
-    r = await client.post("/tokenize", json={"content": sample})
-    r.raise_for_status()
-    chars_per_token = len(sample) / max(1, len(r.json().get("tokens", [])))
+    chars_per_tok = await chars_per_token(client, api)
     lengths = [L for L in NEEDLE_LENGTHS if L + 600 <= ctx]
     rng = random.Random(NEEDLE_SEED)
     cells, total = [], len(lengths) * len(NEEDLE_DEPTHS)
     for L in lengths:
-        n_chars = int(L * chars_per_token)
+        n_chars = int(L * chars_per_tok)
         start = rng.randrange(0, max(1, len(text) - n_chars - 1))
         hay = text[start:start + n_chars]
         for depth in NEEDLE_DEPTHS:
@@ -676,6 +734,60 @@ async def needle_eval(client: httpx.AsyncClient, ctx: int, should_stop, progress
     pf = {str(L): next((c["prefill_tps"] for c in cells if c["length"] == L and c["prefill_tps"]), None) for L in lengths}
     return {"lengths": lengths, "depths": NEEDLE_DEPTHS, "cells": cells, "acc": round(sum(c["ok"] for c in cells) / max(1, len(cells)), 4),
             "by_length": by_len, "prefill_tps_by_length": pf, "max_length": lengths[-1] if lengths else None}
+
+
+# ---------- Serving speed: the same client-side measurement for every engine ----------
+# llama-bench only exists for llama.cpp. To compare frameworks fairly, every run also measures speed the way an
+# application sees it: through the server's OpenAI-compatible chat API, streaming, with a ~512-token prompt and
+# 128 forced output tokens. Each repetition uses a different text slice, so no prompt cache can help.
+
+SERVING_REPS = 5
+
+
+async def serving_bench(client: httpx.AsyncClient, api: str, should_stop, prompt_tokens: int = 512, gen_tokens: int = 128) -> dict:
+    import random
+    text = (await quantlab.ensure_text()).read_text()
+    cpt = await chars_per_token(client, api)
+    rng = random.Random(4321)
+    pp, tg, ttft = [], [], []
+    for rep in range(SERVING_REPS + 1):  # the first repetition is a warm-up and isn't counted
+        if should_stop():
+            raise asyncio.CancelledError
+        n = int(prompt_tokens * cpt)
+        start = rng.randrange(0, max(1, len(text) - n - 1))
+        body = {"model": "blocky", "messages": [{"role": "user", "content": text[start:start + n] + "\n\nContinue this text."}],
+                "max_tokens": gen_tokens, "temperature": 0, "stream": True, "ignore_eos": True, "stream_options": {"include_usage": True}}
+        t0 = time.perf_counter()
+        first = last = None
+        chunks, usage = 0, {}
+        async with client.stream("POST", "/v1/chat/completions", json=body, timeout=httpx.Timeout(30, read=600)) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line.startswith("data:") or line.strip() == "data: [DONE]":
+                    continue
+                try:
+                    d = json.loads(line[5:])
+                except ValueError:
+                    continue
+                usage = d.get("usage") or usage
+                delta = ((d.get("choices") or [{}])[0].get("delta") or {})
+                if delta.get("content") or delta.get("reasoning_content") or delta.get("reasoning"):
+                    now = time.perf_counter()
+                    first = first or now
+                    last = now
+                    chunks += 1
+        if rep == 0 or first is None:
+            continue
+        out_tokens = usage.get("completion_tokens") or chunks
+        in_tokens = usage.get("prompt_tokens") or prompt_tokens
+        ttft.append((first - t0) * 1000)
+        pp.append(in_tokens / (first - t0))
+        if last > first and out_tokens > 1:
+            tg.append((out_tokens - 1) / (last - first))
+    s_pp, s_tg, s_tt = robust_stats(pp), robust_stats(tg), robust_stats(ttft)
+    return {"pp": s_pp["median"], "pp_sd": s_pp["sd"], "tg": s_tg["median"], "tg_sd": s_tg["sd"], "ttft_ms": s_tt["median"], "ttft_sd": s_tt["sd"],
+            "reps": SERVING_REPS, "prompt_tokens": prompt_tokens, "gen_tokens": gen_tokens,
+            "method": "OpenAI chat API, streaming, temperature 0, ignore_eos; median of 5 after 1 warm-up"}
 
 
 def wilson(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
@@ -755,8 +867,16 @@ def provenance(cfg: dict) -> dict:
     hw = lab.hardware()
     g = hw["gpus"][0] if hw["gpus"] else {}
     eb = engines.bin_dir(cfg.get("engine"))
-    ver = _sh(str(eb / "llama-server"), "--version", libdir=eb)
+    vllm = engines.kind(cfg.get("engine")) == "vllm"
+    ver = "" if vllm else _sh(str(eb / "llama-server"), "--version", libdir=eb)
     m = re.search(r"version:\s*(\S+)\s*\((?:build\s*\d+,\s*commit\s*)?([0-9a-f]{6,})\)", ver)
+    mp = model_path(cfg["model"])
+    if cfg["model"].startswith(HF_PREFIX):
+        import hashlib
+        h = hashlib.sha256("".join(f"{f.name}:{file_sha256(f)}" for f in sorted(mp.glob("*.safetensors"))).encode()).hexdigest()
+        model_info = {"file": cfg["model"], "sha256": h, "bytes": checkpoint_bytes(mp), "recipe": None, "format": "safetensors"}
+    else:
+        model_info = {"file": cfg["model"], "sha256": file_sha256(mp), "bytes": mp.stat().st_size, "recipe": _recipe(cfg["model"]), "format": "gguf"}
     smi = _sh("nvidia-smi", "-q")
     cuda_rt = re.search(r"CUDA (?:UMD )?Version\s*:\s*([\d.]+)", smi)
     try:
@@ -768,11 +888,11 @@ def provenance(cfg: dict) -> dict:
     return {
         "protocol": PROTOCOL,
         "engine": next((e for e in engines.list_engines() if e["id"] == (cfg.get("engine") or "stock")), {"id": cfg.get("engine")}),
-        "llama_cpp": {"version": m.group(1) if m else None, "commit": m.group(2) if m else None,
-                      "built_with": next((l.strip() for l in ver.splitlines() if l.startswith("built with")), None)},
-        "model": {"file": cfg["model"], "sha256": file_sha256(lab.MODELS_DIR / cfg["model"]),
-                  "bytes": (lab.MODELS_DIR / cfg["model"]).stat().st_size,
-                  "recipe": _recipe(cfg["model"])},
+        "framework": "vllm" if vllm else "llama.cpp",
+        "llama_cpp": ({"version": engines.vllm_version(), "commit": None, "built_with": "vLLM"} if vllm else
+                      {"version": m.group(1) if m else None, "commit": m.group(2) if m else None,
+                       "built_with": next((l.strip() for l in ver.splitlines() if l.startswith("built with")), None)}),
+        "model": model_info,
         "data": {"mmlu_pro_sha256": file_sha256(benchmarks.path("mmlu_pro")), "mmlu_seed": MMLU_SEED,
                  "wikitext_sha256": file_sha256(text) if text.is_file() else None},
         "gpu": {"name": g.get("name"), "driver": g.get("driver"), "vram_mb": g.get("vram_mb"), "pcie": g.get("pcie"),
@@ -857,6 +977,35 @@ def parse_bench(out: str) -> dict:
     return res
 
 
+class _SkipRest(Exception):
+    """Jump to the final analysis step (used when an engine can't run the remaining phases)."""
+
+
+async def _stop_server(proc: asyncio.subprocess.Process | None) -> None:
+    """Stop a model server and everything it started (vLLM runs its engine in child processes)."""
+    import signal
+    if not proc or proc.returncode is not None:
+        return
+    try:
+        pgid = os.getpgid(proc.pid)
+    except ProcessLookupError:
+        return
+    group = pgid == proc.pid  # started with its own session: stop the whole group
+    try:
+        os.killpg(pgid, signal.SIGTERM) if group else proc.terminate()
+        await asyncio.wait_for(proc.wait(), 30)
+    except asyncio.TimeoutError:
+        os.killpg(pgid, signal.SIGKILL) if group else proc.kill()
+        await proc.wait()
+    except ProcessLookupError:
+        pass
+    if group:
+        try:
+            os.killpg(pgid, signal.SIGKILL)  # stragglers (e.g. vLLM's engine core) that outlived the parent
+        except ProcessLookupError:
+            pass
+
+
 async def run(run_id: int, llm: httpx.AsyncClient) -> None:
     with db.connect() as c:
         rec = _run(c.execute("SELECT * FROM exp_runs WHERE id = ?", (run_id,)).fetchone())
@@ -894,20 +1043,34 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
             # 1) Load: start a server with exactly this configuration, time it, read the memory layout.
             phase("loading")
             ebin = engines.bin_dir(cfg.get("engine"))
+            vllm = engines.kind(cfg.get("engine")) == "vllm"
+            api = "openai" if vllm else "llamacpp"
             logfile = exp_dir / f"run{run_id}-server.log"
-            cmd = [str(ebin / "llama-server"), "-m", str(lab.MODELS_DIR / cfg["model"]), "--host", "127.0.0.1",
-                   "--port", str(PORT), "-c", str(cfg["ctx"]), "-np", "1", "-ctk", cfg["kv"], "-ctv", cfg["kv"], "-fa", cfg["fa"],
-                   "--jinja", "--no-webui", "-lv", "4",
-                   # Non-thinking protocol by default: answers land in the reply (not a hidden reasoning field), which
-                   # outside harnesses like lm-eval grade. Requests can still turn thinking on explicitly.
-                   "--chat-template-kwargs", '{"enable_thinking": false}'] + _placement_args(cfg, vram_total)
+            if vllm:
+                # vLLM pre-allocates a fraction of the whole GPU: give it what's actually free (other programs may hold
+                # some), or the simulated VRAM limit.
+                await asyncio.sleep(1.5)
+                used = (sampler.samples[-1].get("vram_mb") if sampler.samples else 0) or 0
+                budget = min(vram_total - used - 300, cfg.get("vram_limit_mb") or vram_total)
+                util = max(0.2, min(0.92, budget / vram_total)) if vram_total else 0.85
+                cmd = [str(ebin / "vllm"), "serve", str(model_path(cfg["model"])), "--host", "127.0.0.1", "--port", str(PORT),
+                       "--served-model-name", "blocky", "--max-model-len", str(cfg["ctx"]), "--gpu-memory-utilization", f"{util:.2f}",
+                       "--max-num-seqs", "4", "--default-chat-template-kwargs", '{"enable_thinking": false}']
+                env = dict(os.environ)
+            else:
+                cmd = [str(ebin / "llama-server"), "-m", str(model_path(cfg["model"])), "--host", "127.0.0.1",
+                       "--port", str(PORT), "-c", str(cfg["ctx"]), "-np", "1", "-ctk", cfg["kv"], "-ctv", cfg["kv"], "-fa", cfg["fa"],
+                       "--jinja", "--no-webui", "-lv", "4",
+                       # Non-thinking protocol by default: answers land in the reply (not a hidden reasoning field), which
+                       # outside harnesses like lm-eval grade. Requests can still turn thinking on explicitly.
+                       "--chat-template-kwargs", '{"enable_thinking": false}'] + _placement_args(cfg, vram_total)
+                env = {**os.environ, "LD_LIBRARY_PATH": str(ebin)}
             cmds["load_and_quality"] = _cmdline(cmd)
             t0 = time.monotonic()
             with open(logfile, "w") as lf:
-                proc = await asyncio.create_subprocess_exec(*cmd, stdout=lf, stderr=asyncio.subprocess.STDOUT,
-                                                            env={**os.environ, "LD_LIBRARY_PATH": str(ebin)})
+                proc = await asyncio.create_subprocess_exec(*cmd, stdout=lf, stderr=asyncio.subprocess.STDOUT, env=env, start_new_session=vllm)
             async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{PORT}", timeout=httpx.Timeout(10, read=600)) as client:
-                ready = asyncio.create_task(lab.wait_ready(client, timeout=300))
+                ready = asyncio.create_task(lab.wait_ready(client, timeout=1500 if vllm else 300))
                 died = asyncio.create_task(proc.wait())
                 done, _ = await asyncio.wait({ready, died}, return_when=asyncio.FIRST_COMPLETED)
                 for t in (ready, died):
@@ -917,7 +1080,8 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
                     tail = logfile.read_text(errors="replace").splitlines()[-3:]
                     raise RuntimeError("The model didn't load with this setup (likely out of memory): " + " | ".join(tail)[-300:])
                 res["load_seconds"] = round(time.monotonic() - t0, 1)
-                res["memory"] = _parse_load_log(logfile.read_text(errors="replace"))
+                res["memory"] = ({"gpu": {}, "ram": {}, "layers": None, "note": "vLLM pre-allocates GPU memory; see VRAM used"}
+                                 if vllm else _parse_load_log(logfile.read_text(errors="replace")))
                 await asyncio.sleep(1.5)
                 res["memory"]["vram_used_mb"] = (sampler.samples[-1].get("vram_mb") if sampler.samples else None)
 
@@ -926,7 +1090,7 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
                 def progress(i, n, k):
                     res["mmlu_progress"] = {"done": i, "total": n, "correct": k}
                     _save(run_id, results=res)
-                res["mmlu"] = await mmlu_eval(client, MMLU_SEED, lambda: run_id in _cancel, progress)
+                res["mmlu"] = await mmlu_eval(client, MMLU_SEED, lambda: run_id in _cancel, progress, api)
                 res.pop("mmlu_progress", None)
 
                 # 2b) Long context: needle in a haystack, up to this run's context size.
@@ -934,21 +1098,36 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
                 def nprog(i, n, k):
                     res["needle_progress"] = {"done": i, "total": n, "correct": k}
                     _save(run_id, results=res)
-                res["needle"] = await needle_eval(client, cfg["ctx"], lambda: run_id in _cancel, nprog)
+                res["needle"] = await needle_eval(client, cfg["ctx"], lambda: run_id in _cancel, nprog, api)
                 res.pop("needle_progress", None)
+
+                # 2b') Serving speed: the same client-side measurement for every engine (framework comparisons).
+                phase("serving")
+                res["serving"] = await serving_bench(client, api, lambda: run_id in _cancel)
 
                 # 2c) Optional: lm-evaluation-harness tasks chosen for this experiment, against this same server.
                 lm = (exp.get("protocol") or {}).get("lm_eval")
                 if lm and lm.get("tasks"):
                     phase("lm_eval")
                     res["lm_eval"] = await lm_eval_run(lm, exp_dir / f"run{run_id}-lm-eval", log, run_id)
-            await arena._stop(proc)
+            await _stop_server(proc)
             proc = None
             await asyncio.sleep(1)
+
+            if vllm:
+                # llama-bench, Nsight kernel profiles and the llama-perplexity fidelity tests are llama.cpp tools.
+                res["fidelity_note"] = "Perplexity and KL divergence come from llama.cpp's tools, so they aren't measured for vLLM runs; compare with the serving speed, MMLU-Pro, long-context and lm-eval results."
+                raise _SkipRest
 
             # 3) Speed: llama-bench with the same setup.
             phase("speed")
             res["speed"] = await _bench(cfg, vram_total, run_id, log, cmds)
+
+            # 3b) Optional: GPU kernel profile (Nsight Systems), if this experiment asked for it.
+            if (exp.get("protocol") or {}).get("kernels"):
+                phase("kernels")
+                kargs = ["-ctk", cfg["kv"], "-ctv", cfg["kv"], "-fa", cfg["fa"]] + _placement_args(cfg, vram_total, bench=True)
+                res["kernels"] = await kernels.profile(ebin / "llama-bench", model_path(cfg["model"]), kargs, exp_dir / f"run{run_id}-kernels", log, run_id)
 
             # 4) Fidelity: perplexity, and KL divergence vs the experiment's baseline.
             phase("fidelity")
@@ -985,8 +1164,10 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
                 res["same_top"] = quantlab._num(r"Same top p:\s*([\d.]+)", out)
                 res["same_top_sd"] = quantlab._num(r"Same top p:\s*[\d.]+\s*±\s*([\d.]+)", out)
 
-            # 5) Telemetry + bottleneck analysis.
-            res["telemetry"] = {p: sampler.summary(p) for p in ("loading", "quality", "longctx", "lm_eval", "speed", "fidelity")}
+            raise _SkipRest
+        except _SkipRest:
+            # 5) Telemetry + bottleneck analysis (every engine ends here).
+            res["telemetry"] = {p: sampler.summary(p) for p in ("loading", "quality", "longctx", "serving", "lm_eval", "speed", "kernels", "fidelity")}
             res["series"] = sampler.series()
             res["hw"] = analyze(res, cfg, res.get("hardware") or lim)
         except asyncio.CancelledError:
@@ -995,7 +1176,7 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
             status, error = "error", str(e)[:400]
         finally:
             await sampler.stop()
-            await arena._stop(proc)
+            await _stop_server(proc)
             if res.get("series") is None and sampler.samples:
                 res["series"] = sampler.series()
             _save(run_id, status=status, error=error, results=res, phase=None, log="\n".join(log[-60:]))
@@ -1014,6 +1195,9 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
 
 def _weights(path: Path) -> dict:
     """Bytes and parameters touched per generated token (embedding lookup excluded; MoE: active experts only)."""
+    if path.is_dir():  # a Hugging Face checkpoint (vLLM): 16-bit weights, so parameters ≈ bytes / 2
+        b = checkpoint_bytes(path)
+        return {"bytes": b, "params": b / 2, "embedding_bytes": 0}
     try:
         an = gguf.anatomy(path)
     except (OSError, ValueError):
@@ -1030,13 +1214,14 @@ def _weights(path: Path) -> dict:
 
 def analyze(res: dict, cfg: dict, lim: dict) -> dict:
     """Measured numbers against the hardware's physical limits. Pure function of stored data, so it can be recomputed."""
-    path = lab.MODELS_DIR / cfg["model"]
-    if not path.is_file():
+    path = model_path(cfg["model"])
+    if not (path.is_file() or (path / "config.json").is_file()):
         return {}
     w = _weights(path)
     mem = res.get("memory") or {}
-    speed = res.get("speed") or {}
-    tel = (res.get("telemetry") or {}).get("speed") or {}
+    # llama-bench numbers when there are any; otherwise (vLLM) the engine-neutral serving measurement.
+    speed = res.get("speed") or res.get("serving") or {}
+    tel = (res.get("telemetry") or {}).get("speed") or (res.get("telemetry") or {}).get("serving") or {}
     tg, pp = speed.get("tg"), speed.get("pp")
     bw, ram_bw, peak_tf = lim.get("gpu_bandwidth_gbps"), lim.get("ram_bandwidth_gbps"), lim.get("gpu_tflops")
 
