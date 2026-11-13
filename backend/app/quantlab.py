@@ -120,8 +120,10 @@ def create(body: dict) -> int:
 
 
 async def _proc(cmd: list[str], log: list[str], run_id: int, timeout: float = 1800) -> str:
+    # Each llama.cpp build loads the libraries next to its own binary (custom engines must not pick up the stock .so files).
+    libdir = Path(cmd[0]).parent if Path(cmd[0]).is_absolute() else lab.LLAMA_BIN
     proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
-                                                env={**os.environ, "LD_LIBRARY_PATH": str(lab.LLAMA_BIN)})
+                                                env={**os.environ, "LD_LIBRARY_PATH": str(libdir)})
     out = []
     start = time.monotonic()
     async for raw in proc.stdout:

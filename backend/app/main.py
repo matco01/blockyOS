@@ -24,7 +24,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import arena, benchmarks, config, db, evals, generate, lab, memory, profile, quantlab, system, tools, weights
+from . import arena, benchmarks, config, db, engines, evals, generate, lab, memory, profile, quantlab, scans, system, tools, torchlab, weights
 
 
 @asynccontextmanager
@@ -36,6 +36,9 @@ async def lifespan(app: FastAPI):
     tools.init()
     profile.init()
     weights.init()
+    engines.init()
+    scans.init()
+    torchlab.init()
     psutil.cpu_percent(interval=None)  # prime the CPU counter so the first reading isn't 0
     app.state.llm = httpx.AsyncClient(base_url=config.LLM_URL, timeout=httpx.Timeout(10, read=300))
     app.state.background = set()  # keep references so tasks aren't garbage-collected
@@ -225,7 +228,10 @@ async def chat(body: ChatIn):
                    "quantlab": "The quantization lab is running. Chat is paused until it finishes.",
                    "throughput": "A throughput test is running. Chat is paused until it finishes.",
                    "experiment": "An experiment profile is running. Chat is paused until it finishes.",
-                   "weights": "New model weights are being built. Chat is paused until it finishes."}.get(
+                   "weights": "New model weights are being built. Chat is paused until it finishes.",
+                   "engine": "An inference engine is being compiled. Chat is paused until it finishes.",
+                   "scan": "A layer sensitivity scan is running. Chat is paused until it finishes.",
+                   "torch": "A PyTorch job (activations or fine-tuning) is using the GPU. Chat is paused until it finishes."}.get(
                 lab.busy, "The model is being switched. Try again in a moment.")
             yield _sse({"type": "error", "message": msg})
             return
@@ -785,6 +791,141 @@ def experiments_sweep(exp_id: int, body: dict):
     return {"ids": ids}
 
 
+# ---------- Inference engines (llama.cpp builds) ----------
+
+@app.get("/api/engines")
+def engines_list():
+    return engines.list_engines()
+
+
+@app.post("/api/engines")
+async def engines_add(body: dict):  # async: starts a background build
+    try:
+        return {"id": engines.add(body)}
+    except (ValueError, TypeError) as e:
+        _bad(e)
+
+
+@app.get("/api/engines/{engine_id}/log")
+def engines_log(engine_id: str):
+    return {"log": engines.get_log(engine_id)}
+
+
+@app.post("/api/engines/{engine_id}/cancel")
+def engines_cancel(engine_id: str):
+    engines.cancel(engine_id)
+    return {"ok": True}
+
+
+@app.delete("/api/engines/{engine_id}")
+def engines_delete(engine_id: str):
+    try:
+        engines.delete(engine_id)
+    except ValueError as e:
+        _bad(e)
+    return {"ok": True}
+
+
+# ---------- PyTorch lab: checkpoints, activations, LoRA ----------
+
+@app.get("/api/torch/status")
+async def torch_status():
+    return await asyncio.to_thread(torchlab.status)
+
+
+@app.get("/api/torch/jobs")
+def torch_jobs(kind: str | None = None):
+    return torchlab.jobs(kind)
+
+
+@app.get("/api/torch/jobs/{job_id}")
+def torch_job(job_id: int):
+    j = torchlab.job(job_id)
+    if not j:
+        raise HTTPException(404, "Job not found")
+    return j
+
+
+@app.post("/api/torch/jobs/{job_id}/cancel")
+def torch_cancel(job_id: int):
+    torchlab.cancel(job_id)
+    return {"ok": True}
+
+
+@app.post("/api/torch/download")
+async def torch_download(body: dict):
+    try:
+        return {"id": torchlab.start_download(str(body.get("repo") or ""))}
+    except (ValueError, TypeError) as e:
+        _bad(e)
+
+
+@app.post("/api/torch/activations")
+async def torch_activations(body: dict):
+    try:
+        return {"id": torchlab.start_activations(body)}
+    except (ValueError, TypeError) as e:
+        _bad(e)
+
+
+@app.post("/api/torch/lora")
+async def torch_lora(body: dict):
+    try:
+        return {"id": torchlab.start_lora(body)}
+    except (ValueError, TypeError) as e:
+        _bad(e)
+
+
+# ---------- Notebooks (JupyterLab on the box) + Python client ----------
+
+@app.get("/api/notebooks")
+async def notebooks_status():
+    token_file = config.DATA_DIR / "notebook-token"
+    installed = token_file.is_file()
+    running = False
+    if installed:
+        try:
+            async with httpx.AsyncClient(timeout=3) as c:
+                running = (await c.get("http://127.0.0.1:8888/api/status", params={"token": token_file.read_text().strip()})).status_code == 200
+        except httpx.HTTPError:
+            pass
+    return {"installed": installed, "running": running,
+            "url": f"http://localhost:8888/lab?token={token_file.read_text().strip()}" if installed else None,
+            "folder": str(config.DATA_DIR / "notebooks")}
+
+
+@app.get("/api/client.py")
+def python_client():
+    return FileResponse(Path(__file__).resolve().parents[2] / "client" / "blocky.py", media_type="text/x-python", filename="blocky.py")
+
+
+# ---------- Layer sensitivity scans ----------
+
+@app.get("/api/scans")
+def scans_list(model: str | None = None):
+    return scans.list_scans(model)
+
+
+@app.post("/api/scans")
+async def scans_start(body: dict):  # async: starts a background task
+    try:
+        return {"id": scans.start(body)}
+    except (ValueError, TypeError) as e:
+        _bad(e)
+
+
+@app.post("/api/scans/{scan_id}/cancel")
+def scans_cancel(scan_id: int):
+    scans.cancel(scan_id)
+    return {"ok": True}
+
+
+@app.delete("/api/scans/{scan_id}")
+def scans_delete(scan_id: int):
+    scans.delete(scan_id)
+    return {"ok": True}
+
+
 # ---------- Weights workshop ----------
 
 @app.get("/api/weights/family")
@@ -821,6 +962,14 @@ def weights_jobs():
 def weights_cancel(job_id: str):
     weights.cancel(job_id)
     return {"ok": True}
+
+
+@app.put("/api/experiments/{exp_id}/protocol")
+def experiments_protocol(exp_id: int, body: dict):
+    try:
+        return profile.set_protocol(exp_id, body)
+    except (ValueError, TypeError) as e:
+        _bad(e)
 
 
 @app.put("/api/experiments/{exp_id}/canvas")

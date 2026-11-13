@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Activity, Boxes, Brain, ClipboardCheck, FlaskConical, LayoutDashboard, Microscope, PanelLeft, Swords, Plus, Search, Settings as SettingsIcon, SlidersHorizontal, Trash2 } from "lucide-react";
+import { Activity, BookOpen, Boxes, Gauge, Brain, ClipboardCheck, FlaskConical, LayoutDashboard, Microscope, PanelLeft, Swords, Plus, Search, Settings as SettingsIcon, SlidersHorizontal, Trash2 } from "lucide-react";
 import { api, Conversation, MessageStats, Sampling, SearchHit, Status } from "./api";
 import ArenaPage from "./ArenaPage";
 import BenchPage from "./BenchPage";
@@ -8,6 +8,8 @@ import Dashboard from "./Dashboard";
 import Inspector from "./Inspector";
 import TestsPage from "./TestsPage";
 import ExperimentsPage from "./ExperimentsPage";
+import NotebooksPage from "./NotebooksPage";
+import InternalsPage from "./InternalsPage";
 import { Mode, ModeContext } from "./ui";
 import ModelsPage from "./ModelsPage";
 import MemoryPage from "./MemoryPage";
@@ -16,15 +18,17 @@ import SettingsPage from "./SettingsPage";
 import Logo from "./Logo";
 import { Accent, BLOCK_COLORS, Theme, useSetting } from "./settings";
 
-export type Page = "chat" | "home" | "experiments" | "models" | "arena" | "tests" | "bench" | "memory" | "system" | "settings";
+export type Page = "chat" | "home" | "experiments" | "notebooks" | "internals" | "models" | "arena" | "tests" | "bench" | "memory" | "system" | "settings";
 
 const PAGES = [
-  { id: "experiments", label: "Experiments", icon: Microscope },
+  { id: "experiments", label: "Experiments", icon: FlaskConical },
   { id: "home", label: "Overview", icon: LayoutDashboard },
+  { id: "internals", label: "Internals", icon: Microscope },
+  { id: "notebooks", label: "Notebooks", icon: BookOpen },
   { id: "models", label: "Models", icon: Boxes },
   { id: "arena", label: "Arena", icon: Swords },
   { id: "tests", label: "Quality tests", icon: ClipboardCheck },
-  { id: "bench", label: "Speed tests", icon: FlaskConical },
+  { id: "bench", label: "Speed tests", icon: Gauge },
   { id: "memory", label: "Memory", icon: Brain },
   { id: "system", label: "System", icon: Activity },
   { id: "settings", label: "Settings", icon: SettingsIcon },
@@ -32,7 +36,7 @@ const PAGES = [
 
 /** Sidebar groups: what you do with models, then the device itself. */
 const NAV_GROUPS: { label: string; ids: readonly Page[] }[] = [
-  { label: "Research", ids: ["experiments", "home"] },
+  { label: "Research", ids: ["experiments", "internals", "home", "notebooks"] },
   { label: "Tools", ids: ["models", "arena", "tests", "bench"] },
   { label: "Device", ids: ["memory", "system", "settings"] },
 ];
@@ -287,6 +291,8 @@ export default function App() {
           )}
           {page === "home" && <Dashboard status={status} go={go} />}
           {page === "experiments" && <ExperimentsPage status={status} />}
+          {page === "notebooks" && <NotebooksPage />}
+          {page === "internals" && <InternalsPage />}
           {page === "models" && <ModelsPage status={status} />}
           {page === "arena" && <ArenaPage status={status} />}
           {page === "tests" && <TestsPage status={status} />}

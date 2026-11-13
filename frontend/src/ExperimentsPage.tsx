@@ -1,15 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertCircle, Check, Cpu, Download, FlaskConical, Gauge, Hammer, Loader2, MemoryStick, Play, Plus, Sparkles, Square, Trash2, Zap } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { api, ExpConfig, Experiment, ExpRun, ModelFile, Provenance, Status } from "./api";
+import { api, Engine, ExpConfig, Experiment, ExpRun, ModelFile, Provenance, Status } from "./api";
 import { LineChart, Term } from "./ui";
 import ResearchCanvas from "./ResearchCanvas";
 import WeightsWorkshop from "./WeightsWorkshop";
-import { colorOf, delta, METRICS, Metric, n1, nameOf, runTitle, shortModel } from "./expmetrics";
+import EnginesPanel from "./EnginesPanel";
+import { allMetrics, colorOf, delta, Metric, n1, nameOf, runTitle, shortModel } from "./expmetrics";
 
 const PHASES = [
   { id: "loading", label: "Load", what: "memory layout, load time" },
   { id: "quality", label: "Quality", what: "MMLU-Pro, 560 questions" },
+  { id: "longctx", label: "Long context", what: "needle in a haystack" },
   { id: "speed", label: "Speed", what: "llama-bench, 5 reps" },
   { id: "fidelity", label: "Fidelity", what: "PPL + KLD, 16k tokens" },
 ];
@@ -43,8 +45,8 @@ function Profile({ run }: { run: ExpRun }) {
 }
 
 function Running({ run, onStop }: { run: ExpRun; onStop: () => void }) {
-  const idx = PHASES.findIndex((p) => p.id === run.phase);
-  const mp = run.results.mmlu_progress;
+  const idx = PHASES.findIndex((p) => p.id === (run.phase === "lm_eval" ? "longctx" : run.phase));
+  const mp = run.results.mmlu_progress, np = run.results.needle_progress;
   return (
     <div className="xrun">
       <div className="xrun-head"><Loader2 className="spin" /> <b>Profiling “{runTitle(run)}”</b><span className="row-sub">4–8 minutes · chat is paused</span>
@@ -52,7 +54,7 @@ function Running({ run, onStop }: { run: ExpRun; onStop: () => void }) {
       <div className="xsteps">
         {PHASES.map((p, i) => (
           <div key={p.id} className={`xstep ${i < idx ? "done" : i === idx ? "now" : ""}`}>
-            <span>{i < idx ? <Check size={13} /> : i + 1}</span><div><b>{p.label}</b><em>{p.id === "quality" && mp && i === idx ? `${mp.done}/${mp.total} · ${mp.correct} correct` : p.what}</em></div>
+            <span>{i < idx ? <Check size={13} /> : i + 1}</span><div><b>{p.label}</b><em>{p.id === "quality" && mp && i === idx ? `${mp.done}/${mp.total} · ${mp.correct} correct` : p.id === "longctx" && np && i === idx ? `${np.done}/${np.total} · ${np.correct} found` : p.id === "longctx" && run.phase === "lm_eval" ? "lm-eval running…" : p.what}</em></div>
           </div>
         ))}
       </div>
@@ -65,8 +67,14 @@ const VRAM_SIM = [null, 6144, 4096, 2048];
 
 type SweepGrid = Partial<Record<keyof ExpConfig, unknown[]>>;
 
-function ChangePanel({ base, models, onRun, onSweep, onModels }: { base: ExpConfig; models: ModelFile[]; onRun: (label: string, cfg: Partial<ExpConfig>) => void;
+function ChangePanel({ base: rawBase, models, onRun, onSweep, onModels }: { base: ExpConfig; models: ModelFile[]; onRun: (label: string, cfg: Partial<ExpConfig>) => void;
   onSweep: (grid: SweepGrid, repeats: number) => void; onModels: () => void }) {
+  // Runs made before engines existed have no engine field: they ran on stock.
+  const base = useMemo(() => ({ ...rawBase, engine: rawBase.engine ?? "stock" }), [rawBase]);
+  const [engineList, setEngineList] = useState<Engine[]>([]);
+  const [eng, setEng] = useState(false);
+  const loadEngines = () => api.engines().then(setEngineList).catch(() => {});
+  useEffect(() => { loadEngines(); }, []);
   const [mode, setMode] = useState<"single" | "sweep">("single");
   const [shop, setShop] = useState(() => window.location.hash.includes("workshop=1"));
   const [cfg, setCfg] = useState<ExpConfig>(base);
@@ -107,6 +115,12 @@ function ChangePanel({ base, models, onRun, onSweep, onModels }: { base: ExpConf
         <div className="xc-row"><div><b>A different model</b><span>Same tests, same hardware. Speed, memory and MMLU-Pro always compare; KL divergence and perplexity only between models that share a tokenizer.</span></div>
           <div className="segmented wrap">{others.map((m) => <Opt key={m.file} k="model" v={m.file} label={`${m.file.replace(".gguf", "")} · ${(m.size_bytes / 2 ** 30).toFixed(1)} GB`} />)}</div></div>
       )}
+      <div className="xc-row"><div><b>Inference engine</b><span>Which llama.cpp build runs it: stock, or a branch/fork you built</span></div>
+        <div className="ws-opts">
+          <div className="segmented wrap">{engineList.filter((e) => e.status === "ready").map((e) => <Opt key={e.id} k="engine" v={e.id} label={e.id === "stock" ? "stock" : e.name} />)}</div>
+          <button className={`btn small ${eng ? "" : "ghost"}`} onClick={() => setEng(!eng)}><Cpu /> {eng ? "Close" : "Add engine"}</button>
+        </div></div>
+      {eng && <div className="xc-shop"><EnginesPanel onChange={loadEngines} /></div>}
       <div className="xc-row"><div><b><Term k="kv">KV cache type</Term></b><span>-ctk / -ctv</span></div>
         <div className="segmented"><Opt k="kv" v="f16" label="f16" /><Opt k="kv" v="q8_0" label="q8_0" /><Opt k="kv" v="q4_0" label="q4_0" /></div></div>
       <div className="xc-row"><div><b><Term k="context">Context size</Term></b><span>-c</span></div>
@@ -145,6 +159,7 @@ function ChangePanel({ base, models, onRun, onSweep, onModels }: { base: ExpConf
 
 function Board({ runs, metric, setMetric }: { runs: ExpRun[]; metric: string; setMetric: (k: string) => void }) {
   const base = runs[0];
+  const METRICS = allMetrics(runs);
   const groups = Array.from(new Set(METRICS.map((m) => m.group)));
   const hasData = (m: Metric) => runs.some((r) => m.get(r.results) != null);
   return (
@@ -189,6 +204,7 @@ function Board({ runs, metric, setMetric }: { runs: ExpRun[]; metric: string; se
 }
 
 function MetricBars({ runs, metric }: { runs: ExpRun[]; metric: string }) {
+  const METRICS = allMetrics(runs);
   const m = METRICS.find((x) => x.key === metric) ?? METRICS[0];
   const vals = runs.map((r) => m.get(r.results));
   const max = Math.max(...vals.map((v, i) => (v ?? 0) + (m.sd?.(runs[i].results) ?? 0)), 1e-9);
@@ -208,6 +224,64 @@ function MetricBars({ runs, metric }: { runs: ExpRun[]; metric: string }) {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+/* ---------- Long context ---------- */
+
+function NeedleGrid({ runs }: { runs: ExpRun[] }) {
+  const rs = runs.filter((r) => r.results.needle?.cells?.length);
+  if (!rs.length) return null;
+  const lengths = Array.from(new Set(rs.flatMap((r) => r.results.needle!.lengths))).sort((a, b) => a - b);
+  return (
+    <div className="ng">
+      <div className="mini-title">Long-context retrieval <span className="muted">(a code hidden at 5 depths; each cell = how many of the 5 were found; hover for depths)</span></div>
+      <div className="table-wrap"><table className="data ng-table">
+        <thead><tr><th>Run</th>{lengths.map((L) => <th key={L} className="r">{L >= 1024 ? `${L / 1024}k` : L} tokens</th>)}</tr></thead>
+        <tbody>{rs.map((r) => (
+          <tr key={r.id}><td className="run-label" title={runTitle(r)}>{runTitle(r)}</td>
+            {lengths.map((L) => {
+              const cells = r.results.needle!.cells.filter((c) => c.length === L);
+              if (!cells.length) return <td key={L} className="r muted" title="Longer than this run's context">–</td>;
+              const ok = cells.filter((c) => c.ok).length;
+              const pf = r.results.needle!.prefill_tps_by_length?.[String(L)];
+              return <td key={L} className="r"><span className={`ng-cell ${ok === cells.length ? "all" : ok === 0 ? "none" : "some"}`}
+                title={`${cells.map((c) => `${Math.round(c.depth * 100)}% deep: ${c.ok ? "found" : "missed"}`).join(" · ")}${pf ? ` · read at ${pf} tok/s` : ""}`}>{ok}/{cells.length}</span></td>;
+            })}</tr>
+        ))}</tbody>
+      </table></div>
+    </div>
+  );
+}
+
+function TestProtocol({ exp, onSaved }: { exp: Experiment; onSaved: () => void }) {
+  const cur = exp.protocol?.lm_eval;
+  const [open, setOpen] = useState(false);
+  const [tasks, setTasks] = useState(cur?.tasks ?? "");
+  const [limit, setLimit] = useState(cur?.limit ?? 100);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => { setTasks(exp.protocol?.lm_eval?.tasks ?? ""); setLimit(exp.protocol?.lm_eval?.limit ?? 100); }, [exp.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const save = async () => {
+    setErr(null);
+    try { await api.experimentProtocol(exp.id, tasks.trim() ? { tasks, limit } : null); setOpen(false); onSaved(); } catch (e) { setErr((e as Error).message); }
+  };
+  return (
+    <div className="tp">
+      <span className="row-sub"><b>Every run measures:</b> memory · MMLU-Pro (560) · long context (2k…ctx) · speed (llama-bench) · perplexity & KLD · telemetry{cur ? <> · <b>lm-eval: {cur.tasks}</b> (limit {cur.limit})</> : ""}</span>
+      <button className="btn small ghost" onClick={() => setOpen(!open)}>{open ? "Close" : "Add tests"}</button>
+      {open && (
+        <div className="tp-edit">
+          <div className="row-sub">Run <b>lm-evaluation-harness</b> tasks too, the field's standard tool, against each run's exact server (greedy, seed 0). Use generative tasks such as <code>gsm8k</code>, <code>ifeval</code>, <code>bbh_cot_fewshot</code>, <code>minerva_math</code>. Multiple-choice log-likelihood tasks need prompt log-probs, which this endpoint doesn't provide; MMLU-Pro above already covers that style. Applies to runs queued from now on.</div>
+          <div className="ws-grid">
+            <label><span>Tasks</span><input className="field" value={tasks} onChange={(e) => setTasks(e.target.value)} placeholder="gsm8k,ifeval" /></label>
+            <label><span>Questions per task (limit)</span><input className="field" type="number" min={1} max={5000} value={limit} onChange={(e) => setLimit(Number(e.target.value))} />
+              <em>gsm8k at 100 ≈ 3–5 min on a 9B at 60 tok/s.</em></label>
+          </div>
+          <div className="xc-btns"><button className="btn small" onClick={save}>Save</button>{cur && <button className="btn small ghost" onClick={() => { setTasks(""); api.experimentProtocol(exp.id, null).then(onSaved); setOpen(false); }}>Remove lm-eval</button>}</div>
+          {err && <div className="error"><AlertCircle /> {err}</div>}
+        </div>
+      )}
     </div>
   );
 }
@@ -534,6 +608,7 @@ export default function ExperimentsPage({ status }: { status: Status | null }) {
               </div>
             )}
 
+            <TestProtocol exp={exp} onSaved={load} />
             <div className="xviewbar">
               <div className="segmented">
                 <button className={tab === "report" ? "on" : ""} onClick={() => setTab("report")}>Report</button>
@@ -569,6 +644,7 @@ export default function ExperimentsPage({ status }: { status: Status | null }) {
                   <Board runs={done} metric={metric} setMetric={setMetric} />
                   <div className="row-sub xnote">Speeds are the median of the repetitions; ± is the robust spread (1.4826 × median absolute deviation). A difference is colored only when it is bigger than the noise: 2σ for speeds, a paired McNemar test (p &lt; 0.05) for MMLU-Pro. Grey = not significant. If you add a “Repeat baseline” run, changes must also exceed twice the drift between the two baseline runs (on a desktop PC, other apps share the GPU and add noise). KL divergence measures how far each token's probability distribution drifted from the baseline's.</div>
                   {done.length > 1 && <MetricBars runs={done} metric={metric} />}
+                  <NeedleGrid runs={done} />
                   <Repro runs={done} />
                   {runs.filter((r) => !["done", "running", "queued"].includes(r.status)).map((r) => (
                     <div key={r.id} className="xfailed"><AlertCircle size={14} /> “{r.label}” {r.status}{r.error ? `: ${r.error}` : ""}

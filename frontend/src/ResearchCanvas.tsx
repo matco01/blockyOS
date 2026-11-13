@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Copy, GitBranch, GitCompare, Loader2, Maximize, Minus, Plus, Repeat, Square, StickyNote, Trash2, Wand2, X } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { api, CanvasNote, CanvasState, Experiment, ExpRun } from "./api";
-import { colorOf, delta, METRICS, n1, runTitle } from "./expmetrics";
+import { allMetrics, colorOf, delta, METRICS, n1, runTitle } from "./expmetrics";
 
 /**
  * Research canvas: the experiment as a tree you work in. Every run is a card; each run was branched from a parent
@@ -82,7 +82,7 @@ function Card({ run, idx, cmp, selected, onDown, onClick, onMenu, onBranch }: { 
 }
 
 function Compare({ a, b, onClose }: { a: ExpRun; b: ExpRun; onClose: () => void }) {
-  const rows = METRICS.filter((m) => m.get(a.results) != null || m.get(b.results) != null);
+  const rows = allMetrics([a, b]).filter((m) => m.get(a.results) != null || m.get(b.results) != null);
   return (
     <div className="cv-side" onPointerDown={(e) => e.stopPropagation()} onWheel={(e) => e.stopPropagation()} onContextMenu={(e) => e.stopPropagation()}>
       <div className="cv-side-head"><GitCompare size={15} /><b title={runTitle(a)}>A: {runTitle(a)}</b><span>vs</span><b title={runTitle(b)}>B: {runTitle(b)}</b><button className="icon-btn" onClick={onClose}><X /></button></div>

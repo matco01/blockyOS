@@ -29,6 +29,8 @@ export const METRICS: Metric[] = [
       return p != null ? p < 0.05 : null;
     }, note: "paired McNemar test, p < 0.05" },
   { key: "mmlu_p", group: "Quality", label: "MMLU-Pro P(correct)", unit: "%", better: "higher", get: (r) => (r.mmlu ? r.mmlu.p_correct_mean * 100 : null), fmt: pct },
+  { key: "needle", group: "Quality", label: "Long-context retrieval", unit: "%", better: "higher", get: (r) => (r.needle ? r.needle.acc * 100 : null), fmt: (v) => v.toFixed(0),
+    note: "Needle in a haystack: a code hidden at 5 depths in 2k…ctx tokens of text", minRel: 0.1 },
   { key: "kld", group: "Quality", label: "KL divergence vs baseline", unit: "", better: "lower", get: (r) => r.kld, fmt: (v) => v.toFixed(4) },
   { key: "kld99", group: "Quality", label: "KLD, 99th percentile", unit: "", better: "lower", get: (r) => r.kld_p99, fmt: (v) => v.toFixed(3) },
   { key: "same_top", group: "Quality", label: "Same top token as baseline", unit: "%", better: "higher", get: (r) => r.same_top, sd: (r) => r.same_top_sd, fmt: pct },
@@ -81,7 +83,28 @@ export function delta(m: Metric, c: Ctx, session = 0) {
 
 export const SERIES = ["var(--series-1)", "var(--series-2)", "var(--series-3)", "var(--series-4)"];
 export const colorOf = (i: number) => SERIES[i] ?? "var(--text-2)";
-export const shortModel = (r: ExpRun) => r.config.model.replace(/\.gguf$/, "");
+/** The static metrics plus one row per lm-evaluation-harness task/metric found in these runs. */
+export function allMetrics(runs: ExpRun[]): Metric[] {
+  const seen = new Map<string, Metric>();
+  for (const r of runs) {
+    for (const [task, t] of Object.entries(r.results.lm_eval?.tasks ?? {})) {
+      for (const k of Object.keys(t.metrics)) {
+        const key = `lm:${task}:${k}`;
+        if (seen.has(key)) continue;
+        const pctLike = /acc|match|exact|strict|loose|f1|pass/i.test(k);
+        seen.set(key, {
+          key, group: "lm-eval", label: `${task} · ${k.replace(",none", "").replace(",", " · ")}`, unit: pctLike ? "%" : "", better: "higher",
+          get: (x) => { const v = x.lm_eval?.tasks?.[task]?.metrics?.[k]; return v == null ? null : pctLike ? v * 100 : v; },
+          sd: (x) => { const e = x.lm_eval?.tasks?.[task]?.stderr?.[k]; return e == null ? null : pctLike ? e * 100 : e; },
+          fmt: (v) => v.toFixed(1), note: "lm-evaluation-harness; ± is its standard error",
+        });
+      }
+    }
+  }
+  return [...METRICS, ...seen.values()];
+}
+
+export const shortModel =(r: ExpRun) => r.config.model.replace(/\.gguf$/, "");
 /** A run's display name. The baseline always says what it is: "Baseline · Qwen3.5-9B-Q8_0". */
 export const runTitle = (r: ExpRun, isBase = r.parent_id == null) =>
   isBase ? (r.label.startsWith("Baseline ·") ? r.label : `Baseline · ${shortModel(r)}`) : r.label;

@@ -30,7 +30,7 @@ BASE_TYPES = ["Q2_K", "Q3_K_S", "Q3_K_M", "Q4_0", "Q4_K_S", "Q4_K_M", "Q5_K_S", 
               "IQ4_XS", "IQ4_NL", "IQ3_M", "IQ3_XXS", "IQ2_M", "IQ2_XS"]
 NEEDS_IMATRIX = {"IQ3_XXS", "IQ2_M", "IQ2_XS"}  # llama-quantize refuses these without one
 TENSOR_TYPES = ["q2_k", "q3_k", "q4_0", "q4_k", "q5_k", "q6_k", "q8_0", "iq4_xs", "f16", "bf16"]
-_PATTERN = re.compile(r"^[A-Za-z0-9_.\\*+?\[\]-]{1,64}$")
+_PATTERN = re.compile(r"^[A-Za-z0-9_.\\*+?\[\]()|^$-]{1,160}$")  # llama-quantize treats these as regular expressions
 
 jobs: dict[str, dict] = {}
 _cancel: set[str] = set()
@@ -115,6 +115,10 @@ def _validate(spec: dict) -> dict:
     overrides = {}
     for pat, typ in (spec.get("overrides") or {}).items():
         pat, typ = str(pat).strip(), str(typ).strip().lower()
+        try:
+            re.compile(pat)
+        except re.error:
+            raise ValueError(f"Bad override pattern {pat}") from None
         if not _PATTERN.match(pat) or typ not in TENSOR_TYPES:
             raise ValueError(f"Bad override {pat}={typ}: use a tensor name pattern and one of {', '.join(TENSOR_TYPES)}")
         overrides[pat] = typ

@@ -25,7 +25,7 @@ from pathlib import Path
 import httpx
 import psutil
 
-from . import arena, config, db, evals, gguf, lab, quantlab
+from . import arena, config, db, engines, evals, gguf, lab, quantlab
 
 DIR = config.DATA_DIR / "experiments"
 PORT = arena.TEMP_PORT
@@ -74,6 +74,8 @@ def init() -> None:
         cols = [r[1] for r in c.execute("PRAGMA table_info(experiments)")]
         if "canvas" not in cols:  # research canvas layout: card positions, notes, viewport
             c.execute("ALTER TABLE experiments ADD COLUMN canvas TEXT")
+        if "protocol" not in cols:  # extra tests every run of the experiment gets (e.g. lm-eval tasks)
+            c.execute("ALTER TABLE experiments ADD COLUMN protocol TEXT")
         if "parent_id" not in [r[1] for r in c.execute("PRAGMA table_info(exp_runs)")]:
             # The run tree: each run is derived from a parent run (its config + one change). NULL = from the baseline.
             c.execute("ALTER TABLE exp_runs ADD COLUMN parent_id INTEGER")
@@ -172,10 +174,11 @@ def limits() -> dict:
 
 def _exp(r) -> dict:
     d = dict(r)
-    try:
-        d["canvas"] = json.loads(d.get("canvas") or "null")
-    except ValueError:
-        d["canvas"] = None
+    for k in ("canvas", "protocol"):
+        try:
+            d[k] = json.loads(d.get(k) or "null")
+        except ValueError:
+            d[k] = None
     return d
 
 
@@ -249,7 +252,7 @@ def cancel_queue(exp_id: int) -> int:
         return c.execute("UPDATE exp_runs SET status = 'cancelled' WHERE experiment_id = ? AND status = 'queued'", (exp_id,)).rowcount
 
 
-SWEEP_KEYS = ("model", "kv", "ctx", "vram_limit_mb", "ngl", "fa", "threads")
+SWEEP_KEYS = ("model", "engine", "kv", "ctx", "vram_limit_mb", "ngl", "fa", "threads")
 MAX_SWEEP = 32
 
 
@@ -324,7 +327,7 @@ def _save(run_id: int, **f) -> None:
         c.execute(f"UPDATE exp_runs SET {sets} WHERE id = ?", (*vals, run_id))
 
 
-DEFAULTS = {"ctx": 8192, "kv": "q8_0", "ngl": "auto", "vram_limit_mb": None, "fa": "auto", "threads": None}
+DEFAULTS = {"ctx": 8192, "kv": "q8_0", "ngl": "auto", "vram_limit_mb": None, "fa": "auto", "threads": None, "engine": "stock"}
 
 
 def normalize_config(exp: dict, cfg: dict) -> dict:
@@ -343,6 +346,8 @@ def normalize_config(exp: dict, cfg: dict) -> dict:
         raise ValueError("Flash attention must be auto, on or off")
     if out["threads"]:
         out["threads"] = max(1, min(256, int(out["threads"])))
+    out["engine"] = str(out.get("engine") or "stock")
+    engines.bin_dir(out["engine"])  # raises if unknown or not built
     return out
 
 
@@ -395,6 +400,8 @@ def describe_change(base: dict, cfg: dict) -> str:
         parts.append(f"{(cfg['vram_limit_mb'] or 0) / 1024:.0f} GB GPU" if cfg.get("vram_limit_mb") else "full GPU")
     if cfg["fa"] != base.get("fa"):
         parts.append(f"flash-attn {cfg['fa']}")
+    if (cfg.get("engine") or "stock") != (base.get("engine") or "stock"):
+        parts.append(f"engine {cfg.get('engine') or 'stock'}")
     if cfg.get("threads") != base.get("threads"):
         parts.append(f"{cfg['threads'] or 'auto'} threads")
     return " · ".join(parts) or "Repeat of baseline"
@@ -580,6 +587,96 @@ async def mmlu_eval(client: httpx.AsyncClient, seed: int, should_stop, progress)
             "answers": "".join(str(x) for x in correct), "chance": 0.1}
 
 
+# ---------- lm-evaluation-harness (optional, per experiment) ----------
+
+ML_VENV = config.DATA_DIR.parent / "ml-venv"
+_TASKS = re.compile(r"^[a-z0-9_.-]+(,[a-z0-9_.-]+)*$")
+
+
+def set_protocol(exp_id: int, body: dict) -> dict:
+    """Extra tests every run of this experiment gets. Today: lm-evaluation-harness tasks (generative, via chat)."""
+    lm = body.get("lm_eval") or {}
+    tasks = re.sub(r"\s+", "", str(lm.get("tasks") or "")).lower()
+    proto: dict = {}
+    if tasks:
+        if not _TASKS.match(tasks):
+            raise ValueError("Tasks: comma-separated lm-eval task names, e.g. gsm8k,ifeval")
+        proto["lm_eval"] = {"tasks": tasks, "limit": max(1, min(5000, int(lm.get("limit") or 100)))}
+    with db.connect() as c:
+        c.execute("UPDATE experiments SET protocol = ? WHERE id = ?", (json.dumps(proto), exp_id))
+    return proto
+
+
+async def lm_eval_run(lm: dict, out_dir: Path, log: list[str], run_id: int) -> dict:
+    """lm_eval against this run's temporary llama-server (OpenAI-compatible chat endpoint), greedy, fixed seed."""
+    exe = ML_VENV / "bin" / "lm_eval"
+    if not exe.is_file():
+        return {"error": "lm-evaluation-harness isn't installed (scripts/setup-ml.sh)"}
+    shutil.rmtree(out_dir, ignore_errors=True)
+    cmd = [str(exe), "run", "--model", "local-chat-completions",
+           "--model_args", f"model=blocky,base_url=http://127.0.0.1:{PORT}/v1/chat/completions,num_concurrent=1,max_retries=2,tokenized_requests=False,timeout=900",
+           "--tasks", lm["tasks"], "--apply_chat_template", "--limit", str(lm["limit"]), "--seed", "0,0,0,0",
+           "--gen_kwargs", "temperature=0", "--output_path", str(out_dir)]
+    t0 = time.monotonic()
+    await quantlab._proc(cmd, log, run_id, timeout=4 * 3600)
+    files = sorted(out_dir.rglob("results_*.json"))
+    if not files:
+        return {"error": "lm-eval produced no results: " + " | ".join(log[-3:])[-300:], "command": " ".join(cmd)}
+    data = json.loads(files[-1].read_text())
+    tasks = {}
+    for task, metrics in (data.get("results") or {}).items():
+        vals = {k: v for k, v in metrics.items() if isinstance(v, (int, float)) and "stderr" not in k}
+        errs = {k.replace("_stderr", ""): v for k, v in metrics.items() if "stderr" in k and isinstance(v, (int, float))}
+        tasks[task] = {"metrics": vals, "stderr": errs}
+    return {"tasks": tasks, "limit": lm["limit"], "seconds": round(time.monotonic() - t0), "version": (data.get("lm_eval_version") or data.get("git_hash")),
+            "command": " ".join(cmd)}
+
+
+# ---------- Long context: needle in a haystack ----------
+# A secret code is hidden at 5 depths inside real text (WikiText-2) of growing length, up to the run's context size.
+# Retrieval accuracy by length × depth shows where long-context recall breaks (KV-cache precision, context size,
+# flash attention and the model itself all affect it). Fixed seed: identical haystacks and needles for every run.
+
+NEEDLE_SEED = 1234
+NEEDLE_DEPTHS = [0.05, 0.25, 0.5, 0.75, 0.95]
+NEEDLE_LENGTHS = [2048, 4096, 8192, 16384, 32768, 65536]
+_CITIES = ["Lisbon", "Oslo", "Nairobi", "Lima", "Hanoi", "Quito", "Riga", "Perth", "Dakar", "Bergen", "Porto", "Cusco", "Tallinn", "Hobart", "Valletta"]
+
+
+async def needle_eval(client: httpx.AsyncClient, ctx: int, should_stop, progress) -> dict:
+    import random
+    from . import generate
+    text = (await quantlab.ensure_text()).read_text()
+    sample = text[:40000]
+    r = await client.post("/tokenize", json={"content": sample})
+    r.raise_for_status()
+    chars_per_token = len(sample) / max(1, len(r.json().get("tokens", [])))
+    lengths = [L for L in NEEDLE_LENGTHS if L + 600 <= ctx]
+    rng = random.Random(NEEDLE_SEED)
+    cells, total = [], len(lengths) * len(NEEDLE_DEPTHS)
+    for L in lengths:
+        n_chars = int(L * chars_per_token)
+        start = rng.randrange(0, max(1, len(text) - n_chars - 1))
+        hay = text[start:start + n_chars]
+        for depth in NEEDLE_DEPTHS:
+            if should_stop():
+                raise asyncio.CancelledError
+            city, code = rng.choice(_CITIES), str(rng.randrange(1_000_000, 9_999_999))
+            cut = hay.rfind(". ", 0, int(len(hay) * depth)) + 2 if depth > 0.05 else int(len(hay) * depth)
+            doc = f"{hay[:cut]}The secret code for the {city} vault is {code}. {hay[cut:]}"
+            q = f"{doc}\n\nQuestion: What is the secret code for the {city} vault? Reply with the number only."
+            info = await generate.complete(client, [{"role": "user", "content": q}], think=False, sampling={"temperature": 0.0},
+                                           seed=1, max_tokens=24, should_stop=should_stop)
+            t = info.get("timings") or {}
+            cells.append({"length": L, "depth": depth, "ok": code in re.sub(r"[^\d]", "", info.get("content") or ""),
+                          "prompt_tokens": t.get("prompt_n"), "prefill_tps": round(t["prompt_per_second"], 1) if t.get("prompt_per_second") else None})
+            progress(len(cells), total, sum(c["ok"] for c in cells))
+    by_len = {str(L): round(sum(c["ok"] for c in cells if c["length"] == L) / len(NEEDLE_DEPTHS), 3) for L in lengths}
+    pf = {str(L): next((c["prefill_tps"] for c in cells if c["length"] == L and c["prefill_tps"]), None) for L in lengths}
+    return {"lengths": lengths, "depths": NEEDLE_DEPTHS, "cells": cells, "acc": round(sum(c["ok"] for c in cells) / max(1, len(cells)), 4),
+            "by_length": by_len, "prefill_tps_by_length": pf, "max_length": lengths[-1] if lengths else None}
+
+
 def wilson(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
     if not n:
         return (0.0, 0.0)
@@ -611,10 +708,10 @@ PROTOCOL = "blocky-profile/2 (MMLU-Pro 560q 5-shot loglik · llama-bench p512 n1
 REPO = Path(__file__).resolve().parents[2]
 
 
-def _sh(*cmd: str, timeout: int = 20) -> str:
+def _sh(*cmd: str, timeout: int = 20, libdir: Path | None = None) -> str:
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
-                           env={**os.environ, "LD_LIBRARY_PATH": str(lab.LLAMA_BIN)})
+                           env={**os.environ, "LD_LIBRARY_PATH": str(libdir or lab.LLAMA_BIN)})
         return (p.stdout + "\n" + p.stderr).strip()  # llama.cpp prints --version to stderr
     except (OSError, subprocess.SubprocessError):
         return ""
@@ -656,7 +753,8 @@ def provenance(cfg: dict) -> dict:
     from . import benchmarks
     hw = lab.hardware()
     g = hw["gpus"][0] if hw["gpus"] else {}
-    ver = _sh(str(lab.LLAMA_BIN / "llama-server"), "--version")
+    eb = engines.bin_dir(cfg.get("engine"))
+    ver = _sh(str(eb / "llama-server"), "--version", libdir=eb)
     m = re.search(r"version:\s*(\S+)\s*\((?:build\s*\d+,\s*commit\s*)?([0-9a-f]{6,})\)", ver)
     smi = _sh("nvidia-smi", "-q")
     cuda_rt = re.search(r"CUDA (?:UMD )?Version\s*:\s*([\d.]+)", smi)
@@ -668,6 +766,7 @@ def provenance(cfg: dict) -> dict:
     text = quantlab.TEXT
     return {
         "protocol": PROTOCOL,
+        "engine": next((e for e in engines.list_engines() if e["id"] == (cfg.get("engine") or "stock")), {"id": cfg.get("engine")}),
         "llama_cpp": {"version": m.group(1) if m else None, "commit": m.group(2) if m else None,
                       "built_with": next((l.strip() for l in ver.splitlines() if l.startswith("built with")), None)},
         "model": {"file": cfg["model"], "sha256": file_sha256(lab.MODELS_DIR / cfg["model"]),
@@ -701,7 +800,7 @@ def _cmdline(cmd: list[str]) -> str:
 
 
 async def _bench(cfg: dict, vram_total: float, run_id: int, log: list[str], cmds: dict | None = None) -> dict:
-    cmd = [str(lab.LLAMA_BIN / "llama-bench"), "-m", str(lab.MODELS_DIR / cfg["model"]), "-p", "512", "-n", "128",
+    cmd = [str(engines.bin_dir(cfg.get("engine")) / "llama-bench"), "-m", str(lab.MODELS_DIR / cfg["model"]), "-p", "512", "-n", "128",
            "-d", "0,4096", "-r", "5", "-ctk", cfg["kv"], "-ctv", cfg["kv"], "-fa", cfg["fa"], "-o", "jsonl"] + _placement_args(cfg, vram_total, bench=True)
     if cmds is not None:
         cmds["speed"] = _cmdline(cmd)
@@ -756,6 +855,8 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
         _save(run_id, status="running")
         try:
             res["provenance"] = await asyncio.to_thread(provenance, cfg)
+            res["provenance"]["extra_tests"] = {"needle": f"WikiText-2 haystacks {NEEDLE_LENGTHS[0]}..ctx tokens × depths {NEEDLE_DEPTHS}, seed {NEEDLE_SEED}",
+                                                "lm_eval": (exp.get("protocol") or {}).get("lm_eval")}
             cmds: dict[str, str] = {}
             res["commands"] = cmds
             await lab.llm_service("stop")
@@ -764,15 +865,19 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
 
             # 1) Load: start a server with exactly this configuration, time it, read the memory layout.
             phase("loading")
+            ebin = engines.bin_dir(cfg.get("engine"))
             logfile = exp_dir / f"run{run_id}-server.log"
-            cmd = [str(lab.LLAMA_BIN / "llama-server"), "-m", str(lab.MODELS_DIR / cfg["model"]), "--host", "127.0.0.1",
+            cmd = [str(ebin / "llama-server"), "-m", str(lab.MODELS_DIR / cfg["model"]), "--host", "127.0.0.1",
                    "--port", str(PORT), "-c", str(cfg["ctx"]), "-np", "1", "-ctk", cfg["kv"], "-ctv", cfg["kv"], "-fa", cfg["fa"],
-                   "--jinja", "--no-webui", "-lv", "4"] + _placement_args(cfg, vram_total)
+                   "--jinja", "--no-webui", "-lv", "4",
+                   # Non-thinking protocol by default: answers land in the reply (not a hidden reasoning field), which
+                   # outside harnesses like lm-eval grade. Requests can still turn thinking on explicitly.
+                   "--chat-template-kwargs", '{"enable_thinking": false}'] + _placement_args(cfg, vram_total)
             cmds["load_and_quality"] = _cmdline(cmd)
             t0 = time.monotonic()
             with open(logfile, "w") as lf:
                 proc = await asyncio.create_subprocess_exec(*cmd, stdout=lf, stderr=asyncio.subprocess.STDOUT,
-                                                            env={**os.environ, "LD_LIBRARY_PATH": str(lab.LLAMA_BIN)})
+                                                            env={**os.environ, "LD_LIBRARY_PATH": str(ebin)})
             async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{PORT}", timeout=httpx.Timeout(10, read=600)) as client:
                 ready = asyncio.create_task(lab.wait_ready(client, timeout=300))
                 died = asyncio.create_task(proc.wait())
@@ -795,6 +900,20 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
                     _save(run_id, results=res)
                 res["mmlu"] = await mmlu_eval(client, MMLU_SEED, lambda: run_id in _cancel, progress)
                 res.pop("mmlu_progress", None)
+
+                # 2b) Long context: needle in a haystack, up to this run's context size.
+                phase("longctx")
+                def nprog(i, n, k):
+                    res["needle_progress"] = {"done": i, "total": n, "correct": k}
+                    _save(run_id, results=res)
+                res["needle"] = await needle_eval(client, cfg["ctx"], lambda: run_id in _cancel, nprog)
+                res.pop("needle_progress", None)
+
+                # 2c) Optional: lm-evaluation-harness tasks chosen for this experiment, against this same server.
+                lm = (exp.get("protocol") or {}).get("lm_eval")
+                if lm and lm.get("tasks"):
+                    phase("lm_eval")
+                    res["lm_eval"] = await lm_eval_run(lm, exp_dir / f"run{run_id}-lm-eval", log, run_id)
             await arena._stop(proc)
             proc = None
             await asyncio.sleep(1)
@@ -806,7 +925,7 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
             # 4) Fidelity: perplexity, and KL divergence vs the experiment's baseline.
             phase("fidelity")
             text = await quantlab.ensure_text()
-            pcmd = [str(lab.LLAMA_BIN / "llama-perplexity"), "-m", str(lab.MODELS_DIR / cfg["model"]), "-f", str(text), "-c", "512",
+            pcmd = [str(ebin / "llama-perplexity"), "-m", str(lab.MODELS_DIR / cfg["model"]), "-f", str(text), "-c", "512",
                     "--chunks", "32", "-ctk", cfg["kv"], "-ctv", cfg["kv"], "-fa", cfg["fa"]] + _placement_args(cfg, vram_total)
             base_run = next((r for r in exp["runs_list"] if r["status"] == "done" and r["id"] != run_id), None)
             same_tok = is_baseline or not base_run or (
@@ -839,7 +958,7 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
                 res["same_top_sd"] = quantlab._num(r"Same top p:\s*[\d.]+\s*±\s*([\d.]+)", out)
 
             # 5) Telemetry + bottleneck analysis.
-            res["telemetry"] = {p: sampler.summary(p) for p in ("loading", "quality", "speed", "fidelity")}
+            res["telemetry"] = {p: sampler.summary(p) for p in ("loading", "quality", "longctx", "lm_eval", "speed", "fidelity")}
             res["series"] = sampler.series()
             res["hw"] = analyze(res, cfg, lim)
         except asyncio.CancelledError:
@@ -970,6 +1089,8 @@ def compare(base: dict | None, run: dict) -> dict:
     pa, pb = base["results"].get("provenance"), run["results"].get("provenance")
     if pa and pb:
         out["env_mismatch"] = [name for name, path in PROV_KEYS if _get(pa, path) != _get(pb, path)]
+        if (base["config"].get("engine") or "stock") != (run["config"].get("engine") or "stock"):
+            out["env_mismatch"] = [x for x in out["env_mismatch"] if x != "llama.cpp commit"]  # the engine is the variable here
         if pa["model"]["file"] == pb["model"]["file"] and pa["model"]["sha256"] != pb["model"]["sha256"]:
             out["env_mismatch"].append("model file changed on disk")
     elif pa or pb:

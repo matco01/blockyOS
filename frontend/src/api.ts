@@ -73,7 +73,7 @@ export type ToolRun = {
   results: Record<string, number | string | null>[]; log: string | null; error: string | null;
 };
 
-export type ExpConfig = { model: string; ctx: number; kv: string; ngl: string | number; vram_limit_mb: number | null; fa: string; threads: number | null };
+export type ExpConfig = { model: string; ctx: number; kv: string; ngl: string | number; vram_limit_mb: number | null; fa: string; threads: number | null; engine?: string };
 export type Finding = { kind: string; severity: "major" | "minor" | "info"; title: string; text: string };
 export type PhaseTelemetry = { gpu_avg?: number; mem_bw_avg?: number; power_avg?: number; power_max?: number; temp_max?: number; vram_max_mb?: number; cpu_avg?: number; ram_max_mb?: number; seconds?: number };
 export type Mmlu = { benchmark: string; protocol: string; n: number; correct: number; acc: number; ci95: [number, number]; p_correct_mean: number;
@@ -101,6 +101,10 @@ export type ExpResults = {
   provenance?: Provenance;
   commands?: Record<string, string>;
   token_note?: string;
+  needle?: { lengths: number[]; depths: number[]; cells: { length: number; depth: number; ok: boolean; prefill_tps: number | null }[]; acc: number;
+    by_length: Record<string, number>; prefill_tps_by_length: Record<string, number | null>; max_length: number | null };
+  needle_progress?: { done: number; total: number; correct: number };
+  lm_eval?: { tasks?: Record<string, { metrics: Record<string, number>; stderr: Record<string, number> }>; limit?: number; error?: string; command?: string };
 };
 export type Provenance = {
   protocol: string;
@@ -116,7 +120,17 @@ export type ExpRun = { id: number; experiment_id: number; created_at: number; st
   phase: string | null; error: string | null; parent_id?: number | null;
   stats?: { mmlu_p?: number | null; mmlu_flips?: { lost: number; gained: number }; env_mismatch?: string[]; baseline_id?: number;
     vs_parent?: { mmlu_p?: number | null; mmlu_flips?: { lost: number; gained: number } } } };
-export type WeightFile = { file: string; quant: string | null; bits: number; size_bytes: number; layers: number | null; recipe: Record<string, unknown> | null };
+export type TorchStatus = { installed: boolean; converter: boolean; torch?: string; cuda?: boolean; transformers?: string; peft?: string;
+  checkpoints: { id: string; repo: string; architecture: string; layers: number | null; size_bytes: number }[] };
+export type TorchJob = { id: number; created_at: number; kind: string; status: string; step: string | null; error: string | null;
+  params: Record<string, string>; results: Record<string, unknown>; log_tail?: string[] };
+export type LayerMeasure ={ layer: number; kld: number | null; kld_p99: number | null; same_top: number | null; ppl: number | null; excess_kld: number; bytes: number; seconds: number };
+export type LayerScan = { id: number; created_at: number; model: string; mode: "quantize" | "prune"; qtype: string | null; status: string; step: string | null; error: string | null;
+  results: { layers?: LayerMeasure[]; n_layers?: number; source_type?: string; control?: { kld: number | null; same_top: number | null }; reference?: { ppl: number | null };
+    most_sensitive?: number[]; least_sensitive?: number[] } };
+export type Engine ={ id: string; name: string; repo: string; ref: string; commit_sha: string | null; status: string; step?: string | null;
+  error?: string | null; built_at: number | null; created_at?: number };
+export type WeightFile ={ file: string; quant: string | null; bits: number; size_bytes: number; layers: number | null; recipe: Record<string, unknown> | null };
 export type TensorGroup = { pattern: string; count: number; bytes: number; types: string[]; part: string };
 export type VariantSpec = { source: string; qtype: string; imatrix: boolean; overrides: Record<string, string>; output_type?: string | null;
   embedding_type?: string | null; prune: number[]; name?: string };
@@ -126,6 +140,7 @@ export type CanvasNote ={ id: string; x: number; y: number; text: string };
 export type CanvasState = { pos: Record<string, { x: number; y: number }>; notes: CanvasNote[]; view?: { x: number; y: number; k: number } };
 export type Experiment = {
   id: number; created_at: number; name: string; model: string; seed: number; runs?: number; canvas?: CanvasState | null;
+  protocol?: { lm_eval?: { tasks: string; limit: number } } | null;
   runs_list?: ExpRun[]; limits?: { gpu: string | null; gpu_bandwidth_gbps: number | null; gpu_tflops: number | null; gpu_tflops_kind: string | null; sm_clock_max: number | null;
     vram_mb: number; power_limit_w: number | null; ram_bandwidth_gbps: number | null; ram_mb: number; cpu: string; cpu_power_source: string | null };
 };
@@ -288,11 +303,29 @@ export const api = {
     json<{ id: number }>(`/api/experiments/${id}/runs`, send("POST", { label, config, parent_id: parentId ?? null })),
   experimentSweep: (id: number, grid: Record<string, unknown[]>, repeats: number, parentId?: number | null) =>
     json<{ ids: number[] }>(`/api/experiments/${id}/sweep`, send("POST", { grid, repeats, parent_id: parentId ?? null })),
+  torchStatus: () => json<TorchStatus>("/api/torch/status"),
+  torchJobs: (kind?: string) => json<TorchJob[]>(`/api/torch/jobs${kind ? `?kind=${kind}` : ""}`),
+  torchJob: (id: number) => json<TorchJob>(`/api/torch/jobs/${id}`),
+  torchCancel: (id: number) => json(`/api/torch/jobs/${id}/cancel`, send("POST", {})),
+  torchDownload: (repo: string) => json<{ id: number }>("/api/torch/download", send("POST", { repo })),
+  torchActivations: (checkpoint: string, prompt: string) => json<{ id: number }>("/api/torch/activations", send("POST", { checkpoint, prompt })),
+  torchLora: (body: Record<string, unknown>) => json<{ id: number }>("/api/torch/lora", send("POST", body)),
+  notebooks: () => json<{ installed: boolean; running: boolean; url: string | null; folder: string }>("/api/notebooks"),
+  scans: (model?: string) => json<LayerScan[]>(`/api/scans${model ? `?model=${encodeURIComponent(model)}` : ""}`),
+  scanStart: (model: string, mode: string, qtype: string) => json<{ id: number }>("/api/scans", send("POST", { model, mode, qtype })),
+  scanCancel: (id: number) => json(`/api/scans/${id}/cancel`, send("POST", {})),
+  scanDelete: (id: number) => json(`/api/scans/${id}`, { method: "DELETE" }),
+  engines: () => json<Engine[]>("/api/engines"),
+  engineAdd: (repo: string, ref: string, name: string) => json<{ id: string }>("/api/engines", send("POST", { repo, ref, name })),
+  engineLog: (id: string) => json<{ log: string }>(`/api/engines/${id}/log`),
+  engineCancel: (id: string) => json(`/api/engines/${id}/cancel`, send("POST", {})),
+  engineDelete: (id: string) => json(`/api/engines/${id}`, { method: "DELETE" }),
   weightsFamily: (model: string) => json<{ files: WeightFile[]; base_types: string[]; tensor_types: string[]; needs_imatrix: string[] }>(`/api/weights/family?model=${encodeURIComponent(model)}`),
   weightsTensors: (model: string) => json<TensorGroup[]>(`/api/weights/tensors?model=${encodeURIComponent(model)}`),
   weightsCreate: (spec: VariantSpec) => json<{ id: string }>("/api/weights/variants", send("POST", spec)),
   weightsJobs: () => json<WeightJob[]>("/api/weights/jobs"),
   weightsCancel: (id: string) => json(`/api/weights/jobs/${id}/cancel`, send("POST", {})),
+  experimentProtocol: (id: number, lm_eval: { tasks: string; limit: number } | null) => json(`/api/experiments/${id}/protocol`, send("PUT", { lm_eval })),
   experimentCanvas: (id: number, canvas: CanvasState) => json(`/api/experiments/${id}/canvas`, send("PUT", canvas)),
   experimentCancelQueue: (id: number) => json(`/api/experiments/${id}/cancel-queue`, send("POST", {})),
   experimentCancel: (runId: number) => json(`/api/experiments/runs/${runId}/cancel`, send("POST", {})),

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { AlertCircle, Check, Hammer, Loader2, Square } from "lucide-react";
 import { api, TensorGroup, VariantSpec, WeightFile, WeightJob } from "./api";
 import { Term } from "./ui";
+import SensitivityScan from "./SensitivityScan";
 
 /**
  * Weights workshop: build a custom version of the model's weights (quantization type, importance matrix,
@@ -106,6 +107,17 @@ export default function WeightsWorkshop({ model, onBuilt }: { model: string; onB
           <span><b>Importance matrix</b><em>Measures which weights matter most on calibration text (WikiText-2 train, separate from the test text), so compression spends its bits there. Usually a clear quality win at 4 bits and below. {needsImatrix && "Required for this type."} Computed once per source, about 3–5 min.</em></span>
         </label>
       </div>
+
+      <SensitivityScan model={source}
+        onProtect={(layers) => set({ overrides: { [`blk\\.(${layers.join("|")})\\.`]: "q8_0", ...Object.fromEntries(Object.entries(spec.overrides).filter(([k]) => !k.startsWith("blk\\."))) } })}
+        onPrune={(layers) => setPruneText(layers.join(", "))} />
+
+      {Object.keys(spec.overrides).some((k) => k.startsWith("blk\\.")) && (
+        <div className="sc-rules">{Object.entries(spec.overrides).filter(([k]) => k.startsWith("blk\\.")).map(([k, t]) => (
+          <span key={k} className="xchip">layers {k.replace(/^blk\\\.\(?/, "").replace(/\)?\\\.$/, "").split("|").join(", ")} → {t}
+            <button onClick={() => set({ overrides: Object.fromEntries(Object.entries(spec.overrides).filter(([x]) => x !== k)) })}>×</button></span>
+        ))}<span className="row-sub">Layer rules are applied before the per-tensor choices below (first match wins in llama-quantize).</span></div>
+      )}
 
       <div className="ws-sub"><b>Per-tensor precision</b><span className="row-sub">Keep sensitive parts at higher precision. Sizes are in the source file.</span>
         <div className="ws-presets">
