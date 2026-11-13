@@ -280,8 +280,8 @@ def create_sweep(exp_id: int, body: dict) -> list[int]:
             label = describe_change(base, cfg)
             if label == "Repeat of baseline" and parent:
                 label = f"Repeat of {parent['label']}"[:60]
-            if label == "Repeat of baseline" and not done and not ids:
-                label = baseline_label(cfg)  # first run of a fresh experiment
+            if not done and not ids and not parent:
+                label = baseline_label(cfg)  # the first run of a fresh experiment is its baseline, whatever its settings
             if repeats > 1:
                 label = f"{label} · rep {rep + 1}"
             ids.append(create_run(exp_id, {"label": label, "config": cfg, "parent_id": parent["id"] if parent else None}))
@@ -373,8 +373,9 @@ def create_run(exp_id: int, body: dict) -> int:
 
 
 def baseline_label(cfg: dict) -> str:
-    """'Baseline · Qwen3.5-9B-Q8_0': always say what the baseline actually is."""
-    return f"Baseline · {cfg['model'].removesuffix('.gguf')}"[:60]
+    """'Baseline · Qwen3.5-9B-Q8_0' (+ any non-default settings): always say what the baseline actually is."""
+    extra = describe_change({**DEFAULTS, "model": cfg["model"]}, cfg)
+    return f"Baseline · {cfg['model'].removesuffix('.gguf')}{'' if extra == 'Repeat of baseline' else f' · {extra}'}"[:80]
 
 
 def weights_label(model: str) -> str:
@@ -818,26 +819,39 @@ async def _bench(cfg: dict, vram_total: float, run_id: int, log: list[str], cmds
     if cmds is not None:
         cmds["speed"] = _cmdline(cmd)
     out = await quantlab._proc(cmd, log, run_id, timeout=900)
+    return parse_bench(out)
+
+
+def robust_stats(raw: list[float]) -> dict:
+    """Median and robust spread of repeated measurements.
+
+    Impossible repetitions (0, or a timer glitch far from the rest) are dropped: anything more than 50% away from the
+    median. Spread = 1.4826 × median absolute deviation (≈ σ for normal noise, but one outlier can't inflate it).
+    """
+    pos = sorted(s for s in raw if s and s > 0)
+    m0 = pos[len(pos) // 2] if pos else 0
+    samples = [s for s in pos if 0.5 * m0 <= s <= 1.5 * m0]
+    if not samples:
+        return {"median": None, "sd": None, "dropped": len(raw)}
+    med = samples[len(samples) // 2]
+    mad = sorted(abs(s - med) for s in samples)[len(samples) // 2]
+    return {"median": round(med, 2), "sd": round(1.4826 * mad, 2), "dropped": len(raw) - len(samples)}
+
+
+def parse_bench(out: str) -> dict:
+    """llama-bench -o jsonl output -> {pp, tg, pp_d4096, tg_d4096} with *_sd, *_samples and *_dropped."""
     res = {}
     for line in out.splitlines():
         if line.startswith("{"):
             x = json.loads(line)
             key = ("pp" if x.get("n_prompt") and not x.get("n_gen") else "tg") + ("_d4096" if x.get("n_depth") else "")
-            # Median of the repetitions: one hiccup (a timer glitch, a throttling spike) can't skew the result.
             raw = x.get("samples_ts") or []
-            # llama-bench occasionally reports impossible repetitions (0 tok/s, or 100,000+ tok/s from a timer glitch
-            # under WSL): drop anything more than 50% away from the median and record how many were dropped.
-            pos = sorted(s for s in raw if s and s > 0)
-            m0 = pos[len(pos) // 2] if pos else 0
-            samples = [s for s in pos if 0.5 * m0 <= s <= 1.5 * m0]
-            if len(samples) < len(raw):
-                res[key + "_dropped"] = len(raw) - len(samples)
-            if samples:
-                med = samples[len(samples) // 2]
-                # Robust spread: 1.4826 × median absolute deviation (≈ σ for normal noise, ignores one outlier rep).
-                mad = sorted(abs(s - med) for s in samples)[len(samples) // 2]
-                res[key], res[key + "_sd"] = round(med, 2), round(1.4826 * mad, 2)
-                res[key + "_samples"] = [round(s, 2) for s in x["samples_ts"]]
+            st = robust_stats(raw)
+            if st["dropped"]:
+                res[key + "_dropped"] = st["dropped"]
+            if st["median"] is not None:
+                res[key], res[key + "_sd"] = st["median"], st["sd"]
+                res[key + "_samples"] = [round(s, 2) for s in raw]
             else:
                 res[key], res[key + "_sd"] = round(x.get("avg_ts") or 0, 2), round(x.get("stddev_ts") or 0, 2)
     return res
