@@ -253,7 +253,7 @@ function Playground({ status }: { status: TorchStatus | null }) {
   const quantMethod = ["rtn", "gptq", "awq"].includes(f.method);
   return (
     <div className="ws">
-      <div className="row-sub">Prototype a quantization idea in Python and see what it does to the model before anyone writes a kernel for it. Weights are quantized and dequantized back (“fake quantization”), so the model computes with exactly the values your method would store: the quality effect is real, speed and memory aren't measured. Every method is scored the same way against the unmodified checkpoint: KL divergence per token, same top token, perplexity, and weight error per layer.</div>
+      <div className="row-sub">Prototype a quantization idea in Python and see what it does to the model before anyone writes a kernel for it. Weights are quantized and dequantized back (“fake quantization”), so the model computes with exactly the values your method would store: the quality effect is real, speed and memory aren't measured. Every method is scored the same way against the unmodified checkpoint: KL divergence per token, same top token, perplexity, and weight and output error per layer. The model is processed one layer at a time, straight from the checkpoint files, so 7–14B models work on an 8 GB GPU; like the GPTQ paper, each layer is calibrated on the outputs of the already-quantized layers.</div>
       <div className="ws-grid">
         <label><span>Checkpoint</span><select className="field select" value={f.checkpoint} onChange={(e) => set("checkpoint", e.target.value)}>
           {(status?.checkpoints ?? []).map((c) => <option key={c.id} value={c.id}>{c.repo}</option>)}</select></label>

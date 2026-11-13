@@ -265,7 +265,7 @@ async def _quantsim(jid: int, log: list[str], d: Path, p: dict) -> dict:
     async def follow():
         while True:
             await asyncio.sleep(3)
-            last = next((x for x in reversed(log) if x.startswith(("chunk", "quantized", "loaded", "calibrated", "exported"))), None)
+            last = next((x for x in reversed(log) if x.startswith(("chunk", "quantized", "loaded", "loading", "calibrated", "exported", "layer "))), None)
             if last:
                 _save(jid, step=last)
 
