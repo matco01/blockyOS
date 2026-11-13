@@ -346,6 +346,7 @@ exp.to_wandb(project="blocky")                   # offline; upload later with \`
                   <tr><td>ChatGPT (web)</td><td>Its connectors only reach public HTTPS servers. Blocky stays local by default, so use a desktop or terminal client on the same computer instead.</td></tr>
                 </tbody>
               </table></div>
+              <p><b>Most powerful: a coding agent on the Blocky device.</b> An agent like Claude Code or Codex running on the device itself gets a shell, files, Python and PyTorch as well as the lab tools, so it can write analysis scripts or a new quantization method, run them, and iterate. Open the repository's <code>research/</code> folder with it (in VS Code: connect with Remote-SSH, or the WSL extension when Blocky runs in WSL, then start Claude Code there). Its <code>CLAUDE.md</code> / <code>AGENTS.md</code> explain how to do research on Blocky, and <code>.mcp.json</code> connects the lab tools automatically.</p>
               <p>Use the computer that runs Blocky (or one you've given access to it). Then ask in plain words, for example:</p>
               <pre className="xcmds gd-code">{`"Look at my quantization experiment. Which variant is the best trade-off,
  and is the accuracy difference significant? Queue the one run that would

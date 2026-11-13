@@ -1,0 +1,7 @@
+# Your notes and scripts stay local; only the workspace template is in the repository.
+*
+!.gitignore
+!AGENTS.md
+!CLAUDE.md
+!.mcp.json
+!README.md
