@@ -83,6 +83,13 @@ END;
 
 DEFAULT_SETTINGS = {
     "memory_enabled": True,  # learn facts from conversations automatically
+    # Energy & cost (experiments): optional wall-power meter and prices, so runs report energy and cost per token.
+    "power_meter_url": "",      # e.g. http://192.168.1.50/rpc/Switch.GetStatus?id=0 (Shelly), a Tasmota or any JSON URL
+    "power_meter_field": "",    # dotted path to the watts in the reply, when it isn't a known meter
+    "device_price": None,       # what this device cost
+    "electricity_price_kwh": None,
+    "currency": "",
+    "remote_token": "",         # set = other devices may control this one with this token (Settings → Remote access)
 }
 
 

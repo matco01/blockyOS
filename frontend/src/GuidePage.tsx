@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   Activity, ArrowRight, BookOpen, Boxes, Brain, ClipboardCheck, Cpu, FlaskConical, Gauge, GitBranch, Hammer, LayoutDashboard,
-  MessageSquare, Microscope, Radar, Repeat, Settings as SettingsIcon, Swords, Target, Wand2,
+  MessageSquare, Microscope, Network, PlugZap, Radar, Repeat, Settings as SettingsIcon, Smartphone, Swords, Target, Wand2,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { GLOSSARY } from "./ui";
@@ -58,11 +58,25 @@ const FEATURES: { group: string; intro: string; items: Feature[] }[] = [
           "vLLM: run original Hugging Face checkpoints on the same tests (needs an RTX 20-series or newer GPU)",
           "Serving speed is measured the same way for every engine, so frameworks compare fairly",
           "Optional GPU kernel profile: time per operation (matrix multiply, attention, …) from an Nsight trace",
+          "Backends: CUDA (NVIDIA), Vulkan (AMD, Intel and most other GPUs, including integrated) or CPU only",
           "Only add repositories you trust: building runs their code"] },
+      { icon: Smartphone, title: "Cheap-device simulation", hash: "#/experiments", tag: "Experiments → Target device",
+        what: "Measure how a model would run on a cheaper device before buying one.",
+        can: ["Presets: single-board computer, mini PC, laptop without a GPU, 4 GB and 6 GB GPUs", "CPU only (no GPU at all), fewer cores (pinned), RAM and VRAM limits: a run that wouldn't fit fails",
+          "Projected decode speed at the target's memory bandwidth, because speed itself can't be simulated", "Mix freely with any other setting, or sweep across presets"] },
+      { icon: Network, title: "Remote devices", hash: "#/settings", tag: "Settings → Remote access & devices · Experiments → Run on another device",
+        what: "One Blocky drives others, e.g. a few cheap boxes, and collects their results in one experiment.",
+        can: ["Pick setups and profile them on another device with the same protocol", "Results come back labeled with that device's hardware, next to your runs",
+          "Every Blocky is local-only until its owner turns on remote access (token required)", "Over untrusted networks, connect through an SSH tunnel instead"] },
+      { icon: PlugZap, title: "Energy & cost", hash: "#/settings", tag: "Every run · set up in Settings",
+        what: "Energy per token and what running a model costs.",
+        can: ["Dedicated measurement: idle power with the model loaded, then ~15 s of sustained generation", "Energy per token, gross and above idle, tokens per watt-hour",
+          "Sources: a wall-power smart plug (Shelly, Tasmota, any JSON URL), else GPU and CPU sensors", "With prices set: electricity per 1M tokens, speed per device price"] },
       { icon: Microscope, title: "Internals", hash: "#/internals", what: "The PyTorch side: look inside a model and fine-tune it.",
         can: ["Download original Hugging Face weights", "Activations: signal size per layer and token, how much each layer changes it, attention spread",
           "Logit lens: what the model would answer after each layer", "Layer knockout: skip one layer at a time and see how the answer changes",
           "GPU time per layer, split into attention and feed-forward, for prefill and decode",
+          "Technique playground: simulate RTN, NF4, ternary or your own Python quantization (and a quantized KV cache), scored by KL divergence, perplexity and per-layer error",
           "LoRA or QLoRA (4-bit) fine-tuning → merged → converted to GGUF → test it in Experiments"] },
       { icon: BookOpen, title: "Notebooks", hash: "#/notebooks", what: "JupyterLab on the box and a Python client for everything above.",
         can: ["Every result as a pandas table", "Queue runs, sweeps, weight builds, scans and engine builds from code",
@@ -91,7 +105,7 @@ const FEATURES: { group: string; intro: string; items: Feature[] }[] = [
         can: ["Thinking on/off and a thinking budget", "Inspector: sampling settings, live speed, context meter", "Confidence view: per-word probability and the alternatives", "Search old chats, export as Markdown"] },
       { icon: Brain, title: "Memory", hash: "#/memory", what: "Facts Blocky remembers about you across chats.", can: ["See, edit and delete memories", "Memories are added after each reply"] },
       { icon: Activity, title: "System", hash: "#/system", what: "Live CPU, GPU, RAM, VRAM and the model server's log.", can: ["Spot memory pressure or errors", "Filter the server log"] },
-      { icon: SettingsIcon, title: "Settings", hash: "#/settings", what: "Look and feel.", can: ["Light / dark theme, accent color", "Simple / Pro detail level (bottom-left switch)"] },
+      { icon: SettingsIcon, title: "Settings", hash: "#/settings", what: "Look and feel, energy prices and meters, AI assistants.", can: ["Light / dark theme, accent color", "Simple / Pro detail level (bottom-left switch)", "Wall-power meter and prices for energy and cost", "How to connect an AI assistant (MCP)"] },
     ],
   },
 ];
@@ -120,7 +134,8 @@ const CANVAS = [
 ];
 
 const LIMITS = [
-  "Power and energy appear only when the GPU driver reports power draw. Some drivers and virtual machines don't; Blocky then marks energy as not measurable instead of guessing.",
+  "Energy needs a power reading: a wall meter (most accurate: the whole device), or GPU / CPU sensors where the drivers expose them. Without one, Blocky says energy wasn't measured instead of guessing.",
+  "Cheap-device presets simulate capacity (RAM, VRAM) and core count, not per-core speed or memory bandwidth: measured speeds are an upper bound, and the projection covers decode only. CPU-only runs of the full protocol can take an hour or more.",
   "Other programs using the same GPU add noise to speed measurements. Use “Repeat this setup” to measure it; Blocky then only highlights bigger changes.",
   "560 MMLU-Pro questions detect differences of roughly 3–4 points. For smaller effects, look at KL divergence, which is far more sensitive.",
   "KL divergence and perplexity only compare models with the same tokenizer; others show “not comparable”. They're measured with llama.cpp's tools, so vLLM runs don't have them.",

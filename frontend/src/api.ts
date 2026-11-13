@@ -73,7 +73,11 @@ export type ToolRun = {
   results: Record<string, number | string | null>[]; log: string | null; error: string | null;
 };
 
-export type ExpConfig = { model: string; ctx: number; kv: string; ngl: string | number; vram_limit_mb: number | null; fa: string; threads: number | null; engine?: string };
+export type ExpConfig = { model: string; ctx: number; kv: string; ngl: string | number; vram_limit_mb: number | null; fa: string; threads: number | null; engine?: string;
+  device?: "gpu" | "cpu"; cores?: number | null; ram_limit_mb?: number | null; preset?: string | null };
+export type Device = { id: number; name: string; url: string; token: boolean; created_at: number };
+export type RemoteJob = { id: number; experiment_id: number; device: string; status: string; step: string | null; error: string | null; imported?: { runs: number } };
+export type DevicePreset = { label: string; config: Partial<ExpConfig>; ram_bandwidth_gbps?: number; memory?: string };
 export type Finding = { kind: string; severity: "major" | "minor" | "info"; title: string; text: string };
 export type PhaseTelemetry = { gpu_avg?: number; mem_bw_avg?: number; power_avg?: number; power_max?: number; temp_max?: number; vram_max_mb?: number; cpu_avg?: number; ram_max_mb?: number; seconds?: number };
 export type Mmlu = { benchmark: string; protocol: string; n: number; correct: number; acc: number; ci95: [number, number]; p_correct_mean: number;
@@ -88,10 +92,11 @@ export type HwAnalysis = {
     mem_util_avg: number | null; cpu_util_avg: number | null; power_avg_w: number | null; cpu_power_avg_w: number | null };
   headroom?: { vram_capacity_mb: number; vram_model_mb: number; vram_used_total_mb: number | null; vram_free_mb: number; kv_mb_per_1k_tokens: number | null; extra_context_tokens: number | null };
   limiter?: { what: string; evidence: string };
+  projection?: { target: string; target_ram_gbps: number; memory?: string; bandwidth_share: number; tg: number | null; method: string };
 };
 export type ExpResults = {
   load_seconds?: number;
-  memory?: { gpu: Record<string, number>; ram: Record<string, number>; layers: { gpu: number; total: number } | null; vram_used_mb?: number };
+  memory?: { gpu: Record<string, number>; ram: Record<string, number>; layers: { gpu: number; total: number } | null; vram_used_mb?: number; ram_needed_mb?: number };
   mmlu?: Mmlu; mmlu_progress?: { done: number; total: number; correct: number };
   speed?: { pp?: number; tg?: number; pp_d4096?: number; tg_d4096?: number; pp_sd?: number; tg_sd?: number; pp_d4096_sd?: number; tg_d4096_sd?: number };
   ppl?: number; ppl_sd?: number; kld?: number; kld_sd?: number; kld_p99?: number; same_top?: number; same_top_sd?: number;
@@ -111,7 +116,13 @@ export type ExpResults = {
     by_length: Record<string, number>; prefill_tps_by_length: Record<string, number | null>; max_length: number | null };
   needle_progress?: { done: number; total: number; correct: number };
   lm_eval?: { tasks?: Record<string, { metrics: Record<string, number>; stderr: Record<string, number> }>; limit?: number; error?: string; command?: string };
+  energy?: Energy;
+  cost?: { currency: string; electricity_per_mtok?: number; tps_per_1k_price?: number };
 };
+export type PowerStat = { avg: number; sd: number; n: number };
+export type EnergySource = { idle_w: PowerStat | null; load_w: PowerStat; j_per_token: number; tokens_per_wh: number | null; net_j_per_token?: number };
+export type Energy = { tokens?: number; seconds?: number; tps?: number; sources?: Record<string, EnergySource>; primary?: string | null;
+  primary_label?: string | null; note?: string; error?: string; meter?: boolean };
 export type Provenance = {
   protocol: string;
   llama_cpp: { version: string | null; commit: string | null; built_with: string | null };
@@ -245,7 +256,8 @@ export type Memory = {
   updated_at: number;
 };
 
-export type Settings = { memory_enabled: boolean };
+export type Settings = { memory_enabled: boolean; power_meter_url: string; power_meter_field: string; device_price: number | null;
+  electricity_price_kwh: number | null; currency: string };
 
 export type SearchHit = { conversation_id: number; title: string; role: string; snippet: string };
 
@@ -271,6 +283,7 @@ export const api = {
 
   settings: () => json<Settings>("/api/settings"),
   updateSettings: (s: Partial<Settings>) => json<Settings>("/api/settings", send("PATCH", s)),
+  testPowerMeter: (power_meter_url: string, power_meter_field: string) => json<{ watts: number }>("/api/power/test", send("POST", { power_meter_url, power_meter_field })),
 
   models: () => json<{ models: ModelFile[]; runtime: Runtime; catalog: CatalogItem[]; hardware: Hardware; kv_types: string[] }>("/api/models"),
   setRuntime: (r: Partial<Runtime>) => json<{ ok: boolean; runtime: Runtime }>("/api/models/runtime", send("POST", r)),
@@ -318,13 +331,24 @@ export const api = {
   torchDownload: (repo: string) => json<{ id: number }>("/api/torch/download", send("POST", { repo })),
   torchActivations: (checkpoint: string, prompt: string) => json<{ id: number }>("/api/torch/activations", send("POST", { checkpoint, prompt })),
   torchLora: (body: Record<string, unknown>) => json<{ id: number }>("/api/torch/lora", send("POST", body)),
+  torchQuantsim: (body: Record<string, unknown>) => json<{ id: number }>("/api/torch/quantsim", send("POST", body)),
   notebooks: () => json<{ installed: boolean; running: boolean; url: string | null; folder: string }>("/api/notebooks"),
   scans: (model?: string) => json<LayerScan[]>(`/api/scans${model ? `?model=${encodeURIComponent(model)}` : ""}`),
   scanStart: (model: string, mode: string, qtype: string) => json<{ id: number }>("/api/scans", send("POST", { model, mode, qtype })),
   scanCancel: (id: number) => json(`/api/scans/${id}/cancel`, send("POST", {})),
   scanDelete: (id: number) => json(`/api/scans/${id}`, { method: "DELETE" }),
   engines: () => json<Engine[]>("/api/engines"),
-  engineAdd: (repo: string, ref: string, name: string) => json<{ id: string }>("/api/engines", send("POST", { repo, ref, name })),
+  remoteAccess: () => json<{ enabled: boolean; token: string | null }>("/api/remote-access"),
+  setRemoteAccess: (enabled: boolean) => json<{ enabled: boolean; token: string | null }>("/api/remote-access", send("POST", { enabled })),
+  devices: () => json<Device[]>("/api/devices"),
+  deviceAdd: (name: string, url: string, token: string) => json<{ id: number }>("/api/devices", send("POST", { name, url, token })),
+  deviceDelete: (id: number) => json<{ ok: boolean }>(`/api/devices/${id}`, send("DELETE")),
+  deviceCheck: (id: number) => json<{ ok: boolean; error?: string; hardware?: { gpu: string | null; cpu: string; ram_mb: number; vram_mb: number }; models?: string[] }>(`/api/devices/${id}/check`),
+  remoteRun: (expId: number, device_id: number, run_ids: number[]) => json<{ job_id: number }>(`/api/experiments/${expId}/remote`, send("POST", { device_id, run_ids })),
+  remoteJobs: (expId: number) => json<RemoteJob[]>(`/api/remote-jobs?experiment_id=${expId}`),
+  remoteJobCancel: (id: number) => json<{ ok: boolean }>(`/api/remote-jobs/${id}/cancel`, send("POST")),
+  devicePresets: () => json<{ presets: Record<string, DevicePreset>; cpu_threads: number }>("/api/device-presets"),
+  engineAdd: (repo: string, ref: string, name: string, backend = "auto") => json<{ id: string }>("/api/engines", send("POST", { repo, ref, name, backend })),
   engineLog: (id: string) => json<{ log: string }>(`/api/engines/${id}/log`),
   engineCancel: (id: string) => json(`/api/engines/${id}/cancel`, send("POST", {})),
   engineDelete: (id: string) => json(`/api/engines/${id}`, { method: "DELETE" }),

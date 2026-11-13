@@ -1,0 +1,64 @@
+"""Cheap-device simulation: CPU-only runs, core pinning, RAM limits, presets, and the bandwidth projection."""
+import os
+
+import pytest
+
+from app import engines, profile
+
+LIM = {"gpu_bandwidth_gbps": 500, "ram_bandwidth_gbps": 40, "gpu_tflops": 40.0, "vram_mb": 8192}
+
+
+@pytest.fixture
+def exp(make_gguf):
+    make_gguf("M-Q4_K_M.gguf")
+    return {"model": "M-Q4_K_M.gguf"}
+
+
+def test_preset_fills_device_settings_and_wins_over_inherited(exp):
+    parent = profile.normalize_config(exp, {})
+    assert parent["device"] == "gpu" and parent["preset"] is None
+    cfg = profile.normalize_config(exp, {**parent, "preset": "sbc-8gb"})
+    assert (cfg["device"], cfg["cores"], cfg["threads"], cfg["ram_limit_mb"]) == ("cpu", 4, 4, 8192)
+    assert profile.describe_change(parent, cfg) == "Single-board computer, 8 GB"     # one change, not four
+    custom = profile.normalize_config(exp, {**cfg, "preset": "", "cores": 2, "threads": 2})
+    assert custom["preset"] is None and custom["cores"] == 2 and custom["device"] == "cpu"
+    assert profile.describe_change({**cfg, "preset": None}, custom) == "2 threads · 2 cores"
+
+
+def test_device_validation(exp):
+    with pytest.raises(ValueError):
+        profile.normalize_config(exp, {"preset": "supercomputer"})
+    with pytest.raises(ValueError):
+        profile.normalize_config(exp, {"device": "tpu"})
+    with pytest.raises(ValueError):
+        profile.normalize_config(exp, {"cores": (os.cpu_count() or 1) + 1})
+    assert profile.normalize_config(exp, {"ram_limit_mb": 100})["ram_limit_mb"] == 1024
+
+
+def test_cpu_only_command_line_and_pinning():
+    cfg = {"device": "cpu", "ngl": "auto", "cores": 4, "threads": None, "vram_limit_mb": None}
+    assert profile._placement_args(cfg, 8192) == ["-dev", "none", "-ngl", "0", "-t", "4"]
+    assert profile._pin(["llama-server", "-m", "x"], cfg)[:3] == ["taskset", "-c", "0-3"]
+    assert profile._pin(["llama-server"], {"cores": None}) == ["llama-server"]
+
+
+def test_cpu_only_analysis_and_projection(exp, monkeypatch):
+    monkeypatch.setattr(profile, "_weights", lambda path: {"bytes": 2e9, "params": 3e9, "embedding_bytes": 0.2e9})
+    cfg = {**profile.normalize_config(exp, {"preset": "minipc-16gb"}), "ctx": 8192}
+    res = {"speed": {"tg": 10.0, "pp": 100.0}, "memory": {"gpu": {}, "ram": {"model": 2e9 / 2**20}}}
+    hw = profile.analyze(res, cfg, LIM)
+    assert hw["weights_on_cpu_gb"] == pytest.approx(2.0)
+    assert hw["limiter"]["what"] == "System-RAM bandwidth"
+    assert hw["prefill"]["roof_tflops"] is None          # no GPU compute roof for a CPU-only run
+    pr = hw["projection"]
+    assert pr["bandwidth_share"] == pytest.approx(0.5)  # 2 GB × 10 tok/s of 40 GB/s
+    assert pr["tg"] == pytest.approx(0.5 * 38.4 / 2.0, rel=0.01)
+
+
+@pytest.mark.parametrize("backend,ok", [("cpu", True), ("auto", True), ("opencl", False)])
+def test_engine_backends(backend, ok):
+    if ok:
+        assert isinstance(engines.backend_args(backend), list)
+    else:
+        with pytest.raises(ValueError):
+            engines.backend_args(backend)

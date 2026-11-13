@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { AlertCircle, Brain, Download, Loader2, Play, Square, Wand2 } from "lucide-react";
+import { AlertCircle, Brain, Download, FlaskRound, Loader2, Play, Square, Wand2 } from "lucide-react";
 import { api, TorchJob, TorchStatus } from "./api";
 import { LineChart, Tabs } from "./ui";
 
@@ -21,7 +21,7 @@ function JobLine({ j }: { j: TorchJob }) {
   return (
     <div className={`ws-job ${j.status}`}>
       {j.status === "running" || j.status === "queued" ? <Loader2 className="spin" size={15} /> : j.status === "done" ? null : <AlertCircle size={15} />}
-      <div><b>#{j.id} · {j.kind === "download" ? j.params.repo : j.kind === "lora" ? `LoRA on ${j.params.checkpoint} · ${j.params.data}` : `${j.params.checkpoint}`}</b>
+      <div><b>#{j.id} · {j.kind === "download" ? j.params.repo : j.kind === "lora" ? `LoRA on ${j.params.checkpoint} · ${j.params.data}` : j.kind === "quantsim" ? `${qsName(j.params)} on ${j.params.checkpoint}` : `${j.params.checkpoint}`}</b>
         <span>{j.status === "running" ? `${j.step ?? "starting"}…` : j.status}{j.error ? `: ${j.error}` : ""}</span></div>
       {(j.status === "running" || j.status === "queued") && <button className="btn small ghost" onClick={() => api.torchCancel(j.id)}><Square /> Stop</button>}
     </div>
@@ -204,6 +204,91 @@ function FineTune({ status }: { status: TorchStatus | null }) {
   );
 }
 
+/* ---------- Technique playground ---------- */
+
+const CUSTOM_EXAMPLE = `import torch
+
+def quantize(w: torch.Tensor, name: str) -> torch.Tensor:
+    """Return the weight as your method would reconstruct it (same shape)."""
+    # Example: 3-bit symmetric round-to-nearest per output row, but keep attention values at 8 bit.
+    bits = 8 if "v_proj" in name else 3
+    qmax = 2 ** (bits - 1) - 1
+    s = w.float().abs().amax(1, keepdim=True).clamp_min(1e-8) / qmax
+    return ((w.float() / s).round().clamp(-qmax - 1, qmax) * s).to(w.dtype)
+`;
+
+const qsName = (p: Record<string, unknown>) => String(p.label || "") || [
+  p.method === "rtn" ? `RTN ${p.bits}-bit ${p.sym ? "sym" : "asym"}` : p.method === "none" ? "fp16 weights" : String(p.method).toUpperCase(),
+  p.method !== "custom" && p.method !== "none" ? `g${p.group}` : "", p.kv_bits ? `KV ${p.kv_bits}-bit` : "", p.include_head ? "+head" : ""].filter(Boolean).join(" · ");
+
+type QsResult = { bits_per_weight: number | null; kld: number; kld_sd: number; kld_p99: number; same_top: number; ppl: number; ppl_base: number;
+  weight_rel_error: number | null; per_layer: { layer: number | null; rel_error: number | null }[]; per_kind: Record<string, number | null>; tokens: number; seconds: number; note: string };
+
+function Playground({ status }: { status: TorchStatus | null }) {
+  const [jobs, setJobs] = useJobs("quantsim");
+  const [f, setF] = useState({ checkpoint: "", method: "rtn", bits: 4, group: 128, sym: true, include_head: false, kv_bits: 0, chunks: 16, code: CUSTOM_EXAMPLE, label: "" });
+  const [sel, setSel] = useState<number | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => { if (!f.checkpoint && status?.checkpoints[0]) setF((x) => ({ ...x, checkpoint: status.checkpoints[0].id })); }, [status]); // eslint-disable-line react-hooks/exhaustive-deps
+  const set = (k: string, v: string | number | boolean) => setF((x) => ({ ...x, [k]: v }));
+  const start = async () => {
+    setErr(null);
+    try { const { id } = await api.torchQuantsim(f); setSel(id); setJobs(await api.torchJobs("quantsim")); } catch (e) { setErr((e as Error).message); }
+  };
+  const done = jobs.filter((j) => j.status === "done" && j.params.checkpoint === f.checkpoint);
+  const shown = jobs.find((j) => j.id === sel) ?? jobs[0];
+  const sr = shown?.status === "done" ? (shown.results as unknown as QsResult) : null;
+  const maxErr = Math.max(1e-9, ...(sr?.per_layer ?? []).map((l) => l.rel_error ?? 0));
+  return (
+    <div className="ws">
+      <div className="row-sub">Prototype a quantization idea in Python and see what it does to the model before anyone writes a kernel for it. Weights are quantized and dequantized back (“fake quantization”), so the model computes with exactly the values your method would store: the quality effect is real, speed and memory aren't measured. Every method is scored the same way against the unmodified checkpoint: KL divergence per token, same top token, perplexity, and weight error per layer.</div>
+      <div className="ws-grid">
+        <label><span>Checkpoint</span><select className="field select" value={f.checkpoint} onChange={(e) => set("checkpoint", e.target.value)}>
+          {(status?.checkpoints ?? []).map((c) => <option key={c.id} value={c.id}>{c.repo}</option>)}</select></label>
+        <label><span>Weight method</span><select className="field select" value={f.method} onChange={(e) => set("method", e.target.value)}>
+          <option value="rtn">Round-to-nearest (RTN)</option><option value="nf4">NF4 (NormalFloat 4-bit)</option><option value="ternary">Ternary (1.58-bit)</option>
+          <option value="custom">Custom (your Python)</option><option value="none">None (KV only)</option></select></label>
+        {f.method === "rtn" && <label><span>Bits · symmetric</span><div className="ft-row">
+          <select className="field select" value={f.bits} onChange={(e) => set("bits", Number(e.target.value))}>{[2, 3, 4, 5, 6, 8].map((b) => <option key={b} value={b}>{b}-bit</option>)}</select>
+          <select className="field select" value={f.sym ? "sym" : "asym"} onChange={(e) => set("sym", e.target.value === "sym")}><option value="sym">symmetric</option><option value="asym">asymmetric (zero point)</option></select></div></label>}
+        {f.method !== "custom" && f.method !== "none" && <label><span>Group size (weights per scale)</span><select className="field select" value={f.group} onChange={(e) => set("group", Number(e.target.value))}>
+          {[32, 64, 128, 256].map((g) => <option key={g} value={g}>{g}</option>)}</select></label>}
+        <label><span>KV cache simulation</span><select className="field select" value={f.kv_bits} onChange={(e) => set("kv_bits", Number(e.target.value))}>
+          <option value={0}>off (fp16)</option>{[8, 6, 4, 3, 2].map((b) => <option key={b} value={b}>{b}-bit keys/values</option>)}</select>
+          <em>Quantizes key/value projections per token before rotary embeddings: an approximation of a quantized KV cache.</em></label>
+        <label><span>Text chunks (512 tokens each) · name</span><div className="ft-row">
+          <input className="field" type="number" value={f.chunks} onChange={(e) => set("chunks", Number(e.target.value))} />
+          <input className="field" placeholder="optional label" value={f.label} onChange={(e) => set("label", e.target.value)} /></div></label>
+        <label className="ws-check"><input type="checkbox" checked={f.include_head} onChange={(e) => set("include_head", e.target.checked)} />
+          <span><b>Also quantize the output head</b><em>Usually kept at high precision; it's often the most sensitive matrix.</em></span></label>
+      </div>
+      {f.method === "custom" && <label className="qs-code"><span className="row-sub">Your method: <code>quantize(w, name)</code> gets each decoder weight matrix (fp16, on the GPU) and its name, and returns the reconstructed weight. It runs on this machine with full Python access.</span>
+        <textarea className="field" spellCheck={false} rows={12} value={f.code} onChange={(e) => set("code", e.target.value)} style={{ fontFamily: "var(--mono)", fontSize: 12, width: "100%" }} /></label>}
+      <div className="xc-btns"><button className="btn" disabled={!f.checkpoint} onClick={start}><FlaskRound /> Simulate</button></div>
+      {err && <div className="error"><AlertCircle /> {err}</div>}
+      {shown && shown.status !== "done" && <JobLine j={shown} />}
+      {done.length > 0 && (
+        <div className="table-wrap"><table className="data">
+          <thead><tr><th>Method</th><th>Bits / weight</th><th>KL divergence</th><th>KLD p99</th><th>Same top token</th><th>Perplexity</th><th>Weight error</th></tr></thead>
+          <tbody>{done.map((j) => { const r = j.results as unknown as QsResult; return (
+            <tr key={j.id} className={shown?.id === j.id ? "sel" : ""} onClick={() => setSel(j.id)} style={{ cursor: "pointer" }}>
+              <td>{qsName(j.params)}</td><td>{r.bits_per_weight ?? "–"}</td><td>{r.kld.toFixed(4)} <span className="muted">± {r.kld_sd.toFixed(4)}</span></td>
+              <td>{r.kld_p99.toFixed(3)}</td><td>{r.same_top.toFixed(1)}%</td><td>{r.ppl.toFixed(3)} <span className="muted">(fp16 {r.ppl_base.toFixed(3)})</span></td>
+              <td>{r.weight_rel_error != null ? `${(r.weight_rel_error * 100).toFixed(2)}%` : "–"}</td></tr>); })}</tbody>
+        </table></div>
+      )}
+      {sr && sr.per_layer.length > 0 && (
+        <div>
+          <div className="mini-title">Relative weight error per layer · {qsName(shown!.params)} <span className="muted">(||W − Q(W)|| / ||W||; {Object.entries(sr.per_kind).map(([k, v]) => `${k} ${v != null ? (v * 100).toFixed(1) : "–"}%`).join(" · ")})</span></div>
+          <div className="qs-bars">{sr.per_layer.filter((l) => l.layer != null).map((l) => (
+            <div key={l.layer} title={`layer ${l.layer}: ${((l.rel_error ?? 0) * 100).toFixed(2)}%`} style={{ height: `${((l.rel_error ?? 0) / maxErr) * 100}%` }} />))}</div>
+          <div className="row-sub">{sr.tokens} tokens of held-out text · {sr.seconds} s · {sr.note}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Checkpoints({ status, reload }: { status: TorchStatus | null; reload: () => void }) {
   const [jobs, setJobs] = useJobs("download");
   const [repo, setRepo] = useState("Qwen/Qwen3.5-0.8B");
@@ -234,10 +319,11 @@ export default function InternalsPage() {
         <p className="page-sub">The PyTorch side of the lab: look inside a model's layers, and fine-tune it, then bring the result back to GGUF to measure it like any other weights.</p>
         {status && !status.installed && <div className="group pad"><b>The PyTorch environment isn't installed.</b> <span className="row-sub">On the box: bash scripts/setup-ml.sh (a few GB).</span></div>}
         {status?.installed && <div className="row-sub ft-env"><Brain size={14} /> PyTorch {status.torch} · CUDA {status.cuda ? "on" : "off"} · transformers {status.transformers} · peft {status.peft}</div>}
-        <Tabs value={tab} onChange={setTab} tabs={[{ id: "act", label: "Activations" }, { id: "ft", label: "Fine-tune (LoRA)" }, { id: "ckpt", label: "Checkpoints" }]} />
+        <Tabs value={tab} onChange={setTab} tabs={[{ id: "act", label: "Activations" }, { id: "ft", label: "Fine-tune (LoRA)" }, { id: "play", label: "Technique playground" }, { id: "ckpt", label: "Checkpoints" }]} />
         <div className="group pad">
           {tab === "act" && <Activations status={status} />}
           {tab === "ft" && <FineTune status={status} />}
+          {tab === "play" && <Playground status={status} />}
           {tab === "ckpt" && <Checkpoints status={status} reload={load} />}
         </div>
       </div>

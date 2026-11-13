@@ -27,10 +27,24 @@ How it works:
 - KL divergence / perplexity only compare models with the same tokenizer; vLLM runs don't have them.
 - Weights: build variants with build_weight_variant (quantization type, importance matrix, per-tensor precision
   overrides as regexes, layer pruning) from a high-precision source; find sensitive layers with start_layer_scan.
-- Be economical: every run costs minutes of the user's machine. Plan, explain your plan, then queue.
+- Energy: each run measures idle and generating power (wall meter if configured, else GPU/CPU sensors) -> energy per
+  token; with prices set in Blocky's Settings, also electricity per 1M tokens and speed per device price.
+- Cheap devices: queue_run(changes={'preset': ...}) simulates CPU-only boxes, fewer cores, less RAM/VRAM (presets in
+  get_status). Capacity and cores are real limits; bandwidth isn't, so CPU presets add a projected decode speed.
+- New techniques: simulate_quantization tries a quantization method (or your own Python) on a checkpoint and scores it
+  against the unmodified model before anyone writes a kernel.
+- Be economical: every run costs minutes of the user's machine (CPU-only runs: much longer). Plan, explain, then queue.
 """
 
 server = MCPServer(name="blocky", title="Blocky local-AI lab", instructions=INSTRUCTIONS, version="1")
+
+
+def _energy(e: dict | None) -> dict | None:
+    if not e or not e.get("primary"):
+        return {"note": e.get("note") or e.get("error")} if e else None
+    s = e["sources"][e["primary"]]
+    return {"measured": e["primary_label"], "j_per_token": s["j_per_token"], "net_j_per_token_above_idle": s.get("net_j_per_token"),
+            "tokens_per_wh": s["tokens_per_wh"], "load_w": s["load_w"], "idle_w": s.get("idle_w"), "gen_tps": e["tps"]}
 
 
 def _compact_run(r: dict) -> dict:
@@ -48,7 +62,7 @@ def _compact_run(r: dict) -> dict:
         "kld": x.get("kld"), "kld_p99": x.get("kld_p99"), "same_top_pct": x.get("same_top"), "ppl": x.get("ppl"),
         "vram_model_mb": (hw.get("headroom") or {}).get("vram_model_mb"), "weights_on_cpu_gb": hw.get("weights_on_cpu_gb"),
         "decode_roof_util": (hw.get("decode") or {}).get("roof_util"), "limiter": hw.get("limiter"),
-        "gpu_power_w": (hw.get("clocks") or {}).get("power_avg_w"), "wall_power_w": (x.get("energy") or {}).get("wall_w"),
+        "energy": _energy(x.get("energy")), "cost": x.get("cost"),
         "hardware": {"gpu": (x.get("hardware") or {}).get("gpu"), "device": (x.get("hardware") or {}).get("device")},
         "stats_vs_baseline_and_parent": r.get("stats"),
         "notes": [n for n in (x.get("token_note"), x.get("fidelity_note")) if n] or None,
@@ -66,6 +80,7 @@ def get_status() -> str:
         "engines": [{"id": e["id"], "kind": e.get("kind"), "status": e["status"], "ref": e.get("ref")} for e in engines.list_engines()],
         "experiments": [{"id": e["id"], "name": e["name"], "model": e["model"], "runs": e.get("runs")} for e in profile.list_experiments()],
         "queued_or_running_runs": _active_runs(),
+        "device_presets": {k: {"label": v["label"], **v["config"]} for k, v in profile.DEVICE_PRESETS.items()},
     }, default=str)
 
 
@@ -92,7 +107,9 @@ def create_experiment(model: str, name: str = "") -> str:
 
 
 @server.tool(description="Queue one profiled run. parent_run_id: the run to branch from (its exact setup + `changes`); omit for the baseline. "
-                         "changes keys: model, engine, kv (f16|q8_0|q4_0), ctx, ngl ('auto' or a number), vram_limit_mb, fa (auto|on|off), threads.")
+                         "changes keys: model, engine, kv (f16|q8_0|q4_0), ctx, ngl ('auto' or a number), vram_limit_mb, fa (auto|on|off), threads, "
+                         "device (gpu|cpu), cores (pin to N CPU threads), ram_limit_mb, preset (a cheap-device simulation from get_status; "
+                         "it fixes the device settings, set preset to '' to customize them).")
 def queue_run(experiment_id: int, changes: dict | None = None, parent_run_id: int | None = None, label: str = "") -> str:
     e = profile.get_experiment(experiment_id)
     if not e:
@@ -170,10 +187,11 @@ def get_layer_scans(model: str) -> str:
 
 
 @server.tool(description="Build a llama.cpp engine from an https git repository and ref (branch, tag, commit) so it can be an experiment variable. "
+                         "backend: auto | cuda | vulkan | cpu. "
                          "This compiles and runs that repository's code on the user's machine: only use repositories the user asked for or trusts.")
-async def build_engine(repo: str, ref: str = "master", name: str = "") -> str:
+async def build_engine(repo: str, ref: str = "master", name: str = "", backend: str = "auto") -> str:
     try:
-        return json.dumps({"engine_id": engines.add({"repo": repo, "ref": ref, "name": name})})
+        return json.dumps({"engine_id": engines.add({"repo": repo, "ref": ref, "name": name, "backend": backend})})
     except ValueError as err:
         return json.dumps({"error": str(err)})
 
@@ -186,3 +204,29 @@ def get_jobs() -> str:
         "engines": [{k: e.get(k) for k in ("id", "status", "step", "error", "commit_sha")} for e in engines.list_engines()],
         "torch": [{k: j.get(k) for k in ("id", "kind", "status", "step", "error")} for j in torchlab.jobs()[:10]],
     }, default=str)
+
+
+@server.tool(description="Technique playground: simulate a quantization method on a Hugging Face checkpoint (fake quantization: quantize, then "
+                         "dequantize) and measure KL divergence, same-top-token %, perplexity and per-layer weight error vs the unmodified model. "
+                         "method: rtn (bits 2-8, sym or asym) | nf4 | ternary | custom (code = Python defining quantize(w, name) -> dequantized w) | none. "
+                         "group: 32|64|128|256 weights per scale. kv_bits (2-8) also simulates a quantized KV cache. Speed/memory aren't measured. "
+                         "Follow with get_jobs, then get_quantsim_results. Custom code runs on the user's machine: only run code the user agreed to.")
+async def simulate_quantization(checkpoint: str, method: str = "rtn", bits: int = 4, group: int = 128, sym: bool = True, kv_bits: int = 0,
+                                include_head: bool = False, code: str = "", label: str = "") -> str:
+    try:
+        return json.dumps({"job_id": torchlab.start_quantsim({"checkpoint": checkpoint.removeprefix("hf:"), "method": method, "bits": bits, "group": group,
+                                                             "sym": sym, "kv_bits": kv_bits, "include_head": include_head, "code": code, "label": label})})
+    except ValueError as err:
+        return json.dumps({"error": str(err)})
+
+
+@server.tool(description="Results of technique-playground simulations (most recent first), for comparing methods on the same checkpoint.")
+def get_quantsim_results(checkpoint: str = "") -> str:
+    out = []
+    for j in torchlab.jobs("quantsim"):
+        if checkpoint and j["params"].get("checkpoint") != checkpoint.removeprefix("hf:"):
+            continue
+        r = j["results"] or {}
+        out.append({"job_id": j["id"], "status": j["status"], "error": j.get("error"), "params": {k: v for k, v in j["params"].items() if k != "code"},
+                    **{k: r.get(k) for k in ("bits_per_weight", "kld", "kld_sd", "kld_p99", "same_top", "ppl", "ppl_base", "weight_rel_error", "per_kind")}})
+    return json.dumps(out[:20])

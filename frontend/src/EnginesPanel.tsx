@@ -8,6 +8,7 @@ export default function EnginesPanel({ onChange }: { onChange: () => void }) {
   const [repo, setRepo] = useState("https://github.com/ggml-org/llama.cpp");
   const [ref, setRef] = useState("master");
   const [name, setName] = useState("");
+  const [backend, setBackend] = useState("auto");
   const [log, setLog] = useState<{ id: string; text: string } | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const building = list.some((e) => e.status === "building" || e.status === "queued");
@@ -32,16 +33,19 @@ export default function EnginesPanel({ onChange }: { onChange: () => void }) {
 
   const add = async () => {
     setErr(null);
-    try { await api.engineAdd(repo, ref, name); setName(""); setList(await api.engines()); } catch (e) { setErr((e as Error).message); }
+    try { await api.engineAdd(repo, ref, name, backend); setName(""); setList(await api.engines()); } catch (e) { setErr((e as Error).message); }
   };
 
   return (
     <div className="ws">
-      <div className="row-sub">Build any version of llama.cpp (a branch, tag, commit, or your own fork with a new kernel or quantization type), then profile it against <b>stock</b> with identical measurements. Builds take 10–20 minutes with CUDA, compiled for this GPU only. <b>Building runs that repository's code on this machine</b>, so only add repositories you trust.</div>
+      <div className="row-sub">Build any version of llama.cpp (a branch, tag, commit, or your own fork with a new kernel or quantization type), then profile it against <b>stock</b> with identical measurements. Pick the compute backend: CUDA (NVIDIA, compiled for this GPU), Vulkan (AMD, Intel and most other GPUs, including integrated ones) or CPU only. CUDA builds take 10–20 minutes. <b>Building runs that repository's code on this machine</b>, so only add repositories you trust.</div>
       <div className="ws-grid">
         <label><span>Git repository (https)</span><input className="field" value={repo} onChange={(e) => setRepo(e.target.value)} /></label>
         <label><span>Branch, tag or commit</span><input className="field" value={ref} onChange={(e) => setRef(e.target.value)} placeholder="master, b6000, a1b2c3d…" /></label>
         <label><span>Name <span className="muted">(optional)</span></span><input className="field" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. my-kernel" /></label>
+        <label><span>Backend</span><select className="field select" value={backend} onChange={(e) => setBackend(e.target.value)}>
+          <option value="auto">Auto (CUDA if installed, else CPU)</option><option value="cuda">CUDA (NVIDIA)</option><option value="vulkan">Vulkan (any GPU)</option><option value="cpu">CPU only</option>
+        </select></label>
       </div>
       <div className="xc-btns"><button className="btn" disabled={building} onClick={add}><Cpu /> {building ? "A build is running…" : "Build engine"}</button></div>
       {err && <div className="error"><AlertCircle /> {err}</div>}

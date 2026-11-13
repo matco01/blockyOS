@@ -11,6 +11,7 @@ export type Metric = {
   fmt?: (v: number) => string; note?: string;
   minRel?: number;                                           // smallest relative change treated as real (no noise model)
 };
+const esrc = (r: ExpResults) => (r.energy?.primary ? r.energy.sources?.[r.energy.primary] : undefined);
 export const n1 = (v: number) => (Math.abs(v) >= 100 ? v.toFixed(0) : v.toFixed(1));
 export const pct = (v: number) => v.toFixed(1);
 export const gb = (mb?: number | null) => (mb != null ? mb / 1024 : null);
@@ -52,9 +53,18 @@ export const METRICS: Metric[] = [
   { key: "temp", group: "Hardware", label: "GPU temperature, peak", unit: "°C", better: "lower", get: (r) => r.hw?.clocks.temp_max_c, fmt: (v) => v.toFixed(0) },
   { key: "gpu_util", group: "Hardware", label: "GPU busy (decode)", unit: "%", better: null, get: (r) => r.hw?.clocks.gpu_util_avg, fmt: (v) => v.toFixed(0) },
   { key: "cpu_util", group: "Hardware", label: "CPU busy (decode)", unit: "%", better: null, get: (r) => r.hw?.clocks.cpu_util_avg, fmt: (v) => v.toFixed(0) },
-  { key: "power", group: "Energy", label: "GPU power (decode)", unit: "W", better: "lower", get: (r) => r.hw?.clocks.power_avg_w, fmt: (v) => v.toFixed(0) },
-  { key: "tpj", group: "Energy", label: "Tokens per joule (GPU)", term: "tpj", unit: "tok/J", better: "higher",
-    get: (r) => (r.speed?.tg && r.hw?.clocks.power_avg_w ? r.speed.tg / r.hw.clocks.power_avg_w : null), fmt: (v) => v.toFixed(2) },
+  { key: "e_load", group: "Energy", label: "Power while generating", unit: "W", better: "lower", get: (r) => esrc(r)?.load_w.avg, sd: (r) => esrc(r)?.load_w.sd, fmt: (v) => v.toFixed(0),
+    note: "Primary power source: wall meter if set, else GPU + CPU sensors, else GPU sensor" },
+  { key: "power", group: "Energy", label: "GPU power during speed tests", unit: "W", better: "lower", get: (r) => r.hw?.clocks.power_avg_w, fmt: (v) => v.toFixed(0) },
+  { key: "e_idle", group: "Energy", label: "Power at idle (model loaded)", unit: "W", better: "lower", get: (r) => esrc(r)?.idle_w?.avg, sd: (r) => esrc(r)?.idle_w?.sd, fmt: (v) => v.toFixed(0) },
+  { key: "jpt", group: "Energy", label: "Energy per token", unit: "J", better: "lower", get: (r) => esrc(r)?.j_per_token, fmt: (v) => v.toFixed(3), minRel: 0.05,
+    note: "Everything the measured source drew during ~15 s of generation, divided by tokens" },
+  { key: "jpt_net", group: "Energy", label: "Energy per token above idle", unit: "J", better: "lower", get: (r) => esrc(r)?.net_j_per_token, fmt: (v) => v.toFixed(3), minRel: 0.05 },
+  { key: "tpwh", group: "Energy", label: "Tokens per watt-hour", term: "tpj", unit: "tok/Wh", better: "higher", get: (r) => esrc(r)?.tokens_per_wh, fmt: (v) => v.toFixed(0), minRel: 0.05 },
+  { key: "cost_mtok", group: "Energy", label: "Electricity per 1M tokens", unit: "", better: "lower", get: (r) => r.cost?.electricity_per_mtok, fmt: (v) => v.toFixed(3), minRel: 0.05,
+    note: "Energy per token × the electricity price set in Settings when the run was made" },
+  { key: "tps_price", group: "Energy", label: "Decode speed per 1000 of device price", unit: "tok/s", better: "higher", get: (r) => r.cost?.tps_per_1k_price, fmt: (v) => v.toFixed(1),
+    note: "Decode tok/s ÷ device price × 1000, with the price set in Settings when the run was made" },
 ];
 
 const TOKEN_LEVEL = new Set(["ppl", "kld", "kld99", "same_top"]);

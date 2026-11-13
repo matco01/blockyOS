@@ -25,7 +25,7 @@ from pathlib import Path
 import httpx
 import psutil
 
-from . import arena, config, db, engines, evals, gguf, kernels, lab, quantlab
+from . import arena, config, db, engines, evals, gguf, kernels, lab, power, quantlab
 
 DIR = config.DATA_DIR / "experiments"
 PORT = arena.TEMP_PORT
@@ -253,7 +253,7 @@ def cancel_queue(exp_id: int) -> int:
         return c.execute("UPDATE exp_runs SET status = 'cancelled' WHERE experiment_id = ? AND status = 'queued'", (exp_id,)).rowcount
 
 
-SWEEP_KEYS = ("model", "engine", "kv", "ctx", "vram_limit_mb", "ngl", "fa", "threads")
+SWEEP_KEYS = ("model", "engine", "kv", "ctx", "vram_limit_mb", "ngl", "fa", "threads", "device", "cores", "ram_limit_mb", "preset")
 MAX_SWEEP = 32
 
 
@@ -338,7 +338,23 @@ def _save(run_id: int, **f) -> None:
         c.execute(f"UPDATE exp_runs SET {sets} WHERE id = ?", (*vals, run_id))
 
 
-DEFAULTS = {"ctx": 8192, "kv": "q8_0", "ngl": "auto", "vram_limit_mb": None, "fa": "auto", "threads": None, "engine": "stock"}
+DEFAULTS = {"ctx": 8192, "kv": "q8_0", "ngl": "auto", "vram_limit_mb": None, "fa": "auto", "threads": None, "engine": "stock",
+            "device": "gpu", "cores": None, "ram_limit_mb": None, "preset": None}
+
+# Cheap-device simulation. What's simulated: CPU-only execution, core count (pinned with taskset), RAM and VRAM capacity
+# (a run that wouldn't fit fails). What isn't: per-core speed and memory bandwidth, so measured speeds are an upper
+# bound; for memory-bound decode, results add a projection at the target's spec-sheet bandwidth.
+DEVICE_PRESETS = {
+    "sbc-8gb": {"label": "Single-board computer, 8 GB (Raspberry Pi 5 class)", "config": {"device": "cpu", "cores": 4, "threads": 4, "ram_limit_mb": 8192},
+                "ram_bandwidth_gbps": 17.1, "memory": "LPDDR4X-4267, 32-bit"},
+    "minipc-16gb": {"label": "Mini PC, 4 cores, 16 GB (Intel N100 class)", "config": {"device": "cpu", "cores": 4, "threads": 4, "ram_limit_mb": 16384},
+                    "ram_bandwidth_gbps": 38.4, "memory": "DDR5-4800, single channel"},
+    "laptop-16gb": {"label": "Laptop without a GPU, 8 threads, 16 GB", "config": {"device": "cpu", "cores": 8, "threads": 8, "ram_limit_mb": 16384},
+                    "ram_bandwidth_gbps": 51.2, "memory": "DDR4-3200, dual channel"},
+    "gpu-4gb": {"label": "Entry GPU, 4 GB VRAM", "config": {"device": "gpu", "vram_limit_mb": 4096}},
+    "gpu-6gb": {"label": "Budget GPU, 6 GB VRAM", "config": {"device": "gpu", "vram_limit_mb": 6144}},
+}
+OS_RESERVE_MB = 700  # RAM a minimal Linux needs for itself on the simulated device
 
 
 HF_PREFIX = "hf:"  # models given as "hf:<owner>--<name>" are Hugging Face checkpoints (for vLLM), others are GGUF files
@@ -356,7 +372,13 @@ def checkpoint_bytes(d: Path) -> int:
 
 
 def normalize_config(exp: dict, cfg: dict) -> dict:
-    out = {**DEFAULTS, "model": exp["model"], **{k: v for k, v in (cfg or {}).items() if v not in (None, "")}}
+    preset = (cfg or {}).get("preset") or None
+    if preset and preset not in DEVICE_PRESETS:
+        raise ValueError(f"Unknown device preset (choose from {', '.join(DEVICE_PRESETS)})")
+    # A preset defines the simulated device: its settings win over ones inherited from a parent run. To customize
+    # device settings, clear the preset.
+    out = {**DEFAULTS, "model": exp["model"], **{k: v for k, v in (cfg or {}).items() if v not in (None, "")},
+           **(DEVICE_PRESETS[preset]["config"] if preset else {})}
     m = str(out["model"])
     out["model"] = HF_PREFIX + Path(m[len(HF_PREFIX):]).name if m.startswith(HF_PREFIX) else Path(m).name
     out["engine"] = str(out.get("engine") or "stock")
@@ -380,6 +402,16 @@ def normalize_config(exp: dict, cfg: dict) -> dict:
         raise ValueError("Flash attention must be auto, on or off")
     if out["threads"]:
         out["threads"] = max(1, min(256, int(out["threads"])))
+    if out["device"] not in ("gpu", "cpu"):
+        raise ValueError("Device must be gpu or cpu")
+    if out["device"] == "cpu" and engines.kind(out["engine"]) == "vllm":
+        raise ValueError("CPU-only runs use llama.cpp; vLLM here needs a GPU")
+    if out["cores"]:
+        out["cores"] = int(out["cores"])
+        if not 1 <= out["cores"] <= (os.cpu_count() or 1):
+            raise ValueError(f"This device has {os.cpu_count()} CPU threads: cores must be 1-{os.cpu_count()}")
+    if out["ram_limit_mb"]:
+        out["ram_limit_mb"] = max(1024, int(out["ram_limit_mb"]))
     engines.bin_dir(out["engine"])  # raises if unknown or not built
     return out
 
@@ -433,20 +465,34 @@ def describe_change(base: dict, cfg: dict) -> str:
         parts.append(f"ctx {cfg['ctx'] // 1024}k")
     if str(cfg["ngl"]) != str(base.get("ngl")):
         parts.append(f"{cfg['ngl']} GPU layers")
-    if cfg.get("vram_limit_mb") != base.get("vram_limit_mb"):
+    if cfg.get("vram_limit_mb") != base.get("vram_limit_mb") and not (cfg.get("preset") and cfg.get("preset") != base.get("preset")):
         parts.append(f"{(cfg['vram_limit_mb'] or 0) / 1024:.0f} GB GPU" if cfg.get("vram_limit_mb") else "full GPU")
     if cfg["fa"] != base.get("fa"):
         parts.append(f"flash-attn {cfg['fa']}")
     if (cfg.get("engine") or "stock") != (base.get("engine") or "stock"):
         parts.append(f"engine {cfg.get('engine') or 'stock'}")
-    if cfg.get("threads") != base.get("threads"):
+    new_preset = cfg.get("preset") and cfg.get("preset") != base.get("preset")
+    if cfg.get("threads") != base.get("threads") and not new_preset:
         parts.append(f"{cfg['threads'] or 'auto'} threads")
+    if new_preset:
+        parts.append(DEVICE_PRESETS[cfg["preset"]]["label"].split(" (")[0])
+    else:
+        if (cfg.get("device") or "gpu") != (base.get("device") or "gpu"):
+            parts.append("CPU only" if cfg.get("device") == "cpu" else "GPU")
+        if cfg.get("cores") != base.get("cores"):
+            parts.append(f"{cfg['cores']} cores" if cfg.get("cores") else "all cores")
+        if cfg.get("ram_limit_mb") != base.get("ram_limit_mb"):
+            parts.append(f"{cfg['ram_limit_mb'] / 1024:.0f} GB RAM" if cfg.get("ram_limit_mb") else "full RAM")
     return " · ".join(parts) or "Repeat of baseline"
 
 
 # ---------- Running a profile ----------
 
 def _placement_args(cfg: dict, vram_total: float, bench: bool = False) -> list[str]:
+    threads = cfg.get("threads") or cfg.get("cores")
+    if cfg.get("device") == "cpu":
+        # No GPU at all (not even for prompt processing, which -ngl 0 alone would still offload).
+        return ["-dev", "none", "-ngl", "0"] + (["-t", str(threads)] if threads else [])
     args = []
     if str(cfg["ngl"]) != "auto":
         args += ["-ngl", str(cfg["ngl"])]
@@ -454,9 +500,28 @@ def _placement_args(cfg: dict, vram_total: float, bench: bool = False) -> list[s
         args += ["-fitt" if bench else "--fit-target", str(max(0, int(vram_total - cfg["vram_limit_mb"])))]
     elif str(cfg["ngl"]) == "auto":
         args += ["-fitt", "512"] if bench else ["--fit", "on"]
-    if cfg.get("threads"):
-        args += ["-t", str(cfg["threads"])]
+    if threads:
+        args += ["-t", str(threads)]
     return args
+
+
+def _pin(cmd: list[str], cfg: dict) -> list[str]:
+    """Restrict a command to the first N CPU cores (simulating a smaller CPU)."""
+    return ["taskset", "-c", f"0-{cfg['cores'] - 1}", *cmd] if cfg.get("cores") else cmd
+
+
+def _cpu_clock_temp() -> dict:
+    out = {}
+    try:
+        f = psutil.cpu_freq()
+        if f and f.current:
+            out["cpu_mhz"] = f.current
+        temps = [t.current for ts in (psutil.sensors_temperatures() or {}).values() for t in ts if t.current]
+        if temps:
+            out["cpu_temp"] = max(temps)
+    except (AttributeError, OSError, RuntimeError):
+        pass
+    return out
 
 
 def _rapl_file() -> Path | None:
@@ -471,7 +536,8 @@ def _rapl_file() -> Path | None:
 class Sampler:
     """GPU/CPU/RAM telemetry every 0.5 s, with phase tags so each phase can be summarized."""
 
-    def __init__(self):
+    def __init__(self, meter: tuple[str, str] | None = None):
+        self.meter = meter  # (url, json field) of a wall-power meter, if one is set
         self.samples: list[dict] = []
         self.phase = "idle"
         self._stop = asyncio.Event()
@@ -493,11 +559,22 @@ class Sampler:
 
     async def _loop(self):
         psutil.cpu_percent(interval=None)
+        http = httpx.AsyncClient() if self.meter else None
+        try:
+            await self._sample_until_stopped(http)
+        finally:
+            if http:
+                await http.aclose()
+
+    async def _sample_until_stopped(self, http):
         while not self._stop.is_set():
             s = {"t": time.monotonic(), "phase": self.phase, "cpu": psutil.cpu_percent(interval=None),
                  "ram_mb": (psutil.virtual_memory().total - psutil.virtual_memory().available) / 2**20}
             if (cp := self._cpu_power()) is not None:
                 s["cpu_power"] = cp
+            s.update(_cpu_clock_temp())
+            if http and (w := await power.read_wall(http, *self.meter)) is not None:
+                s["wall_power"] = w
             code, out = await lab._run("nvidia-smi", "--query-gpu=utilization.gpu,utilization.memory,power.draw,temperature.gpu,memory.used,clocks.sm",
                                        "--format=csv,noheader,nounits", timeout=5)
             if code == 0 and out.strip():
@@ -529,12 +606,12 @@ class Sampler:
         def mx(k): v = [s[k] for s in ss if k in s]; return round(max(v), 1) if v else None  # noqa: E702
         return {"gpu_avg": avg("gpu"), "mem_bw_avg": avg("mem_bw"), "power_avg": avg("power"), "power_max": mx("power"),
                 "temp_max": mx("temp"), "vram_max_mb": mx("vram_mb"), "cpu_avg": avg("cpu"), "ram_max_mb": mx("ram_mb"),
-                "sm_clock_avg": avg("sm_clock"), "cpu_power_avg": avg("cpu_power"), "seconds": round(ss[-1]["t"] - ss[0]["t"], 1),
+                "sm_clock_avg": avg("sm_clock"), "cpu_power_avg": avg("cpu_power"), "wall_power_avg": avg("wall_power"), "cpu_mhz_avg": avg("cpu_mhz"), "cpu_temp_max": mx("cpu_temp"), "seconds": round(ss[-1]["t"] - ss[0]["t"], 1),
                 "samples": len(ss)}
 
     def series(self, every: int = 2) -> list[dict]:
         t0 = self.samples[0]["t"] if self.samples else 0
-        return [{"t": round(s["t"] - t0, 1), "phase": s["phase"], **{k: s.get(k) for k in ("gpu", "mem_bw", "power", "temp", "vram_mb", "cpu", "sm_clock", "cpu_power")}}
+        return [{"t": round(s["t"] - t0, 1), "phase": s["phase"], **{k: s.get(k) for k in ("gpu", "mem_bw", "power", "temp", "vram_mb", "cpu", "sm_clock", "cpu_power", "wall_power", "cpu_mhz", "cpu_temp")}}
                 for i, s in enumerate(self.samples) if i % every == 0]
 
 
@@ -790,6 +867,39 @@ async def serving_bench(client: httpx.AsyncClient, api: str, should_stop, prompt
             "method": "OpenAI chat API, streaming, temperature 0, ignore_eos; median of 5 after 1 warm-up"}
 
 
+ENERGY_IDLE_S = 8
+ENERGY_GEN_S = 15
+
+
+async def sustained_generation(client: httpx.AsyncClient, tg_est: float | None, ctx: int, should_stop) -> tuple[int, float, float]:
+    """Generate for ~ENERGY_GEN_S seconds in one streaming request; returns (tokens after the first, first time, last time)."""
+    n = int(min(max(256, (tg_est or 30) * ENERGY_GEN_S), max(64, ctx - 256), 8192))
+    body = {"model": "blocky", "messages": [{"role": "user", "content": "Write a long, detailed story about a lighthouse keeper."}],
+            "max_tokens": n, "temperature": 0, "stream": True, "ignore_eos": True, "stream_options": {"include_usage": True}}
+    first = last = None
+    chunks, usage = 0, {}
+    async with client.stream("POST", "/v1/chat/completions", json=body, timeout=httpx.Timeout(30, read=900)) as resp:
+        resp.raise_for_status()
+        async for line in resp.aiter_lines():
+            if should_stop():
+                raise asyncio.CancelledError
+            if not line.startswith("data:") or line.strip() == "data: [DONE]":
+                continue
+            try:
+                d = json.loads(line[5:])
+            except ValueError:
+                continue
+            usage = d.get("usage") or usage
+            delta = ((d.get("choices") or [{}])[0].get("delta") or {})
+            if delta.get("content") or delta.get("reasoning_content") or delta.get("reasoning"):
+                last = time.monotonic()
+                first = first or last
+                chunks += 1
+    if first is None:
+        return 0, 0.0, 0.0
+    return max(0, (usage.get("completion_tokens") or chunks) - 1), first, last
+
+
 def wilson(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
     if not n:
         return (0.0, 0.0)
@@ -936,6 +1046,7 @@ def _cmdline(cmd: list[str]) -> str:
 async def _bench(cfg: dict, vram_total: float, run_id: int, log: list[str], cmds: dict | None = None) -> dict:
     cmd = [str(engines.bin_dir(cfg.get("engine")) / "llama-bench"), "-m", str(lab.MODELS_DIR / cfg["model"]), "-p", "512", "-n", "128",
            "-d", "0,4096", "-r", "5", "-ctk", cfg["kv"], "-ctv", cfg["kv"], "-fa", cfg["fa"], "-o", "jsonl"] + _placement_args(cfg, vram_total, bench=True)
+    cmd = _pin(cmd, cfg)
     if cmds is not None:
         cmds["speed"] = _cmdline(cmd)
     out = await quantlab._proc(cmd, log, run_id, timeout=900)
@@ -1019,7 +1130,12 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
     exp_dir = DIR / str(exp["id"]); exp_dir.mkdir(parents=True, exist_ok=True)
     base_kld = exp_dir / "base.kld"
     is_baseline = not any(r["status"] == "done" for r in exp["runs_list"] if r["id"] != run_id)
-    sampler = Sampler()
+    settings = db.get_settings()
+    try:
+        meter = power.meter_config(settings)
+    except ValueError:
+        meter = None
+    sampler = Sampler(meter)
     proc = None
 
     def phase(name: str):
@@ -1065,6 +1181,7 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
                        # outside harnesses like lm-eval grade. Requests can still turn thinking on explicitly.
                        "--chat-template-kwargs", '{"enable_thinking": false}'] + _placement_args(cfg, vram_total)
                 env = {**os.environ, "LD_LIBRARY_PATH": str(ebin)}
+            cmd = _pin(cmd, cfg)
             cmds["load_and_quality"] = _cmdline(cmd)
             t0 = time.monotonic()
             with open(logfile, "w") as lf:
@@ -1084,6 +1201,12 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
                                  if vllm else _parse_load_log(logfile.read_text(errors="replace")))
                 await asyncio.sleep(1.5)
                 res["memory"]["vram_used_mb"] = (sampler.samples[-1].get("vram_mb") if sampler.samples else None)
+                if cfg.get("ram_limit_mb") and not vllm:
+                    need = sum((res["memory"].get("ram") or {}).values()) + OS_RESERVE_MB
+                    res["memory"]["ram_needed_mb"] = round(need)
+                    if need > cfg["ram_limit_mb"]:
+                        raise RuntimeError(f"Doesn't fit a device with {cfg['ram_limit_mb'] / 1024:.0f} GB RAM: the model's CPU-side buffers "
+                                           f"plus ~{OS_RESERVE_MB} MB for the system need {need / 1024:.1f} GB")
 
                 # 2) Quality: MMLU-Pro, 5-shot log-likelihood, same 280 questions for every run of the experiment.
                 phase("quality")
@@ -1105,6 +1228,17 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
                 phase("serving")
                 res["serving"] = await serving_bench(client, api, lambda: run_id in _cancel)
 
+                # 2b'') Energy: idle power with the model loaded, then power during sustained generation.
+                phase("idle")
+                t_idle = time.monotonic()
+                await asyncio.sleep(ENERGY_IDLE_S)
+                idle = [x for x in sampler.samples if x["phase"] == "idle" and x["t"] >= t_idle + 2]  # let boost clocks settle
+                phase("energy")
+                tokens, t1, t2 = await sustained_generation(client, (res["serving"] or {}).get("tg"), cfg["ctx"], lambda: run_id in _cancel)
+                load = [x for x in sampler.samples if x["phase"] == "energy" and t1 + 0.5 <= x["t"] <= t2]
+                res["energy"] = power.energy_summary(idle, load, tokens, t2 - t1)
+                res["energy"]["meter"] = bool(meter)
+
                 # 2c) Optional: lm-evaluation-harness tasks chosen for this experiment, against this same server.
                 lm = (exp.get("protocol") or {}).get("lm_eval")
                 if lm and lm.get("tasks"):
@@ -1124,7 +1258,7 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
             res["speed"] = await _bench(cfg, vram_total, run_id, log, cmds)
 
             # 3b) Optional: GPU kernel profile (Nsight Systems), if this experiment asked for it.
-            if (exp.get("protocol") or {}).get("kernels"):
+            if (exp.get("protocol") or {}).get("kernels") and cfg.get("device") != "cpu":
                 phase("kernels")
                 kargs = ["-ctk", cfg["kv"], "-ctv", cfg["kv"], "-fa", cfg["fa"]] + _placement_args(cfg, vram_total, bench=True)
                 res["kernels"] = await kernels.profile(ebin / "llama-bench", model_path(cfg["model"]), kargs, exp_dir / f"run{run_id}-kernels", log, run_id)
@@ -1134,6 +1268,7 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
             text = await quantlab.ensure_text()
             pcmd = [str(ebin / "llama-perplexity"), "-m", str(lab.MODELS_DIR / cfg["model"]), "-f", str(text), "-c", "512",
                     "--chunks", "32", "-ctk", cfg["kv"], "-ctv", cfg["kv"], "-fa", cfg["fa"]] + _placement_args(cfg, vram_total)
+            pcmd = _pin(pcmd, cfg)
             base_run = next((r for r in exp["runs_list"] if r["status"] == "done" and r["id"] != run_id), None)
             same_tok = is_baseline or not base_run or (
                 gguf.metadata(lab.MODELS_DIR / cfg["model"]).get("tokenizer") == gguf.metadata(lab.MODELS_DIR / base_run["config"]["model"]).get("tokenizer"))
@@ -1167,7 +1302,9 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
             raise _SkipRest
         except _SkipRest:
             # 5) Telemetry + bottleneck analysis (every engine ends here).
-            res["telemetry"] = {p: sampler.summary(p) for p in ("loading", "quality", "longctx", "serving", "lm_eval", "speed", "kernels", "fidelity")}
+            res["telemetry"] = {p: sampler.summary(p) for p in ("loading", "quality", "longctx", "serving", "idle", "energy", "lm_eval", "speed", "kernels", "fidelity")}
+            res["cost"] = power.costs(res.get("energy"), (res.get("speed") or res.get("serving") or {}).get("tg"),
+                                      {k: settings.get(k) for k in ("device_price", "electricity_price_kwh", "currency")})
             res["series"] = sampler.series()
             res["hw"] = analyze(res, cfg, res.get("hardware") or lim)
         except asyncio.CancelledError:
@@ -1228,7 +1365,7 @@ def analyze(res: dict, cfg: dict, lim: dict) -> dict:
     gb = w["bytes"] / 1e9
     # Which weights live where, from the load log: host "model" buffers minus the embedding table (always on CPU, only looked up).
     cpu_gb = max(0.0, ((mem.get("ram") or {}).get("model", 0) * 2**20 - w["embedding_bytes"]) / 1e9) if mem else 0.0
-    cpu_gb = min(cpu_gb, gb)
+    cpu_gb = gb if cfg.get("device") == "cpu" else min(cpu_gb, gb)
     gpu_gb = gb - cpu_gb
     flops = 2 * w["params"] if w["params"] else None
 
@@ -1253,9 +1390,10 @@ def analyze(res: dict, cfg: dict, lim: dict) -> dict:
             "arithmetic_intensity": round(flops / w["bytes"], 2) if flops else None,
             "long_context_ratio": round(speed["tg_d4096"] / tg, 3) if speed.get("tg_d4096") else None,
         }
+    cpu_only = cfg.get("device") == "cpu"
     if pp and flops:
         ai = flops * 512 / w["bytes"]  # one 512-token batch reads the weights once
-        roof = min(peak_tf, (bw or 0) * ai / 1000) if (peak_tf and bw) else None
+        roof = min(peak_tf, (bw or 0) * ai / 1000) if (peak_tf and bw and not cpu_only) else None  # no CPU FLOPS table
         ach = flops * pp / 1e12
         out["prefill"] = {"achieved_tflops": round(ach, 2), "arithmetic_intensity": round(ai, 1),
                           "roof_tflops": round(roof, 2) if roof else None, "roof_util": round(ach / roof, 3) if roof else None,
@@ -1265,6 +1403,15 @@ def analyze(res: dict, cfg: dict, lim: dict) -> dict:
     out["clocks"] = {"sm_avg_mhz": sm, "sm_max_mhz": smax, "ratio": round(sm / smax, 3) if (sm and smax) else None,
                      "temp_max_c": tel.get("temp_max"), "gpu_util_avg": tel.get("gpu_avg"), "mem_util_avg": tel.get("mem_bw_avg"),
                      "cpu_util_avg": tel.get("cpu_avg"), "power_avg_w": tel.get("power_avg"), "cpu_power_avg_w": tel.get("cpu_power_avg")}
+
+    preset = DEVICE_PRESETS.get(cfg.get("preset") or "")
+    if preset and preset.get("ram_bandwidth_gbps") and cpu_only and tg and ram_bw:
+        # Decode reads every weight once per token: at the same share of bandwidth this CPU achieved, the target device
+        # would run at (share x its bandwidth) / weight bytes. Prefill is compute-bound and can't be projected this way.
+        share = min(1.0, gb * tg / ram_bw)
+        out["projection"] = {"target": preset["label"], "target_ram_gbps": preset["ram_bandwidth_gbps"], "memory": preset.get("memory"),
+                             "bandwidth_share": round(share, 3), "tg": round(share * preset["ram_bandwidth_gbps"] / gb, 2) if gb else None,
+                             "method": "decode tok/s = (share of RAM bandwidth achieved here) x target spec-sheet bandwidth / weight GB per token"}
 
     vram_used = mem.get("vram_used_mb")
     ctx_mb = (mem.get("gpu") or {}).get("context") or 0

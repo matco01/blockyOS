@@ -24,7 +24,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import arena, benchmarks, config, db, engines, evals, generate, lab, mcp_server, memory, profile, quantlab, scans, system, tools, torchlab, weights
+from . import arena, benchmarks, config, db, engines, evals, generate, lab, mcp_server, memory, power, profile, quantlab, remote, scans, system, tools, torchlab, weights
 
 
 @asynccontextmanager
@@ -39,6 +39,7 @@ async def lifespan(app: FastAPI):
     engines.init()
     scans.init()
     torchlab.init()
+    remote.init()
     psutil.cpu_percent(interval=None)  # prime the CPU counter so the first reading isn't 0
     app.state.llm = httpx.AsyncClient(base_url=config.LLM_URL, timeout=httpx.Timeout(10, read=300))
     app.state.background = set()  # keep references so tasks aren't garbage-collected
@@ -51,6 +52,45 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="blockyOS", lifespan=lifespan)
+
+
+class LocalOnly:
+    """Only this device may use Blocky, unless its owner turned on remote access (then the token is required).
+
+    Plain ASGI (not BaseHTTPMiddleware) so streaming responses pass through untouched. A browser on another device can
+    open http://<box>:8000/?key=<token> once; the key is then kept in a cookie.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] not in ("http", "websocket"):
+            return await self.app(scope, receive, send)
+        from http.cookies import SimpleCookie
+        from urllib.parse import parse_qs
+        headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
+        host = (scope.get("client") or ("",))[0]
+        key = (parse_qs(scope.get("query_string", b"").decode("latin-1")).get("key") or [""])[0]
+        jar = SimpleCookie(headers.get("cookie", ""))
+        cookie = jar["blocky_key"].value if "blocky_key" in jar else ""
+        if remote.allowed(host, headers.get("authorization", ""), cookie or key):
+            if key and host not in ("127.0.0.1", "::1"):
+                async def send_with_cookie(msg):
+                    if msg["type"] == "http.response.start":
+                        msg = {**msg, "headers": [*msg.get("headers", []),
+                                                  (b"set-cookie", f"blocky_key={key}; HttpOnly; SameSite=Strict; Max-Age=2592000; Path=/".encode())]}
+                    await send(msg)
+                return await self.app(scope, receive, send_with_cookie)
+            return await self.app(scope, receive, send)
+        if scope["type"] == "websocket":
+            return await send({"type": "websocket.close", "code": 1008})
+        resp = JSONResponse({"detail": "This Blocky only accepts connections from itself. To use it from another device, turn on "
+                                       "remote access in its Settings, or connect through an SSH tunnel."}, status_code=403)
+        await resp(scope, receive, send)
+
+
+app.add_middleware(LocalOnly)
 
 
 # ---------- Conversations ----------
@@ -132,7 +172,103 @@ def get_settings():
 
 @app.patch("/api/settings")
 def update_settings(body: dict):
+    body.pop("remote_token", None)  # only POST /api/remote-access creates or clears it
+    try:
+        for k in ("device_price", "electricity_price_kwh"):
+            if k in body and body[k] not in (None, ""):
+                body[k] = float(body[k])
+                if body[k] < 0:
+                    raise ValueError(k)
+            elif k in body:
+                body[k] = None
+        if "power_meter_url" in body:
+            power.meter_config({"power_meter_url": body["power_meter_url"]})
+        for k in ("power_meter_field", "currency"):
+            if k in body:
+                body[k] = str(body[k] or "")[:40]
+    except (TypeError, ValueError) as e:
+        raise HTTPException(400, str(e) if "URL" in str(e) else "Prices must be non-negative numbers")
     return db.update_settings(body)
+
+
+@app.get("/api/device-presets")
+def device_presets():
+    import os
+    return {"presets": profile.DEVICE_PRESETS, "cpu_threads": os.cpu_count()}
+
+
+# ---------- Remote devices ----------
+
+@app.get("/api/remote-access")
+def remote_access_get():
+    return {"enabled": bool(remote.access_token()), "token": remote.access_token() or None}
+
+
+@app.post("/api/remote-access")
+def remote_access_set(body: dict):
+    return {"enabled": bool(body.get("enabled")), "token": remote.set_access(bool(body.get("enabled"))) or None}
+
+
+@app.get("/api/devices")
+def devices_list():
+    return remote.list_devices()
+
+
+@app.post("/api/devices")
+def devices_add(body: dict):
+    try:
+        return {"id": remote.add_device(body)}
+    except ValueError as e:
+        _bad(e)
+
+
+@app.delete("/api/devices/{dev_id}")
+def devices_delete(dev_id: int):
+    remote.delete_device(dev_id)
+    return {"ok": True}
+
+
+@app.get("/api/devices/{dev_id}/check")
+async def devices_check(dev_id: int):
+    try:
+        return await remote.check(dev_id)
+    except ValueError as e:
+        _bad(e)
+
+
+@app.post("/api/experiments/{exp_id}/remote")
+async def experiments_remote(exp_id: int, body: dict):
+    try:
+        return {"job_id": remote.start(exp_id, body)}
+    except (ValueError, TypeError) as e:
+        _bad(e)
+
+
+@app.get("/api/remote-jobs")
+def remote_jobs(experiment_id: int | None = None):
+    return remote.list_jobs(experiment_id)
+
+
+@app.post("/api/remote-jobs/{job_id}/cancel")
+def remote_jobs_cancel(job_id: int):
+    remote.cancel(job_id)
+    return {"ok": True}
+
+
+@app.post("/api/power/test")
+async def power_test(body: dict):
+    """Read the wall-power meter once (to check the address before running experiments)."""
+    try:
+        meter = power.meter_config(body)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if not meter:
+        raise HTTPException(400, "Enter the meter's address")
+    async with httpx.AsyncClient() as c:
+        w = await power.read_wall(c, *meter)
+    if w is None:
+        raise HTTPException(502, "No power reading from that address (check the URL, or set the field that holds the watts)")
+    return {"watts": w}
 
 
 # ---------- Chat ----------
@@ -838,6 +974,14 @@ def engines_delete(engine_id: str):
 
 
 # ---------- PyTorch lab: checkpoints, activations, LoRA ----------
+
+@app.post("/api/torch/quantsim")
+async def torch_quantsim(body: dict):
+    try:
+        return {"id": torchlab.start_quantsim(body)}
+    except (ValueError, TypeError) as e:
+        _bad(e)
+
 
 @app.get("/api/torch/status")
 async def torch_status():

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircle, Check, Cpu, Download, FlaskConical, Gauge, Hammer, Loader2, MemoryStick, Play, Plus, Sparkles, Square, Trash2, Upload, Zap } from "lucide-react";
+import { AlertCircle, Check, Cpu, Download, Server, FlaskConical, Gauge, Hammer, Loader2, MemoryStick, Play, Plus, Sparkles, Square, Trash2, Upload, Zap } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { api, Engine, ExpConfig, Experiment, ExpRun, KernelProfile, ModelFile, Provenance, Status, TorchStatus } from "./api";
+import { api, Device, DevicePreset, RemoteJob, Engine, ExpConfig, Experiment, ExpRun, KernelProfile, ModelFile, Provenance, Status, TorchStatus } from "./api";
 import { LineChart, Term } from "./ui";
 import ResearchCanvas from "./ResearchCanvas";
 import WeightsWorkshop from "./WeightsWorkshop";
@@ -65,6 +65,9 @@ function Running({ run, onStop }: { run: ExpRun; onStop: () => void }) {
 
 const CTX = [4096, 8192, 16384, 32768, 65536];
 const VRAM_SIM = [null, 6144, 4096, 2048];
+const RAM_SIM = [null, 16384, 8192, 4096];
+const CORES = [2, 4, 8];
+const DEVICE_KEYS: (keyof ExpConfig)[] = ["device", "cores", "threads", "ram_limit_mb", "vram_limit_mb"];
 
 type SweepGrid = Partial<Record<keyof ExpConfig, unknown[]>>;
 
@@ -76,7 +79,10 @@ function ChangePanel({ base: rawBase, models, onRun, onSweep, onModels }: { base
   const [eng, setEng] = useState(false);
   const loadEngines = () => api.engines().then(setEngineList).catch(() => {});
   const [ckpts, setCkpts] = useState<TorchStatus["checkpoints"]>([]);
-  useEffect(() => { loadEngines(); api.torchStatus().then((s) => setCkpts(s.checkpoints)).catch(() => {}); }, []);
+  const [presets, setPresets] = useState<Record<string, DevicePreset>>({});
+  const [cpuThreads, setCpuThreads] = useState(0);
+  useEffect(() => { loadEngines(); api.torchStatus().then((s) => setCkpts(s.checkpoints)).catch(() => {});
+    api.devicePresets().then((p) => { setPresets(p.presets); setCpuThreads(p.cpu_threads); }).catch(() => {}); }, []);
   const [mode, setMode] = useState<"single" | "sweep">("single");
   const [shop, setShop] = useState(() => window.location.hash.includes("workshop=1"));
   const [cfg, setCfg] = useState<ExpConfig>(base);
@@ -86,9 +92,13 @@ function ChangePanel({ base: rawBase, models, onRun, onSweep, onModels }: { base
   const baseModel = models.find((m) => m.file === base.model);
   const family = models.filter((m) => baseModel && m.architecture === baseModel.architecture && (m.name ?? "") === (baseModel.name ?? ""));
   const others = models.filter((m) => !family.includes(m) && !m.error);
-  const changed = (Object.keys(cfg) as (keyof ExpConfig)[]).filter((k) => String(cfg[k] ?? "") !== String(base[k] ?? ""));
+  // A device preset is one change, even though it sets several settings.
+  const presetKeys = cfg.preset && cfg.preset !== base.preset ? Object.keys(presets[cfg.preset]?.config ?? {}) : [];
+  const changed = (Object.keys(cfg) as (keyof ExpConfig)[]).filter((k) => String(cfg[k] ?? "") !== String(base[k] ?? "") && !presetKeys.includes(k));
   const set = (patch: Partial<ExpConfig>) => setCfg((c) => {
-    const next = { ...c, ...patch };
+    let next = { ...c, ...patch };
+    if ("preset" in patch) next = patch.preset ? { ...next, ...presets[patch.preset]?.config } : { ...next, device: "gpu", cores: null, threads: null, ram_limit_mb: null, vram_limit_mb: null };
+    else if (DEVICE_KEYS.some((k) => k in patch)) next.preset = null;  // customizing the device: no longer the preset
     // Engines run different formats: vLLM takes checkpoints, llama.cpp takes GGUF. Keep the pair valid.
     if (patch.engine === "vllm" && !next.model.startsWith("hf:") && ckpts[0]) next.model = `hf:${ckpts[0].id}`;
     if (patch.engine && patch.engine !== "vllm" && next.model.startsWith("hf:")) next.model = base.model.startsWith("hf:") ? (family[0]?.file ?? models[0]?.file ?? next.model) : base.model;
@@ -134,6 +144,15 @@ function ChangePanel({ base: rawBase, models, onRun, onSweep, onModels }: { base
           <div className="segmented wrap">{ckpts.length ? ckpts.map((c) => <Opt key={c.id} k="model" v={`hf:${c.id}`} label={`${c.repo} · ${(c.size_bytes / 2 ** 30).toFixed(1)} GB`} />)
             : <span className="row-sub" style={{ padding: "4px 10px" }}>No checkpoints yet</span>}</div></div>
       )}
+      <div className="xc-row"><div><b>Target device</b><span>Simulate a cheaper device: CPU only, fewer cores, less RAM or VRAM. Capacity and cores are real limits; per-core speed and memory bandwidth aren't, so CPU presets add a projected decode speed for the target's memory.</span></div>
+        <div className="segmented wrap"><Opt k="preset" v={null} label="This device" />{Object.entries(presets).map(([id, p]) => <Opt key={id} k="preset" v={id} label={p.label} />)}</div></div>
+      <div className="xc-row"><div><b>Processor</b><span>CPU only runs with no GPU at all (-dev none); cores pins the run to the first N CPU threads</span></div>
+        <div className="ws-opts">
+          <div className="segmented"><Opt k="device" v="gpu" label="GPU" /><Opt k="device" v="cpu" label="CPU only" /></div>
+          <div className="segmented"><Opt k="cores" v={null} label="All cores" />{CORES.filter((n) => !cpuThreads || n < cpuThreads).map((n) => <Opt key={n} k="cores" v={n} label={`${n}`} />)}</div>
+        </div></div>
+      <div className="xc-row"><div><b>RAM limit</b><span>The run fails if the model's CPU-side memory plus a minimal system wouldn't fit</span></div>
+        <div className="segmented">{RAM_SIM.map((v) => <Opt key={String(v)} k="ram_limit_mb" v={v} label={v ? `${v / 1024} GB` : "Full"} />)}</div></div>
       <div className="xc-row"><div><b><Term k="kv">KV cache type</Term></b><span>-ctk / -ctv</span></div>
         <div className="segmented"><Opt k="kv" v="f16" label="f16" /><Opt k="kv" v="q8_0" label="q8_0" /><Opt k="kv" v="q4_0" label="q4_0" /></div></div>
       <div className="xc-row"><div><b><Term k="context">Context size</Term></b><span>-c</span></div>
@@ -190,7 +209,7 @@ function Board({ runs, metric, setMetric }: { runs: ExpRun[]; metric: string; se
           const any = rows.some(hasData);
           return (
             <tbody key={g}>
-              <tr className="grp-row"><td colSpan={runs.length + 1}>{g}{g === "Energy" && !any && <span className="muted"> · not measurable: the GPU driver doesn</span>}</td></tr>
+              <tr className="grp-row"><td colSpan={runs.length + 1}>{g}{g === "Energy" && !any && <span className="muted"> · no power reading for these runs: add a wall meter in Settings → Energy & cost, or use hardware whose sensors report power</span>}</td></tr>
               {rows.filter(hasData).map((x) => (
                 <tr key={x.key} className={metric === x.key ? "sel" : ""} onClick={() => setMetric(x.key)} title={x.note ?? "Click to chart"}>
                   <td className="mlabel">{x.term ? <Term k={x.term}>{x.label}</Term> : x.label}{x.unit && <span className="u"> {x.unit}</span>}</td>
@@ -268,6 +287,67 @@ function ImportRuns({ exp, onDone }: { exp: Experiment | null; onDone: (expId: n
             {exp && <button className="btn small ghost" onClick={() => run(exp.id)}>Into “{exp.name}”</button>}
             <button className="btn small ghost" onClick={() => setFile(null)}>Cancel</button></>}
           {msg && <span className="row-sub">{msg}</span>}
+          {err && <span className="error"><AlertCircle /> {err}</span>}
+        </div>
+      )}
+    </>
+  );
+}
+
+/** Profile chosen setups on another Blocky device; results come back into this experiment. */
+function RemoteRuns({ exp, onImported }: { exp: Experiment; onImported: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [devs, setDevs] = useState<Device[]>([]);
+  const [dev, setDev] = useState<number | null>(null);
+  const [pick, setPick] = useState<number[]>([]);
+  const [jobs, setJobs] = useState<RemoteJob[]>([]);
+  const [err, setErr] = useState<string | null>(null);
+  const local = (exp.runs_list ?? []).filter((r) => !r.results.imported_from && r.status !== "cancelled");
+  useEffect(() => { if (open) api.devices().then((d) => { setDevs(d); setDev((x) => x ?? d[0]?.id ?? null); }).catch(() => {}); }, [open]);
+  useEffect(() => {
+    let alive = true, wasActive = false;
+    const tick = () => api.remoteJobs(exp.id).then((j) => {
+      if (!alive) return;
+      const active = j.some((x) => x.status === "starting" || x.status === "running");
+      if (wasActive && !active) onImported();
+      wasActive = active; setJobs(j);
+    }).catch(() => {});
+    tick();
+    const t = setInterval(tick, 5000);
+    return () => { alive = false; clearInterval(t); };
+  }, [exp.id]);
+  const go = async () => {
+    setErr(null);
+    try { await api.remoteRun(exp.id, dev!, pick); setPick([]); setOpen(false); setJobs(await api.remoteJobs(exp.id)); } catch (e) { setErr((e as Error).message); }
+  };
+  return (
+    <>
+      <button className="btn small ghost" onClick={() => setOpen(!open)} title="Profile these setups on another Blocky device and compare hardware"><Server /> Run on another device</button>
+      {(open || jobs.length > 0) && (
+        <div className="imp" style={{ flexDirection: "column", alignItems: "stretch" }}>
+          {open && (devs.length === 0
+            ? <span className="row-sub">No devices yet: add one in <a href="#/settings">Settings → Remote access & devices</a>.</span>
+            : <>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <span className="row-sub">Device</span>
+                <select className="field select" value={dev ?? ""} onChange={(e) => setDev(Number(e.target.value))}>{devs.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}</select>
+                <span className="row-sub">Setups to profile there (the same model files must be on that device):</span>
+              </div>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {local.map((r, i) => <button key={r.id} className={`btn small ${pick.includes(r.id) ? "" : "ghost"}`}
+                  onClick={() => setPick(pick.includes(r.id) ? pick.filter((x) => x !== r.id) : [...pick, r.id])}>{nameOf(r, i)}</button>)}
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button className="btn small" disabled={!dev || pick.length === 0} onClick={go}><Play /> Profile {pick.length || ""} on {devs.find((d) => d.id === dev)?.name ?? "device"}</button>
+                <button className="btn small ghost" onClick={() => setOpen(false)}>Close</button>
+              </div>
+            </>)}
+          {jobs.map((j) => (
+            <div key={j.id} className="row-sub">
+              <b>{j.device}</b>: {j.status}{j.step ? ` · ${j.step}` : ""}{j.imported ? ` · ${j.imported.runs} runs imported` : ""}{j.error ? ` · ${j.error}` : ""}
+              {(j.status === "running" || j.status === "starting") && <> · <a onClick={() => api.remoteJobCancel(j.id)}>Cancel</a></>}
+            </div>
+          ))}
           {err && <span className="error"><AlertCircle /> {err}</span>}
         </div>
       )}
@@ -446,6 +526,13 @@ function LimitTable({ runs }: { runs: ExpRun[] }) {
           </div>
         );
       })}
+      {runs.some((r) => r.results.hw?.projection) && (
+        <div className="xlt-legend">
+          {runs.map((r, i) => r.results.hw?.projection && (
+            <div key={r.id}><span className="xchip k0">Projection</span>{nameOf(r, i)}: on a {r.results.hw.projection.target} ({r.results.hw.projection.memory}, {r.results.hw.projection.target_ram_gbps} GB/s), decode would reach about <b>{r.results.hw.projection.tg} tok/s</b> at the same {Math.round(r.results.hw.projection.bandwidth_share * 100)}% share of memory bandwidth measured here. Prompt reading is compute-bound and isn't projected.</div>
+          ))}
+        </div>
+      )}
       {runs.some((r) => r.results.hw?.limiter) && (
         <div className="xlt-legend">
           {Array.from(new Set(runs.map((r) => r.results.hw?.limiter?.what).filter(Boolean) as string[])).map((w) => (
@@ -659,6 +746,7 @@ export default function ExperimentsPage({ status }: { status: Status | null }) {
             <button className="icon-btn danger" title="Delete experiment" onClick={() => { if (confirm(`Delete "${exp.name}" and all its runs?`)) api.experimentDelete(exp.id).then(() => { setId(null); setExp(null); loadList(); }); }}><Trash2 /></button>
           </>}
           <ImportRuns exp={exp} onDone={(nid) => { loadList(); if (nid !== exp?.id) setId(nid); else load(); }} />
+          {exp && <RemoteRuns exp={exp} onImported={load} />}
         </div>
 
         {(creating || list.length === 0) && (
@@ -757,7 +845,8 @@ export default function ExperimentsPage({ status }: { status: Status | null }) {
                   </select>
                 </div>
                 <div className="group pad">{shown && <Telemetry run={shown} />}
-                  {!shown?.results.hw?.clocks.power_avg_w && <div className="row-sub xnote">Power: this GPU's driver doesn't report power draw, so energy can't be measured for these runs. Most NVIDIA drivers on a regular Linux install do report it, and Blocky also reads CPU package power where the system exposes it (RAPL).</div>}
+                  {shown?.results.energy && !shown.results.energy.primary && <div className="row-sub xnote">Power: {shown.results.energy.note ?? "no reading for this run."}</div>}
+                  {shown?.results.energy?.primary && <div className="row-sub xnote">Energy measured on: {shown.results.energy.primary_label}, over {shown.results.energy.seconds} s of generation ({shown.results.energy.tokens} tokens) after {">"}6 s idle with the model loaded.</div>}
                 </div>
               </>
             )}

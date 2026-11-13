@@ -144,6 +144,27 @@ def _cuda_arch() -> str | None:
         return None
 
 
+BACKENDS = ("auto", "cuda", "vulkan", "cpu")
+
+
+def backend_args(backend: str) -> list[str]:
+    """CMake flags for a compute backend: CUDA (NVIDIA), Vulkan (AMD, Intel and most other GPUs, incl. integrated) or CPU only."""
+    if backend not in BACKENDS:
+        raise ValueError("Backend must be auto, cuda, vulkan or cpu")
+    has_cuda = Path("/usr/local/cuda/bin/nvcc").is_file()
+    if backend == "auto":
+        backend = "cuda" if has_cuda else "cpu"
+    if backend == "cuda":
+        if not has_cuda:
+            raise ValueError("CUDA builds need the CUDA toolkit (/usr/local/cuda); choose vulkan or cpu")
+        return ["-DGGML_CUDA=ON", f"-DCMAKE_CUDA_ARCHITECTURES={_cuda_arch() or '61;75;86;89'}"]
+    if backend == "vulkan":
+        if not (shutil.which("glslc") and Path("/usr/include/vulkan/vulkan.h").is_file()):
+            raise ValueError("Vulkan builds need the Vulkan headers and shader compiler: sudo apt install libvulkan-dev glslc")
+        return ["-DGGML_VULKAN=ON"]
+    return ["-DGGML_NATIVE=ON"]  # CPU only, tuned for this CPU's instruction set
+
+
 def add(body: dict) -> str:
     repo = str(body.get("repo") or "").strip()
     ref = str(body.get("ref") or "").strip() or "master"
@@ -158,10 +179,7 @@ def add(body: dict) -> str:
     base, n = engine_id, 2
     while engine_id in existing or engine_id == "stock":
         engine_id, n = f"{base}-{n}", n + 1
-    arch = _cuda_arch()
-    args = ["-DCMAKE_BUILD_TYPE=Release", "-DLLAMA_CURL=OFF"]
-    if Path("/usr/local/cuda/bin/nvcc").is_file():
-        args += ["-DGGML_CUDA=ON", f"-DCMAKE_CUDA_ARCHITECTURES={arch or '61;75;86;89'}"]
+    args = ["-DCMAKE_BUILD_TYPE=Release", "-DLLAMA_CURL=OFF"] + backend_args(str(body.get("backend") or "auto"))
     with db.connect() as c:
         c.execute("INSERT INTO engines (id, created_at, name, repo, ref, status, cmake_args) VALUES (?, ?, ?, ?, ?, 'queued', ?)",
                   (engine_id, time.time(), name, repo, ref, json.dumps(args)))

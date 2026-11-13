@@ -214,6 +214,64 @@ async def _activations(jid: int, log: list[str], d: Path, prompt: str) -> dict:
     return res
 
 
+QUANT_METHODS = ("rtn", "nf4", "ternary", "custom", "none")
+
+
+def start_quantsim(body: dict) -> int:
+    """Technique playground: simulate a quantization method on a checkpoint and measure its effect (fake quantization)."""
+    d = _ckpt(body.get("checkpoint", ""))
+    method = str(body.get("method") or "rtn")
+    if method not in QUANT_METHODS:
+        raise ValueError(f"Method must be one of {', '.join(QUANT_METHODS)}")
+    p = {"checkpoint": d.name, "method": method, "bits": max(2, min(8, int(body.get("bits") or 4))),
+         "group": int(body.get("group") or 128), "sym": bool(body.get("sym", True)), "include_head": bool(body.get("include_head")),
+         "kv_bits": max(0, min(8, int(body.get("kv_bits") or 0))), "chunks": max(2, min(64, int(body.get("chunks") or 16))),
+         "code": str(body.get("code") or "")[:20000], "label": str(body.get("label") or "")[:60]}
+    if p["group"] not in (32, 64, 128, 256):
+        raise ValueError("Group size must be 32, 64, 128 or 256")
+    if method == "custom" and "def quantize" not in p["code"]:
+        raise ValueError("Custom method: write a function  def quantize(w, name): ...  that returns the dequantized weight")
+    if method == "none" and not p["kv_bits"]:
+        raise ValueError("Nothing to simulate: pick a weight method or KV bits")
+    jid = _new("quantsim", p)
+    asyncio.get_running_loop().create_task(_gpu(jid, _quantsim, d, p))
+    return jid
+
+
+async def _quantsim(jid: int, log: list[str], d: Path, p: dict) -> dict:
+    from . import quantlab
+    text = await quantlab.ensure_text()
+    out = WORK / f"qsim-{jid}.json"
+    args = [str(TOOLS / "quantsim.py"), "--model", str(d), "--text", str(text), "--out", str(out), "--method", p["method"],
+            "--bits", str(p["bits"]), "--group", str(p["group"]), "--chunks", str(p["chunks"]), "--kv_bits", str(p["kv_bits"])]
+    if p["sym"]:
+        args.append("--sym")
+    if p["include_head"]:
+        args.append("--include_head")
+    if p["method"] == "custom":
+        code = WORK / f"qsim-{jid}-custom.py"
+        code.write_text(p["code"])
+        args += ["--custom", str(code)]
+
+    async def follow():
+        while True:
+            await asyncio.sleep(3)
+            last = next((x for x in reversed(log) if x.startswith(("chunk", "quantized", "loaded"))), None)
+            if last:
+                _save(jid, step=last)
+
+    watcher = asyncio.create_task(follow())
+    try:
+        _save(jid, step="loading the model")
+        if await _py(jid, args, log, timeout=3 * 3600):
+            raise RuntimeError(" | ".join(log[-3:])[-400:])
+    finally:
+        watcher.cancel()
+    res = json.loads(out.read_text())
+    out.unlink(missing_ok=True)
+    return res
+
+
 def start_lora(body: dict) -> int:
     d = _ckpt(body.get("checkpoint", ""))
     data = str(body.get("data") or "").strip()
