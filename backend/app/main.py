@@ -24,7 +24,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import arena, benchmarks, config, db, engines, evals, generate, lab, memory, profile, quantlab, scans, system, tools, torchlab, weights
+from . import arena, benchmarks, config, db, engines, evals, generate, lab, mcp_server, memory, profile, quantlab, scans, system, tools, torchlab, weights
 
 
 @asynccontextmanager
@@ -44,7 +44,8 @@ async def lifespan(app: FastAPI):
     app.state.background = set()  # keep references so tasks aren't garbage-collected
     worker = asyncio.create_task(profile.worker(app.state.llm))
     app.state.background.add(worker)
-    yield
+    async with mcp_server.server.session_manager.run():
+        yield
     worker.cancel()
     await app.state.llm.aclose()
 
@@ -1104,6 +1105,17 @@ def arena_delete(match_id: int):
 @app.get("/api/logs")
 async def logs(lines: int = 300):
     return {"text": await lab.llm_log(lines)}
+
+
+# ---------- MCP: AI assistants (Claude Code, Claude Desktop, other MCP clients) drive the lab at /mcp ----------
+
+# Stateless Streamable HTTP; Host/Origin checks against DNS rebinding come from the SDK (localhost only).
+app.router.routes.extend(mcp_server.server.streamable_http_app(streamable_http_path="/mcp", stateless_http=True, json_response=True).routes)
+
+
+@app.get("/api/mcp")
+async def mcp_info():
+    return {"url": "http://localhost:8000/mcp", "tools": [{"name": t.name, "description": t.description} for t in await mcp_server.server.list_tools()]}
 
 
 # ---------- Web UI (must be last: catches all other paths) ----------

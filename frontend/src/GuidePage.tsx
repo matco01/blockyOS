@@ -20,6 +20,7 @@ const TOC = [
   { id: "g-reading", label: "Reading the results" },
   { id: "g-canvas", label: "Working on the canvas" },
   { id: "g-python", label: "Python & notebooks" },
+  { id: "g-assistants", label: "AI assistants" },
   { id: "g-limits", label: "Limits & good practice" },
   { id: "g-glossary", label: "Glossary" },
   { id: "g-hood", label: "Under the hood" },
@@ -318,6 +319,28 @@ exp.to_wandb(project="blocky")                   # offline; upload later with \`
               <p className="row-sub">The full REST API is documented at <a href="/docs" target="_blank" rel="noreferrer">/docs</a>.</p>
             </Section>
 
+            <Section id="g-assistants" title="Working with an AI assistant" kicker="Claude, ChatGPT and other agents">
+              <p>Blocky is an <b>MCP server</b> (Model Context Protocol, the standard way AI assistants use tools). Connect the assistant you already use, and it can read your results, plan the next experiment, queue runs and sweeps, build weight variants, scan layers and build engines, while you watch it happen in the UI. Its model and API keys stay in your own app: Blocky never contacts an AI provider by itself.</p>
+              <div className="table-wrap"><table className="data gd-table">
+                <thead><tr><th>Assistant</th><th>How to connect</th></tr></thead>
+                <tbody>
+                  <tr><td>Claude Code</td><td><code>claude mcp add --transport http blocky http://localhost:8000/mcp</code></td></tr>
+                  <tr><td>Claude Desktop</td><td>Settings → Developer → Edit config, add <code>{`"blocky": {"command": "npx", "args": ["mcp-remote", "http://localhost:8000/mcp"]}`}</code> under <code>mcpServers</code> (needs Node.js)</td></tr>
+                  <tr><td>VS Code, Cursor, other editors</td><td>Add an MCP server of type <code>http</code> with the URL <code>http://localhost:8000/mcp</code></td></tr>
+                  <tr><td>Codex and other CLIs</td><td>Any client that supports Streamable HTTP: URL <code>http://localhost:8000/mcp</code></td></tr>
+                  <tr><td>ChatGPT (web)</td><td>Its connectors only reach public HTTPS servers. Blocky stays local by default, so use a desktop or terminal client on the same computer instead.</td></tr>
+                </tbody>
+              </table></div>
+              <p>Use the computer that runs Blocky (or one you've given access to it). Then ask in plain words, for example:</p>
+              <pre className="xcmds gd-code">{`"Look at my quantization experiment. Which variant is the best trade-off,
+ and is the accuracy difference significant? Queue the one run that would
+ tell us the most next."
+
+"Find the layers of Qwen3.5-0.8B that are most sensitive to quantization,
+ then build a Q3_K_M variant that keeps them at Q8_0 and profile it against Q4_K_M."`}</pre>
+              <p className="row-sub">What it can do: read status, experiments and scan results; create experiments; queue runs, branches and sweeps; cancel runs; add lm-eval tasks; build weight variants; start layer scans; build engines from git. What it can't: delete anything, change the chat model, or run arbitrary commands. Each run still takes minutes of your machine, and the queue runs one profile at a time. A coding agent working on Blocky's own source code should read <code>AGENTS.md</code> in the repository.</p>
+            </Section>
+
             <Section id="g-limits" title="Limits & good practice" kicker="Honest notes">
               <ul className="gd-list">{LIMITS.map((l) => <li key={l}>{l}</li>)}</ul>
             </Section>
@@ -334,6 +357,7 @@ exp.to_wandb(project="blocky")                   # offline; upload later with \`
                 <thead><tr><th>Part</th><th>Where</th></tr></thead>
                 <tbody>
                   <tr><td>Web app + API</td><td>FastAPI on port 8000 (service <code>blocky-web</code>); React UI served by it</td></tr>
+                  <tr><td>MCP server</td><td><code>/mcp</code> on the same port (Streamable HTTP; tools in <code>backend/app/mcp_server.py</code>)</td></tr>
                   <tr><td>Chat model server</td><td>llama-server on port 8080 (service <code>blocky-llm</code>); settings in <code>/opt/blocky/data/llm.env</code></td></tr>
                   <tr><td>Profiles, arena, tests</td><td>Temporary llama-server on port 8081, started per run</td></tr>
                   <tr><td>Notebooks</td><td>JupyterLab on 127.0.0.1:8888 (service <code>blocky-notebook</code>), token in <code>/opt/blocky/data/notebook-token</code></td></tr>
