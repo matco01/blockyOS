@@ -544,3 +544,5 @@ table.data.gd-table td:first-child { white-space: nowrap; }
 .xplan-big span { font-size: 13px; font-weight: 400; color: var(--text-2); }
 .xruler { margin-top: 14px; }
 @media (max-width: 760px) { .xplan-grid { grid-template-columns: 1fr; } }
+
+.qs-export select { margin: 0 4px; }

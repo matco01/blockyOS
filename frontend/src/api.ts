@@ -336,6 +336,7 @@ export const api = {
   torchActivations: (checkpoint: string, prompt: string) => json<{ id: number }>("/api/torch/activations", send("POST", { checkpoint, prompt })),
   torchLora: (body: Record<string, unknown>) => json<{ id: number }>("/api/torch/lora", send("POST", body)),
   torchQuantsim: (body: Record<string, unknown>) => json<{ id: number }>("/api/torch/quantsim", send("POST", body)),
+  torchQuantsimExport: (id: number, type: string) => json<{ id: number }>(`/api/torch/quantsim/${id}/export`, send("POST", { type, profile: true })),
   notebooks: () => json<{ installed: boolean; running: boolean; url: string | null; folder: string }>("/api/notebooks"),
   scans: (model?: string) => json<LayerScan[]>(`/api/scans${model ? `?model=${encodeURIComponent(model)}` : ""}`),
   scanStart: (model: string, mode: string, qtype: string) => json<{ id: number }>("/api/scans", send("POST", { model, mode, qtype })),

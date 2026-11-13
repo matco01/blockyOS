@@ -1063,6 +1063,14 @@ def engines_delete(engine_id: str):
 
 # ---------- PyTorch lab: checkpoints, activations, LoRA ----------
 
+@app.post("/api/torch/quantsim/{sim_id}/export")
+async def torch_quantsim_export(sim_id: int, body: dict):
+    try:
+        return {"id": torchlab.start_export(sim_id, body)}
+    except (ValueError, TypeError) as e:
+        _bad(e)
+
+
 @app.post("/api/torch/quantsim")
 async def torch_quantsim(body: dict):
     try:

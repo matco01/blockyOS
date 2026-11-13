@@ -213,15 +213,18 @@ def get_jobs() -> str:
 
 
 @server.tool(description="Technique playground: simulate a quantization method on a Hugging Face checkpoint (fake quantization: quantize, then "
-                         "dequantize) and measure KL divergence, same-top-token %, perplexity and per-layer weight error vs the unmodified model. "
-                         "method: rtn (bits 2-8, sym or asym) | nf4 | ternary | custom (code = Python defining quantize(w, name) -> dequantized w) | none. "
-                         "group: 32|64|128|256 weights per scale. kv_bits (2-8) also simulates a quantized KV cache. Speed/memory aren't measured. "
-                         "Follow with get_jobs, then get_quantsim_results. Custom code runs on the user's machine: only run code the user agreed to.")
-async def simulate_quantization(checkpoint: str, method: str = "rtn", bits: int = 4, group: int = 128, sym: bool = True, kv_bits: int = 0,
-                                include_head: bool = False, code: str = "", label: str = "") -> str:
+                         "dequantize) and measure KL divergence (± SE), same-top-token %, perplexity, and per-layer weight and output error vs the "
+                         "unmodified model. method: gptq | awq (calibrated, AWQ-style scale search) | rtn | nf4 | ternary | custom (code = Python defining "
+                         "quantize(w, name) or quantize(w, name, h) where h = mean x^T x of the layer's inputs; returns the dequantized w) | none. "
+                         "grid: 'int' (bits 2-8, group 32|64|128|256, sym or asym) or 'q4_0' (llama.cpp's Q4_0 grid, so the exported GGUF matches the simulation). "
+                         "kv_bits (2-8) also simulates a quantized KV cache. Compare methods at equal bits_per_weight. Follow with get_jobs, then "
+                         "get_quantsim_results; export a winner with export_quantization. Custom code runs on the user's machine.")
+async def simulate_quantization(checkpoint: str, method: str = "gptq", grid: str = "int", bits: int = 4, group: int = 128, sym: bool = True,
+                                kv_bits: int = 0, include_head: bool = False, code: str = "", label: str = "") -> str:
     try:
-        return json.dumps({"job_id": torchlab.start_quantsim({"checkpoint": checkpoint.removeprefix("hf:"), "method": method, "bits": bits, "group": group,
-                                                             "sym": sym, "kv_bits": kv_bits, "include_head": include_head, "code": code, "label": label})})
+        return json.dumps({"job_id": torchlab.start_quantsim({"checkpoint": checkpoint.removeprefix("hf:"), "method": method, "grid": grid, "bits": bits,
+                                                             "group": group, "sym": sym, "kv_bits": kv_bits, "include_head": include_head,
+                                                             "code": code, "label": label})})
     except ValueError as err:
         return json.dumps({"error": str(err)})
 
@@ -234,5 +237,16 @@ def get_quantsim_results(checkpoint: str = "") -> str:
             continue
         r = j["results"] or {}
         out.append({"job_id": j["id"], "status": j["status"], "error": j.get("error"), "params": {k: v for k, v in j["params"].items() if k != "code"},
-                    **{k: r.get(k) for k in ("bits_per_weight", "kld", "kld_sd", "kld_p99", "same_top", "ppl", "ppl_base", "weight_rel_error", "per_kind")}})
+                    **{k: r.get(k) for k in ("bits_per_weight", "kld", "kld_sd", "kld_p99", "same_top", "ppl", "ppl_base", "weight_rel_error",
+                                             "output_rel_error", "per_kind_out")}})
     return json.dumps(out[:20])
+
+
+@server.tool(description="Turn a finished playground simulation into a real GGUF (gguf_type: Q4_0 | Q4_1 | Q5_0 | Q8_0 | F16) and profile it in Experiments "
+                         "against the original checkpoint converted to F16 (experiment '<model> · playground'): real speed, memory, MMLU-Pro, KL divergence. "
+                         "Q4_0-grid simulations exported as Q4_0 match the simulation; other combinations re-quantize. Takes minutes; follow with get_jobs / get_experiment.")
+async def export_quantization(simulation_job_id: int, gguf_type: str = "Q4_0") -> str:
+    try:
+        return json.dumps({"job_id": torchlab.start_export(simulation_job_id, {"type": gguf_type, "profile": True})})
+    except ValueError as err:
+        return json.dumps({"error": str(err)})
