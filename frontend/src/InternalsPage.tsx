@@ -129,7 +129,7 @@ function FineTune({ status }: { status: TorchStatus | null }) {
   };
   return (
     <div className="ws">
-      <div className="row-sub">Train a LoRA adapter on a dataset, merge it into the model and convert it to GGUF with llama.cpp's own converter. The result appears under <b>Weights</b> / <b>A different model</b> in Experiments, so you can profile exactly what fine-tuning changed: quality, drift, speed. On 8 GB of VRAM, models up to ~1–2B train comfortably at full precision.</div>
+      <div className="row-sub">Train a LoRA adapter on a dataset, merge it into the model and convert it to GGUF with llama.cpp's own converter. The result appears under <b>Weights</b> / <b>A different model</b> in Experiments, so you can profile exactly what fine-tuning changed: quality, drift, speed. Full-precision fine-tuning needs a lot of GPU memory: as a rule of thumb, an 8 GB GPU handles models up to about 1–2B parameters.</div>
       <div className="ws-grid">
         <label><span>Checkpoint</span><select className="field select" value={f.checkpoint} onChange={(e) => set("checkpoint", e.target.value)}>
           {(status?.checkpoints ?? []).map((c) => <option key={c.id} value={c.id}>{c.repo}</option>)}</select></label>

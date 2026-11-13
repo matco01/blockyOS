@@ -109,12 +109,12 @@ const CANVAS = [
 ];
 
 const LIMITS = [
-  "Power isn't measurable on this PC: the GPU driver (610.88) reports power as N/A, even on Windows. A dedicated Linux box normally reports it.",
-  "On a desktop, other programs share the GPU and add noise to speed. Use “Repeat this setup” to measure it; Blocky then only highlights bigger changes.",
+  "Power and energy appear only when the GPU driver reports power draw. Some drivers and virtual machines don't; Blocky then marks energy as not measurable instead of guessing.",
+  "Other programs using the same GPU add noise to speed measurements. Use “Repeat this setup” to measure it; Blocky then only highlights bigger changes.",
   "560 MMLU-Pro questions detect differences of roughly 3–4 points. For smaller effects, look at KL divergence, which is far more sensitive.",
   "KL divergence and perplexity only compare models with the same tokenizer; others show “not comparable”.",
   "lm-eval runs generative tasks only (the model writes an answer). Multiple-choice tasks scored by log-probabilities need features this server doesn't offer; MMLU-Pro covers that style.",
-  "Fine-tuning at full precision fits models up to about 1–2B parameters on 8 GB of VRAM.",
+  "Fine-tuning at full precision needs a lot of GPU memory: as a rule of thumb, an 8 GB GPU handles models up to about 1–2B parameters; bigger models need bigger GPUs.",
   "Change one thing at a time. With several changes at once, Blocky warns you: effects can't be told apart.",
 ];
 
@@ -195,7 +195,7 @@ export default function GuidePage() {
 
             <Section id="g-start" title="Quick start" kicker="5 minutes">
               <ol className="gd-steps">
-                <li><b>Open Blocky</b> at <code>http://localhost:8000</code>. On Windows it starts with your PC.</li>
+                <li><b>Open Blocky</b> in a browser on the device: <code>http://localhost:8000</code>. It starts automatically with the device.</li>
                 <li><b>Chat</b>: <em>New chat</em> at the top left. Turn thinking on for harder questions.</li>
                 <li><b>Pick or get a model</b> in <a onClick={() => go("#/models")}>Models</a>: switch what's loaded, or download from Hugging Face with a fit estimate.</li>
                 <li><b>Choose your detail level</b>: the Simple / Pro switch at the bottom left. Underlined terms explain themselves on hover.</li>
@@ -220,8 +220,8 @@ export default function GuidePage() {
               <div className="gd-callout"><b>Results leave the box too:</b> CSV / JSON export on every experiment, the Python client, and notebooks for your own analysis.</div>
             </Section>
 
-            <Section id="g-example" title="Worked example: does 3-bit hurt, and can we fix it?" kicker="Real results from this PC">
-              <p>The quantization study on Qwen3.5-9B, done entirely in Blocky. Reference: the near-lossless Q8_0 file.</p>
+            <Section id="g-example" title="Worked example: does 3-bit hurt, and can we fix it?" kicker="An example study">
+              <p>An example of the workflow end to end: a quantization study of Qwen3.5-9B on a GPU with 8 GB of memory, with the near-lossless Q8_0 file as the reference. Your numbers will differ with your model and hardware; the steps are the same.</p>
               <div className="table-wrap"><table className="data gd-table">
                 <thead><tr><th>Step</th><th>What we did</th><th>What we learned</th></tr></thead>
                 <tbody>
@@ -232,7 +232,7 @@ export default function GuidePage() {
                   <tr><td>5</td><td>Branch: newest llama.cpp as the engine</td><td>Writing 7.7% faster, reading 18% slower, outputs bit-identical.</td></tr>
                 </tbody>
               </table></div>
-              <p className="row-sub">Conclusion for this GPU: Q4_K_M with the stock settings is the sweet spot. Every number above has its noise, provenance and exact commands in the experiment.</p>
+              <p className="row-sub">Conclusion for that GPU: Q4_K_M with the stock settings was the sweet spot. Every number above has its noise, provenance and exact commands in the experiment.</p>
             </Section>
 
             <Section id="g-features" title="Every feature" kicker="Page by page">

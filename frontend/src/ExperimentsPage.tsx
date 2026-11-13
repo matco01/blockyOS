@@ -176,7 +176,7 @@ function Board({ runs, metric, setMetric }: { runs: ExpRun[]; metric: string; se
           const any = rows.some(hasData);
           return (
             <tbody key={g}>
-              <tr className="grp-row"><td colSpan={runs.length + 1}>{g}{g === "Energy" && !any && <span className="muted"> · not measurable here: the GPU driver reports power as N/A</span>}</td></tr>
+              <tr className="grp-row"><td colSpan={runs.length + 1}>{g}{g === "Energy" && !any && <span className="muted"> · not measurable: the GPU driver doesn</span>}</td></tr>
               {rows.filter(hasData).map((x) => (
                 <tr key={x.key} className={metric === x.key ? "sel" : ""} onClick={() => setMetric(x.key)} title={x.note ?? "Click to chart"}>
                   <td className="mlabel">{x.term ? <Term k={x.term}>{x.label}</Term> : x.label}{x.unit && <span className="u"> {x.unit}</span>}</td>
@@ -642,7 +642,7 @@ export default function ExperimentsPage({ status }: { status: Status | null }) {
                 <div className="group-label">3 · Results</div>
                 <div className="group pad">
                   <Board runs={done} metric={metric} setMetric={setMetric} />
-                  <div className="row-sub xnote">Speeds are the median of the repetitions; ± is the robust spread (1.4826 × median absolute deviation). A difference is colored only when it is bigger than the noise: 2σ for speeds, a paired McNemar test (p &lt; 0.05) for MMLU-Pro. Grey = not significant. If you add a “Repeat baseline” run, changes must also exceed twice the drift between the two baseline runs (on a desktop PC, other apps share the GPU and add noise). KL divergence measures how far each token's probability distribution drifted from the baseline's.</div>
+                  <div className="row-sub xnote">Speeds are the median of the repetitions; ± is the robust spread (1.4826 × median absolute deviation). A difference is colored only when it is bigger than the noise: 2σ for speeds, a paired McNemar test (p &lt; 0.05) for MMLU-Pro. Grey = not significant. If you add a “Repeat this setup” run, changes must also exceed twice the drift between the two repeats (other programs using the same GPU add noise). KL divergence measures how far each token's probability distribution drifted from the baseline's.</div>
                   {done.length > 1 && <MetricBars runs={done} metric={metric} />}
                   <NeedleGrid runs={done} />
                   <Repro runs={done} />
@@ -670,7 +670,7 @@ export default function ExperimentsPage({ status }: { status: Status | null }) {
                   </select>
                 </div>
                 <div className="group pad">{shown && <Telemetry run={shown} />}
-                  {!shown?.results.hw?.clocks.power_avg_w && <div className="row-sub xnote">Power: this GPU driver (NVIDIA 610.88) reports power draw as “N/A”, on Windows too, so energy can't be measured on this machine. On a dedicated Linux box with NVIDIA's driver, nvidia-smi normally reports it, and Blocky reads CPU package power from RAPL.</div>}
+                  {!shown?.results.hw?.clocks.power_avg_w && <div className="row-sub xnote">Power: this GPU's driver doesn't report power draw, so energy can't be measured for these runs. Most NVIDIA drivers on a regular Linux install do report it, and Blocky also reads CPU package power where the system exposes it (RAPL).</div>}
                 </div>
               </>
             )}

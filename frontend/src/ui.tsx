@@ -61,7 +61,7 @@ export const GLOSSARY: Record<string, { title: string; what: string; why: string
   fa: { title: "Flash attention", what: "A faster, memory-saving way to compute attention.",
     why: "Usually on. Needed for compressed (q8_0/q4_0) context memory." },
   compute: { title: "Working buffers", what: "Scratch memory the GPU needs while computing.", why: "Fixed overhead, usually a few hundred MB." },
-  other: { title: "Other apps", what: "GPU memory used by Windows, your browser and other programs.", why: "Not available to the AI. Closing apps can free some." },
+  other: { title: "Other apps", what: "GPU memory used by the desktop, browsers and other programs.", why: "Not available to the AI. Closing apps can free some." },
 };
 
 /** A technical term with a dotted underline that explains itself on hover/tap. */

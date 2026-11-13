@@ -74,7 +74,7 @@ export default function Dashboard({ status, go }: { status: Status | null; go: (
       if (extra && mm.gpu.free - 600 > extra && activeModel.context_length && ctx * 2 <= activeModel.context_length)
         out.push({ icon: Layers, color: "#ff5c9d", title: `Room for ${Math.round((ctx * 2) / 1024)}k context`, text: `You have ${fmtMB(mm.gpu.free)} of free GPU memory. Doubling the context window would only need about ${fmtMB(extra)} more.`, page: "models", cta: "Adjust" });
       if (mm.gpu.other > 1024)
-        out.push({ icon: Cpu, color: "#ffa94d", title: `Other apps use ${fmtMB(mm.gpu.other)} of GPU memory`, text: "Windows, browsers and games take VRAM the AI can't use. Closing them makes room for bigger models.", page: "system", cta: "See usage" });
+        out.push({ icon: Cpu, color: "#ffa94d", title: `Other apps use ${fmtMB(mm.gpu.other)} of GPU memory`, text: "The desktop, browsers and games take VRAM the AI can't use. Closing them makes room for bigger models.", page: "system", cta: "See usage" });
     }
     const bigger = lib?.catalog.find((c) => !c.downloaded && c.fit.verdict === "gpu" && activeModel && c.size > activeModel.size_bytes * 1.2);
     if (bigger) out.push({ icon: Sparkles, color: "#22d3ee", title: `${bigger.title} would fit`, text: `${bigger.note} Bigger models are usually smarter.`, page: "models", cta: "Get it" });

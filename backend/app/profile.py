@@ -1059,7 +1059,7 @@ def analyze(res: dict, cfg: dict, lim: dict) -> dict:
     if lim.get("vram_mb") and (own or vram_used):
         sim = cfg.get("vram_limit_mb")
         cap = sim or lim["vram_mb"]
-        # nvidia-smi's "used" includes other programs (e.g. the Windows desktop); with a simulated limit only our buffers count.
+        # nvidia-smi's "used" includes other programs (e.g. a desktop session); with a simulated limit only our buffers count.
         free = (cap - own) if sim else (cap - (vram_used or own))
         per_tok = ctx_mb / cfg["ctx"] if (ctx_mb and cfg.get("ctx")) else None
         out["headroom"] = {"vram_capacity_mb": cap, "vram_model_mb": round(own), "vram_used_total_mb": vram_used,
