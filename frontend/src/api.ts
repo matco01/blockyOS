@@ -76,7 +76,7 @@ export type ToolRun = {
 export type ExpConfig = { model: string; ctx: number; kv: string; ngl: string | number; vram_limit_mb: number | null; fa: string; threads: number | null; engine?: string;
   device?: "gpu" | "cpu"; cores?: number | null; ram_limit_mb?: number | null; preset?: string | null };
 export type Device = { id: number; name: string; url: string; token: boolean; created_at: number };
-export type RemoteJob = { id: number; experiment_id: number; device: string; status: string; step: string | null; error: string | null; imported?: { runs: number } };
+export type RemoteJob = { id: number; experiment_id: number; device: string; device_id?: number; status: string; step: string | null; error: string | null; imported?: { runs: number } };
 export type DevicePreset = { label: string; config: Partial<ExpConfig>; ram_bandwidth_gbps?: number; memory?: string };
 export type Finding = { kind: string; severity: "major" | "minor" | "info"; title: string; text: string };
 export type PhaseTelemetry = { gpu_avg?: number; mem_bw_avg?: number; power_avg?: number; power_max?: number; temp_max?: number; vram_max_mb?: number; cpu_avg?: number; ram_max_mb?: number; seconds?: number };
@@ -117,6 +117,7 @@ export type ExpResults = {
   needle_progress?: { done: number; total: number; correct: number };
   lm_eval?: { tasks?: Record<string, { metrics: Record<string, number>; stderr: Record<string, number> }>; limit?: number; error?: string; command?: string };
   energy?: Energy;
+  remote_device?: { id: number; name: string; url: string };
   cost?: { currency: string; electricity_per_mtok?: number; tps_per_1k_price?: number };
 };
 export type PowerStat = { avg: number; sd: number; n: number };
@@ -156,7 +157,7 @@ export type VariantSpec = { source: string; qtype: string; imatrix: boolean; ove
 export type WeightJob = VariantSpec & { id: string; out: string; status: string; step: string | null; error: string | null; started: number;
   size_bytes?: number; imatrix_cached?: boolean; log_tail: string[] };
 export type CanvasNote ={ id: string; x: number; y: number; text: string };
-export type CanvasState = { pos: Record<string, { x: number; y: number }>; notes: CanvasNote[]; view?: { x: number; y: number; k: number } };
+export type CanvasState = { pos: Record<string, { x: number; y: number }>; notes: CanvasNote[]; view?: { x: number; y: number; k: number }; devices?: number[] };
 export type Experiment = {
   id: number; created_at: number; name: string; model: string; seed: number; runs?: number; canvas?: CanvasState | null;
   protocol?: { lm_eval?: { tasks: string; limit: number }; kernels?: boolean } | null;

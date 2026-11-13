@@ -681,7 +681,11 @@ export default function ExperimentsPage({ status }: { status: Status | null }) {
   const setTab = (t: "report" | "canvas") => { setTabState(t); try { localStorage.setItem("blocky.exp.tab", t); } catch { /* private mode */ } };
   const [err, setErr] = useState<string | null>(null);
 
-  const loadList = useCallback(() => api.experiments().then((l) => { setList(l); setId((cur) => cur ?? l[0]?.id ?? null); }).catch(() => {}), []);
+  const loadList = useCallback(() => api.experiments().then((l) => {
+    setList(l);
+    const linked = Number(window.location.hash.match(/[?&]exp=(\d+)/)?.[1]);  // deep link: #/experiments?exp=7
+    setId((cur) => cur ?? (l.some((e) => e.id === linked) ? linked : l[0]?.id ?? null));
+  }).catch(() => {}), []);
   useEffect(() => {
     loadList();
     api.models().then((d) => { setModels(d.models); setNewModel(d.runtime.model ?? d.models[0]?.file ?? ""); }).catch(() => {});

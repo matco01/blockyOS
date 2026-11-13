@@ -124,7 +124,7 @@ def start(exp_id: int, body: dict) -> int:
     if not runs:
         raise ValueError("Pick the runs (setups) to profile on that device")
     job_id = int(time.time() * 1000)
-    jobs[job_id] = {"id": job_id, "experiment_id": exp_id, "device": dev["name"], "status": "starting", "step": None, "error": None,
+    jobs[job_id] = {"id": job_id, "experiment_id": exp_id, "device": dev["name"], "device_id": dev["id"], "status": "starting", "step": None, "error": None,
                     "configs": [r["config"] for r in sorted(runs, key=lambda r: r["id"])], "remote": {}, "started": time.time()}
     asyncio.get_running_loop().create_task(_run(job_id, dev, exp))
     return job_id
@@ -178,6 +178,9 @@ async def _run(job_id: int, dev: dict, exp: dict) -> None:
                 await asyncio.sleep(POLL_S)
             job["step"] = "importing results"
             data = (await c.get(f"/api/experiments/{rexp}/export.json")).json()
+            for x in data.get("runs_list") or []:
+                if isinstance(x.get("results"), dict):  # lets the canvas hang these runs under this device
+                    x["results"]["remote_device"] = {"id": dev["id"], "name": dev["name"], "url": dev["url"]}
         n = profile.import_experiment(data, into=job["experiment_id"])
         job["status"], job["step"] = "done", None
         job["imported"] = n
