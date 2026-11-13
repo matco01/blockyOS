@@ -257,7 +257,7 @@ export type Memory = {
   updated_at: number;
 };
 
-export type Settings = { memory_enabled: boolean; power_meter_url: string; power_meter_field: string; device_price: number | null;
+export type Settings = { memory_enabled: boolean; anthropic_api_key_set?: boolean; agent_model?: string; power_meter_url: string; power_meter_field: string; device_price: number | null;
   electricity_price_kwh: number | null; currency: string };
 
 export type SearchHit = { conversation_id: number; title: string; role: string; snippet: string };
@@ -348,6 +348,14 @@ export const api = {
   remoteRun: (expId: number, device_id: number, run_ids: number[]) => json<{ job_id: number }>(`/api/experiments/${expId}/remote`, send("POST", { device_id, run_ids })),
   remoteJobs: (expId: number) => json<RemoteJob[]>(`/api/remote-jobs?experiment_id=${expId}`),
   remoteJobCancel: (id: number) => json<{ ok: boolean }>(`/api/remote-jobs/${id}/cancel`, send("POST")),
+  agentStatus: () => json<AgentStatus>("/api/agent/status"),
+  agentKey: (key: string) => json<AgentStatus>("/api/agent/key", send("POST", { key })),
+  agentSessions: () => json<{ id: number; title: string; provider: string; updated_at: number }[]>("/api/agent/sessions"),
+  agentSession: (id: number) => json<AgentSession>(`/api/agent/sessions/${id}`),
+  agentNew: (provider: string) => json<{ id: number }>("/api/agent/sessions", send("POST", { provider })),
+  agentDelete: (id: number) => json(`/api/agent/sessions/${id}`, send("DELETE")),
+  agentApprove: (sid: number, id: string, name: string, allow: boolean, always: boolean) => json(`/api/agent/sessions/${sid}/approve`, send("POST", { id, name, allow, always })),
+  agentStop: (sid: number) => json(`/api/agent/sessions/${sid}/stop`, send("POST")),
   devicePresets: () => json<{ presets: Record<string, DevicePreset>; cpu_threads: number }>("/api/device-presets"),
   engineAdd: (repo: string, ref: string, name: string, backend = "auto") => json<{ id: string }>("/api/engines", send("POST", { repo, ref, name, backend })),
   engineLog: (id: string) => json<{ log: string }>(`/api/engines/${id}/log`),
@@ -398,6 +406,36 @@ export type ChatEvent =
   | { type: "budget"; tokens: number }
   | { type: "probs"; items: TokenProb[] }
   | { type: "error"; message: string };
+
+export type AgentItem = { role: "user" | "assistant" | "error"; text: string }
+  | { role: "tool"; id: string; name: string; input: Record<string, unknown>; status: string; result?: string };
+export type AgentSession = { id: number; title: string; provider: string; model: string; display: AgentItem[]; running: boolean };
+export type AgentStatus = { claude: boolean; claude_model: string; claude_models: string[] };
+export type AgentEvent = { type: "text" | "thinking"; text: string } | { type: "approval" | "tool_call"; id: string; name: string; input: Record<string, unknown> }
+  | { type: "tool_result"; id: string; content: string; is_error: boolean; status: string } | { type: "error"; message: string } | { type: "done" };
+
+async function readSSE<T>(r: Response, onEvent: (e: T) => void) {
+  if (!r.ok || !r.body) throw new Error(`Request failed: ${r.status} ${await r.text().catch(() => "")}`.slice(0, 300));
+  const reader = r.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = buffer.indexOf("\n\n")) >= 0) {
+      const line = buffer.slice(0, idx);
+      buffer = buffer.slice(idx + 2);
+      if (line.startsWith("data: ")) onEvent(JSON.parse(line.slice(6)));
+    }
+  }
+}
+
+export async function streamAgent(sid: number, text: string, onEvent: (e: AgentEvent) => void) {
+  const r = await fetch(`/api/agent/sessions/${sid}/message`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) });
+  await readSSE(r, onEvent);
+}
 
 /** Sends a message and calls onEvent for every streamed piece of the answer. */
 export async function streamChat(

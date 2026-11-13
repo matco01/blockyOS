@@ -90,9 +90,13 @@ class Client:
     def experiment(self, key: int | str) -> "Experiment":
         if isinstance(key, int):
             return Experiment(self, key)
-        hits = [e for e in self.experiments() if str(key).lower() in e["name"].lower()]
+        exps = self.experiments()
+        exact = [e for e in exps if e["name"].lower() == str(key).lower()]
+        hits = exact or [e for e in exps if str(key).lower() in e["name"].lower()]
         if not hits:
             raise BlockyError(f"No experiment matching {key!r}")
+        if len(hits) > 1:
+            raise BlockyError(f"{key!r} matches several experiments: " + ", ".join(f"{e['id']}: {e['name']}" for e in hits) + ". Use the id or the full name.")
         return Experiment(self, hits[0]["id"])
 
     def new_experiment(self, model: str, name: str | None = None) -> "Experiment":

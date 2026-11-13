@@ -89,7 +89,9 @@ DEFAULT_SETTINGS = {
     "device_price": None,       # what this device cost
     "electricity_price_kwh": None,
     "currency": "",
-    "remote_token": "",         # set = other devices may control this one with this token (Settings → Remote access)
+    "remote_token": "",
+    "anthropic_api_key": "",    # the agent's Claude key (optional); never returned by the API
+    "agent_model": "claude-opus-5-5",         # set = other devices may control this one with this token (Settings → Remote access)
 }
 
 

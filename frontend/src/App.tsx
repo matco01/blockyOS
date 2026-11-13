@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import { Activity, BookOpen, Boxes, Compass, Gauge, Brain, ClipboardCheck, FlaskConical, LayoutDashboard, Microscope, PanelLeft, Swords, Plus, Search, Settings as SettingsIcon, SlidersHorizontal, Trash2 } from "lucide-react";
+import { Activity, BookOpen, Bot, Boxes, Compass, Gauge, Brain, ClipboardCheck, FlaskConical, LayoutDashboard, Microscope, PanelLeft, Swords, Plus, Search, Settings as SettingsIcon, SlidersHorizontal, Trash2 } from "lucide-react";
 import { api, Conversation, MessageStats, Sampling, SearchHit, Status } from "./api";
+import AgentPage from "./AgentPage";
 import ArenaPage from "./ArenaPage";
 import BenchPage from "./BenchPage";
 import Chat from "./Chat";
@@ -19,9 +20,10 @@ import SettingsPage from "./SettingsPage";
 import Logo from "./Logo";
 import { Accent, BLOCK_COLORS, Theme, useSetting } from "./settings";
 
-export type Page = "chat" | "home" | "experiments" | "notebooks" | "internals" | "guide" | "models" | "arena" | "tests" | "bench" | "memory" | "system" | "settings";
+export type Page = "chat" | "agent" | "home" | "experiments" | "notebooks" | "internals" | "guide" | "models" | "arena" | "tests" | "bench" | "memory" | "system" | "settings";
 
 const PAGES = [
+  { id: "agent", label: "Agent", icon: Bot },
   { id: "experiments", label: "Experiments", icon: FlaskConical },
   { id: "home", label: "Overview", icon: LayoutDashboard },
   { id: "internals", label: "Internals", icon: Microscope },
@@ -38,7 +40,7 @@ const PAGES = [
 
 /** Sidebar groups: what you do with models, then the device itself. */
 const NAV_GROUPS: { label: string; ids: readonly Page[] }[] = [
-  { label: "Research", ids: ["experiments", "internals", "home", "notebooks"] },
+  { label: "Research", ids: ["agent", "experiments", "internals", "home", "notebooks"] },
   { label: "Tools", ids: ["models", "arena", "tests", "bench"] },
   { label: "Device", ids: ["memory", "system", "settings", "guide"] },
 ];
@@ -294,6 +296,7 @@ export default function App() {
           {page === "home" && <Dashboard status={status} go={go} />}
           {page === "experiments" && <ExperimentsPage status={status} />}
           {page === "notebooks" && <NotebooksPage />}
+          {page === "agent" && <AgentPage />}
           {page === "internals" && <InternalsPage />}
           {page === "guide" && <GuidePage />}
           {page === "models" && <ModelsPage status={status} />}

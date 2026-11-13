@@ -47,6 +47,7 @@ export default function SettingsPage({ status, theme, setTheme, accent, setAccen
           </div>
         </div>
 
+        <AgentSettings />
         <EnergySettings />
         <RemoteSettings />
 
@@ -209,6 +210,39 @@ function RemoteSettings() {
             <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center" }}>
               <button className="btn small" disabled={!d.url.trim()} onClick={add}>Add device</button>
               {err && <span className="row-sub" style={{ color: "var(--red, #e5484d)" }}>{err}</span>}
+            </div>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function AgentSettings() {
+  const [st, setSt] = useState<{ claude: boolean; claude_model: string; claude_models: string[] } | null>(null);
+  const [key, setKey] = useState("");
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  useEffect(() => { api.agentStatus().then(setSt).catch(() => {}); }, []);
+  const save = async (k: string) => {
+    try { setSt(await api.agentKey(k)); setKey(""); setMsg({ ok: true, text: k ? "Key saved on this device." : "Key removed." }); }
+    catch (e) { setMsg({ ok: false, text: (e as Error).message }); }
+  };
+  return (
+    <>
+      <div className="group-label">AI agent</div>
+      <div className="group">
+        <div className="row">
+          <span className="row-icon" style={{ background: "linear-gradient(180deg,#d4a27f,#b5651d)" }}><Bot /></span>
+          <div className="row-main">
+            <div>Claude for the research agent <span className="row-sub">(optional)</span></div>
+            <div className="row-sub">The Agent page runs on this device's own model by default. With an Anthropic API key it can use Claude instead, which is far better at long research tasks; then messages and tool results are sent to Anthropic. The key is stored only on this device and never shown again.</div>
+            <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
+              {st?.claude ? <><span className="row-sub">Key set ✓</span><button className="btn small ghost" onClick={() => save("")}>Remove key</button></>
+                : <><input className="field" type="password" placeholder="sk-ant-…" value={key} onChange={(e) => setKey(e.target.value)} style={{ maxWidth: 320 }} />
+                  <button className="btn small" disabled={!key.trim()} onClick={() => save(key.trim())}>Save key</button></>}
+              {st && <select className="field select" value={st.claude_model} onChange={async (e) => { await api.updateSettings({ agent_model: e.target.value }); setSt({ ...st, claude_model: e.target.value }); }}>
+                {st.claude_models.map((m) => <option key={m} value={m}>{m}</option>)}</select>}
+              {msg && <span className="row-sub" style={{ color: msg.ok ? undefined : "var(--red, #e5484d)" }}>{msg.text}</span>}
             </div>
           </div>
         </div>

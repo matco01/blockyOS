@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  Activity, ArrowRight, BookOpen, Boxes, Brain, ClipboardCheck, Cpu, FlaskConical, Gauge, GitBranch, Hammer, LayoutDashboard,
+  Activity, ArrowRight, BookOpen, Bot, Boxes, Brain, ClipboardCheck, Cpu, FlaskConical, Gauge, GitBranch, Hammer, LayoutDashboard,
   MessageSquare, Microscope, Network, PlugZap, Radar, Repeat, Settings as SettingsIcon, Smartphone, Swords, Target, Wand2,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
@@ -40,6 +40,11 @@ const FEATURES: { group: string; intro: string; items: Feature[] }[] = [
   {
     group: "Research", intro: "Where experiments happen.",
     items: [
+      { icon: Bot, title: "Agent", hash: "#/agent", what: "A research agent inside Blocky: give it a task in plain words and it works through it with the whole lab.",
+        can: ["Uses every lab tool: experiments, runs, sweeps, weight variants, layer scans, engines, device presets, the technique playground",
+          "Writes and runs Python in its own workspace (analysis with the blocky client, or PyTorch); you allow each run",
+          "Every step is visible: tool calls, inputs, results", "Brain: this device's model (private) or Claude with your API key (stronger; data goes to Anthropic)",
+          "Keeps working if you leave the page; stop it any time"] },
       { icon: FlaskConical, title: "Experiments", hash: "#/experiments", what: "The research hub: one experiment = a tree of profiled runs, all measured the same way.",
         can: ["Baseline profile of any model on this hardware", "Change one setting, or branch from any run", "Sweeps: queue every combination of settings (up to 32 runs), leave it overnight",
           "Repeat a setup to measure session-to-session noise", "Report view: results table, charts, long-context grid, hardware limits, telemetry",

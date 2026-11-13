@@ -24,7 +24,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import arena, benchmarks, config, db, engines, evals, generate, lab, mcp_server, memory, power, profile, quantlab, remote, scans, system, tools, torchlab, weights
+from . import agent, arena, benchmarks, config, db, engines, evals, generate, lab, mcp_server, memory, power, profile, quantlab, remote, scans, system, tools, torchlab, weights
 
 
 @asynccontextmanager
@@ -40,6 +40,7 @@ async def lifespan(app: FastAPI):
     scans.init()
     torchlab.init()
     remote.init()
+    agent.init()
     psutil.cpu_percent(interval=None)  # prime the CPU counter so the first reading isn't 0
     app.state.llm = httpx.AsyncClient(base_url=config.LLM_URL, timeout=httpx.Timeout(10, read=300))
     app.state.background = set()  # keep references so tasks aren't garbage-collected
@@ -167,12 +168,17 @@ def delete_all_memories():
 
 @app.get("/api/settings")
 def get_settings():
-    return db.get_settings()
+    s = db.get_settings()
+    key = s.pop("anthropic_api_key", "")
+    return {**s, "anthropic_api_key_set": bool(key)}  # the key itself never leaves the backend
 
 
 @app.patch("/api/settings")
 def update_settings(body: dict):
     body.pop("remote_token", None)  # only POST /api/remote-access creates or clears it
+    body.pop("anthropic_api_key", None)  # only POST /api/agent/key sets it
+    if "agent_model" in body and body["agent_model"] not in agent.CLAUDE_MODELS:
+        raise HTTPException(400, "Unknown model")
     try:
         for k in ("device_price", "electricity_price_kwh"):
             if k in body and body[k] not in (None, ""):
@@ -195,6 +201,88 @@ def update_settings(body: dict):
 def device_presets():
     import os
     return {"presets": profile.DEVICE_PRESETS, "cpu_threads": os.cpu_count()}
+
+
+# ---------- Agent ----------
+
+@app.get("/api/agent/status")
+def agent_status():
+    return agent.status()
+
+
+@app.post("/api/agent/key")
+def agent_key(body: dict):
+    key = str(body.get("key") or "").strip()
+    if key and not key.startswith("sk-"):
+        raise HTTPException(400, "That doesn't look like an Anthropic API key (they start with sk-)")
+    db.update_settings({"anthropic_api_key": key})
+    return agent.status()
+
+
+@app.get("/api/agent/sessions")
+def agent_sessions():
+    return agent.list_sessions()
+
+
+@app.post("/api/agent/sessions")
+def agent_new(body: dict):
+    try:
+        return {"id": agent.create_session(str(body.get("provider") or "local"))}
+    except ValueError as e:
+        _bad(e)
+
+
+@app.get("/api/agent/sessions/{sid}")
+def agent_get(sid: int):
+    s = agent.get_session(sid)
+    if not s:
+        raise HTTPException(404, "Chat not found")
+    return s
+
+
+@app.delete("/api/agent/sessions/{sid}")
+def agent_delete(sid: int):
+    agent.stop(sid)
+    agent.delete_session(sid)
+    return {"ok": True}
+
+
+@app.post("/api/agent/sessions/{sid}/message")
+async def agent_message(sid: int, body: dict):
+    """Streams the agent's work on one message. The work runs as a background task, so leaving the page doesn't stop it."""
+    text = str(body.get("text") or "").strip()
+    if not text:
+        raise HTTPException(400, "Empty message")
+    q: asyncio.Queue = asyncio.Queue()
+
+    async def work():
+        try:
+            async for ev in agent.run_turn(sid, text):
+                await q.put(ev)
+        finally:
+            await q.put(None)
+
+    task = asyncio.create_task(work())
+    app.state.background.add(task)
+    task.add_done_callback(app.state.background.discard)
+
+    async def stream():
+        while (ev := await q.get()) is not None:
+            yield _sse(ev)
+
+    return StreamingResponse(stream(), media_type="text/event-stream")
+
+
+@app.post("/api/agent/sessions/{sid}/approve")
+def agent_approve(sid: int, body: dict):
+    ok = agent.decide(str(body.get("id") or ""), bool(body.get("allow")), bool(body.get("always")), sid, str(body.get("name") or ""))
+    return {"ok": ok}
+
+
+@app.post("/api/agent/sessions/{sid}/stop")
+def agent_stop(sid: int):
+    agent.stop(sid)
+    return {"ok": True}
 
 
 # ---------- Remote devices ----------
