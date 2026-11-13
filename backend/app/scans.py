@@ -103,7 +103,7 @@ async def _kld(src_model: Path, base: Path, text: Path, log: list[str], pid: int
     out = await quantlab._proc(cmd, log, pid, timeout=1800)
     if make_base:
         return {"ppl": quantlab._num(r"Final estimate: PPL = ([\d.]+)", out)}
-    return {"kld": quantlab._num(r"Mean\s+KLD:\s*([\d.]+)", out), "kld_p99": quantlab._num(r"99\.0%\s+KLD:\s*([\d.]+)", out),
+    return {"kld": quantlab._num(r"Mean\s+KLD:\s*(-?[\d.]+(?:e-?\d+)?)", out), "kld_p99": quantlab._num(r"99\.0%\s+KLD:\s*([\d.]+)", out),
             "same_top": quantlab._num(r"Same top p:\s*([\d.]+)", out), "ppl": quantlab._num(r"Mean PPL\(Q\)\s*:\s*([\d.]+)", out)}
 
 

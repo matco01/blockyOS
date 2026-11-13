@@ -38,6 +38,15 @@ WSL stops Linux when no terminal is attached. Keep `wsl -d blocky` open while us
 3. `git clone <this repo> && cd blockyOS && sudo ./scripts/install.sh`
 4. Build the UI (`frontend/`, needs Node.js) or copy a built `frontend/dist` over.
 
+## C. Optional research extras (both setups)
+
+- **PyTorch lab + lm-evaluation-harness** (Internals page, lm-eval tasks in experiments), a few GB:
+  `bash scripts/setup-ml.sh` (as the `blocky` user; installs into `/opt/blocky/ml-venv`, PyTorch CUDA 12.6 wheels so Pascal GPUs still work)
+- **Notebooks** (JupyterLab on 127.0.0.1:8888 with a token, the `blocky` Python client importable):
+  `sudo bash scripts/setup-notebooks.sh`
+- **Custom engines** (llama.cpp builds) and **weight variants** need nothing extra: they're built from the UI into
+  `/opt/blocky/engines` and the models folder. Building an engine runs that repository's code, so only add ones you trust.
+
 ## What is NOT in this repository (on purpose)
 
 | Thing | Where it lives | How to keep it |

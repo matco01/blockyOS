@@ -176,7 +176,7 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
                     out = await _proc(common + ["--kl-divergence-base", str(base), "--kl-divergence"], log, run_id)
                     r["ppl"] = _num(r"Mean PPL\(Q\)\s*:\s*([\d.]+)", out) or _num(r"Final estimate: PPL = ([\d.]+)", out)
                     r["ppl_err"] = _num(r"Mean PPL\(Q\)\s*:\s*[\d.]+\s*±\s*([\d.]+)", out)
-                    r["kld"] = _num(r"Mean\s+KLD:\s*([\d.]+)", out)
+                    r["kld"] = _num(r"Mean\s+KLD:\s*(-?[\d.]+(?:e-?\d+)?)", out)
                     r["kld_err"] = _num(r"Mean\s+KLD:\s*[\d.]+\s*±\s*([\d.]+)", out)
                     r["kld_99"] = _num(r"99\.0%\s+KLD:\s*([\d.]+)", out)
                     r["same_top"] = _num(r"Same top p:\s*([\d.]+)", out)

@@ -89,6 +89,7 @@ export function allMetrics(runs: ExpRun[]): Metric[] {
   for (const r of runs) {
     for (const [task, t] of Object.entries(r.results.lm_eval?.tasks ?? {})) {
       for (const k of Object.keys(t.metrics)) {
+        if (/^sample_len|samples$/.test(k)) continue;  // a count, not a score
         const key = `lm:${task}:${k}`;
         if (seen.has(key)) continue;
         const pctLike = /acc|match|exact|strict|loose|f1|pass/i.test(k);

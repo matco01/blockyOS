@@ -358,3 +358,10 @@
 .lens-row .hm-l { width: 30px; flex-shrink: 0; }
 .lens-tok { font-family: ui-monospace, Consolas, monospace; background: var(--surface-2); padding: 1px 6px; border-radius: 4px; white-space: nowrap; }
 .lens-tok em { font-style: normal; color: var(--text-2); font-size: 10.5px; }
+.lens-rows { max-height: none; }
+.lens-tok.final { background: color-mix(in srgb, var(--series-1) 22%, var(--surface)); box-shadow: inset 0 0 0 1px var(--series-1); }
+.td-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 4px 14px; font-size: 12px; }
+.td-grid > div { display: flex; gap: 5px; align-items: center; }
+.td-grid .hm-l { width: 22px; }
+.xc-row .segmented.wrap { max-width: min(100%, 720px); flex-shrink: 1; }
+.xc-row > div:first-child { min-width: 220px; flex: 1; }

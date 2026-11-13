@@ -951,7 +951,7 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
                 out = await quantlab._proc(pcmd + ["--kl-divergence-base", str(base_kld), "--kl-divergence"], log, run_id)
                 res["ppl"] = quantlab._num(r"Mean PPL\(Q\)\s*:\s*([\d.]+)", out)
                 res["ppl_sd"] = quantlab._num(r"Mean PPL\(Q\)\s*:\s*[\d.]+\s*±\s*([\d.]+)", out)
-                res["kld"] = quantlab._num(r"Mean\s+KLD:\s*([\d.]+)", out)
+                res["kld"] = quantlab._num(r"Mean\s+KLD:\s*(-?[\d.]+(?:e-?\d+)?)", out)
                 res["kld_sd"] = quantlab._num(r"Mean\s+KLD:\s*[\d.]+\s*±\s*([\d.]+)", out)
                 res["kld_p99"] = quantlab._num(r"99\.0%\s+KLD:\s*([\d.]+)", out)
                 res["same_top"] = quantlab._num(r"Same top p:\s*([\d.]+)", out)

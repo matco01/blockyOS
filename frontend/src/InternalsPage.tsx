@@ -88,16 +88,23 @@ function Activations({ status }: { status: TorchStatus | null }) {
         <>
           <div className="lens">
             <div className="mini-title">Logit lens <span className="muted">(the next-word prediction read out after each layer, for the last token)</span></div>
-            <div className="lens-rows">{r.logit_lens.map((top, li) => (
-              <div key={li} className="lens-row"><span className="hm-l">{li === 0 ? "emb" : li}</span>
-                {top.slice(0, 3).map((t, k) => <span key={k} className="lens-tok" style={{ opacity: 0.35 + 0.65 * t.p }} title={`${(t.p * 100).toFixed(1)}%`}>{JSON.stringify(t.token)} <em>{(t.p * 100).toFixed(0)}%</em></span>)}</div>
-            ))}</div>
+            <div className="lens-rows">{r.logit_lens.map((top, li) => {
+              const final = r.logit_lens[r.logit_lens.length - 1][0]?.token;
+              return (
+                <div key={li} className="lens-row"><span className="hm-l">{li === 0 ? "emb" : li}</span>
+                  {top.slice(0, 3).map((t, k) => <span key={k} className={`lens-tok ${t.token === final ? "final" : ""}`} style={{ opacity: 0.35 + 0.65 * t.p }} title={`${(t.p * 100).toFixed(1)}%`}>{JSON.stringify(t.token)} <em>{(t.p * 100).toFixed(0)}%</em></span>)}</div>
+              );
+            })}</div>
+            <div className="row-sub">Highlighted: the model's final answer, wherever it already shows up in earlier layers. Early layers predict noise; the answer usually forms in the last third.</div>
           </div>
           <Heat title="Residual stream size" sub="(L2 norm of each layer's output, per token)" rows={r.hidden_norm} tokens={r.tokens} log />
           <Heat title="How much each layer changes it" sub="(‖layer output − layer input‖ per token)" rows={r.delta_norm} tokens={r.tokens} log />
           {r.attn_entropy && r.attn_entropy.some(Boolean) && <Heat title="Attention spread" sub="(entropy of each token's attention, mean over heads; high = looks everywhere, low = focused)" rows={[null, ...r.attn_entropy]} tokens={r.tokens} />}
           {!r.attn_entropy && <div className="row-sub">This architecture doesn't expose attention maps (e.g. linear-attention layers), so only residual-stream views are shown.</div>}
-          <div className="row-sub">Largest residual dimensions (often a few “massive activations” dominate): {r.top_dims.slice(1).map((d, i) => i % 4 === 0 ? `L${i + 1}: #${d[0].dim}` : null).filter(Boolean).join(" · ")}</div>
+          <div className="mini-title">Largest residual dimensions <span className="muted">(mean |activation| over the prompt; a few “massive activation” dimensions often dominate every layer)</span></div>
+          <div className="td-grid">{r.top_dims.slice(1).map((d, i) => (
+            <div key={i}><span className="hm-l">{i + 1}</span>{d.slice(0, 3).map((x) => <span key={x.dim} className="lens-tok">#{x.dim} <em>{x.mean_abs.toFixed(2)}</em></span>)}</div>
+          ))}</div>
         </>
       )}
     </div>
