@@ -776,7 +776,8 @@ def provenance(cfg: dict) -> dict:
                  "wikitext_sha256": file_sha256(text) if text.is_file() else None},
         "gpu": {"name": g.get("name"), "driver": g.get("driver"), "vram_mb": g.get("vram_mb"), "pcie": g.get("pcie"),
                 "cuda_driver_api": cuda_rt.group(1) if cuda_rt else None, "cuda_toolkit": cuda_tk},
-        "host": {"cpu": hw["cpu"], "threads": hw["cpu_threads"], "ram_mb": hw["ram_mb"], "os": hw["os"], "kernel": hw["kernel"], "wsl": hw["wsl"]},
+        "host": {"cpu": hw["cpu"], "threads": hw["cpu_threads"], "ram_mb": hw["ram_mb"], "ram_gb": round(hw["ram_mb"] / 1024),
+                 "os": hw["os"], "kernel": hw["kernel"], "wsl": hw["wsl"], "device": __import__("socket").gethostname()},
         "blocky": {"commit": git("rev-parse", "--short", "HEAD") or None,
                    "dirty": bool(git("status", "--porcelain", "--untracked-files=no"))},
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
@@ -786,6 +787,18 @@ def provenance(cfg: dict) -> dict:
 # Fields that must match the baseline for a comparison to be clean.
 PROV_KEYS = [("llama.cpp commit", ("llama_cpp", "commit")), ("GPU driver", ("gpu", "driver")), ("CUDA toolkit", ("gpu", "cuda_toolkit")),
              ("protocol", ("protocol",)), ("MMLU-Pro data", ("data", "mmlu_pro_sha256")), ("WSL", ("host", "wsl"))]
+# Hardware: when these differ, the hardware itself is what's being compared (shown, but not a warning).
+HW_KEYS = [("GPU", ("gpu", "name")), ("VRAM", ("gpu", "vram_mb")), ("CPU", ("host", "cpu")), ("RAM", ("host", "ram_gb")), ("Device", ("host", "device"))]
+
+
+def hardware_snapshot() -> dict:
+    """Everything about the hardware a run's numbers depend on, frozen at run time."""
+    import socket
+    s = dict(limits())
+    s["compute_capability"] = engines._cuda_arch()
+    s["device"] = socket.gethostname()
+    s["captured_at"] = time.time()
+    return s
 
 
 def _get(d: dict, path: tuple):
@@ -855,6 +868,7 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
         _save(run_id, status="running")
         try:
             res["provenance"] = await asyncio.to_thread(provenance, cfg)
+            res["hardware"] = await asyncio.to_thread(hardware_snapshot)
             res["provenance"]["extra_tests"] = {"needle": f"WikiText-2 haystacks {NEEDLE_LENGTHS[0]}..ctx tokens × depths {NEEDLE_DEPTHS}, seed {NEEDLE_SEED}",
                                                 "lm_eval": (exp.get("protocol") or {}).get("lm_eval")}
             cmds: dict[str, str] = {}
@@ -960,7 +974,7 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
             # 5) Telemetry + bottleneck analysis.
             res["telemetry"] = {p: sampler.summary(p) for p in ("loading", "quality", "longctx", "lm_eval", "speed", "fidelity")}
             res["series"] = sampler.series()
-            res["hw"] = analyze(res, cfg, lim)
+            res["hw"] = analyze(res, cfg, res.get("hardware") or lim)
         except asyncio.CancelledError:
             status = "cancelled"
         except Exception as e:  # noqa: BLE001
@@ -1093,6 +1107,9 @@ def compare(base: dict | None, run: dict) -> dict:
             out["env_mismatch"] = [x for x in out["env_mismatch"] if x != "llama.cpp commit"]  # the engine is the variable here
         if pa["model"]["file"] == pb["model"]["file"] and pa["model"]["sha256"] != pb["model"]["sha256"]:
             out["env_mismatch"].append("model file changed on disk")
+        # Different hardware is information, not a problem: it's what you compare when testing devices.
+        out["hw_diff"] = [name for name, path in HW_KEYS
+                          if _get(pa, path) is not None and _get(pb, path) is not None and _get(pa, path) != _get(pb, path)]
     elif pa or pb:
         out["env_mismatch"] = ["provenance missing"]
     if a.get("answers") and b.get("answers"):
@@ -1112,7 +1129,8 @@ def enrich(exp: dict) -> dict:
         if r.get("parent_id") is None and base and r["id"] != base["id"]:
             r["parent_id"] = base["id"]
         if r["status"] == "done":
-            r["results"]["hw"] = analyze(r["results"], r["config"], lim)
+            # Each run is judged against the hardware it actually ran on (its snapshot), not today's machine.
+            r["results"]["hw"] = analyze(r["results"], r["config"], r["results"].get("hardware") or lim)
             r["results"].pop("bottleneck", None)
             r["stats"] = compare(base, r)
             if base:
@@ -1137,6 +1155,50 @@ def _flat(d, prefix=""):
         else:
             out[key] = v
     return out
+
+
+# ---------- Moving results between Blocky devices ----------
+
+def import_experiment(data: dict, into: int | None = None) -> dict:
+    """Bring an experiment exported (JSON) from another Blocky device in: as a new experiment, or merged into `into`.
+
+    Imported runs keep their own results, provenance and hardware snapshot, so they're judged against the hardware
+    they ran on. They're read-only here (their model files may not exist on this device). KL divergence of imported
+    runs was measured against their own experiment's baseline.
+    """
+    runs = [r for r in (data.get("runs_list") or []) if r.get("status") == "done" and isinstance(r.get("results"), dict)]
+    if not runs:
+        raise ValueError("No finished runs in that file. Export an experiment with Export → JSON on the other device.")
+    src_limits = data.get("limits") or {}
+    src_device = next((r["results"].get("hardware", {}).get("device") or (r["results"].get("provenance") or {}).get("host", {}).get("device")
+                       for r in runs if r["results"].get("hardware") or r["results"].get("provenance")), None)
+    src_gpu = (src_limits.get("gpu") or "").replace("NVIDIA GeForce ", "") or "other device"
+    origin = {"device": src_device, "gpu": src_gpu, "experiment": data.get("name"), "imported_at": time.time()}
+    with db.connect() as c:
+        if into is None:
+            exp_id = c.execute("INSERT INTO experiments (created_at, name, model, seed) VALUES (?, ?, ?, ?)",
+                               (time.time(), f"{data.get('name') or 'Imported'} (from {src_device or src_gpu})"[:80], runs[0]["config"]["model"],
+                                int(data.get("seed") or 0))).lastrowid
+            local_root = None
+        else:
+            exp_id = into
+            r0 = c.execute("SELECT id FROM exp_runs WHERE experiment_id = ? AND status = 'done' ORDER BY id LIMIT 1", (into,)).fetchone()
+            if not c.execute("SELECT 1 FROM experiments WHERE id = ?", (into,)).fetchone():
+                raise ValueError("Experiment not found")
+            local_root = r0["id"] if r0 else None
+        id_map: dict[int, int] = {}
+        for r in sorted(runs, key=lambda x: x["id"]):
+            res = dict(r["results"])
+            res.setdefault("hardware", src_limits)  # exports from before per-run snapshots: use the export's hardware
+            res["imported_from"] = origin
+            parent = id_map.get(r.get("parent_id")) if r.get("parent_id") is not None else None
+            if parent is None and r.get("parent_id") is None and local_root is not None:
+                parent = local_root  # the other device's baseline hangs under ours when merging
+            label = r["label"] if into is None else f"{r['label']} @ {src_device or src_gpu}"[:60]
+            new_id = c.execute("INSERT INTO exp_runs (experiment_id, created_at, status, label, config, results, parent_id) VALUES (?, ?, 'done', ?, ?, ?, ?)",
+                               (exp_id, r.get("created_at") or time.time(), label, json.dumps(r["config"]), json.dumps(res), parent)).lastrowid
+            id_map[r["id"]] = new_id
+    return {"experiment_id": exp_id, "runs": len(id_map), "from": origin}
 
 
 def export_csv(exp: dict) -> str:

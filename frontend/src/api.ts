@@ -101,6 +101,9 @@ export type ExpResults = {
   provenance?: Provenance;
   commands?: Record<string, string>;
   token_note?: string;
+  hardware?: { gpu: string | null; gpu_bandwidth_gbps: number | null; gpu_tflops: number | null; vram_mb: number; ram_mb: number; ram_bandwidth_gbps: number | null;
+    cpu: string; cpu_threads: number; power_limit_w: number | null; sm_clock_max: number | null; compute_capability?: string | null; device?: string };
+  imported_from?: { device: string | null; gpu: string; experiment: string; imported_at: number };
   needle?: { lengths: number[]; depths: number[]; cells: { length: number; depth: number; ok: boolean; prefill_tps: number | null }[]; acc: number;
     by_length: Record<string, number>; prefill_tps_by_length: Record<string, number | null>; max_length: number | null };
   needle_progress?: { done: number; total: number; correct: number };
@@ -112,13 +115,13 @@ export type Provenance = {
   model: { file: string; sha256: string | null; bytes: number };
   data: { mmlu_pro_sha256: string | null; mmlu_seed: number; wikitext_sha256: string | null };
   gpu: { name: string | null; driver: string | null; vram_mb: number | null; pcie: string | null; cuda_driver_api: string | null; cuda_toolkit: string | null };
-  host: { cpu: string; threads: number; ram_mb: number; os: string; kernel: string; wsl: boolean };
+  host: { cpu: string; threads: number; ram_mb: number; ram_gb?: number; os: string; kernel: string; wsl: boolean; device?: string };
   blocky: { commit: string | null; dirty: boolean };
   started_at: string;
 };
 export type ExpRun = { id: number; experiment_id: number; created_at: number; status: string; label: string; config: ExpConfig; results: ExpResults;
   phase: string | null; error: string | null; parent_id?: number | null;
-  stats?: { mmlu_p?: number | null; mmlu_flips?: { lost: number; gained: number }; env_mismatch?: string[]; baseline_id?: number;
+  stats?: { mmlu_p?: number | null; mmlu_flips?: { lost: number; gained: number }; env_mismatch?: string[]; hw_diff?: string[]; baseline_id?: number;
     vs_parent?: { mmlu_p?: number | null; mmlu_flips?: { lost: number; gained: number } } } };
 export type TorchStatus = { installed: boolean; converter: boolean; torch?: string; cuda?: boolean; transformers?: string; peft?: string;
   checkpoints: { id: string; repo: string; architecture: string; layers: number | null; size_bytes: number }[] };
@@ -325,6 +328,12 @@ export const api = {
   weightsCreate: (spec: VariantSpec) => json<{ id: string }>("/api/weights/variants", send("POST", spec)),
   weightsJobs: () => json<WeightJob[]>("/api/weights/jobs"),
   weightsCancel: (id: string) => json(`/api/weights/jobs/${id}/cancel`, send("POST", {})),
+  experimentImport: async (file: File, into?: number) => {
+    const r = await fetch(`/api/experiments/import${into ? `?into=${into}` : ""}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: await file.text() });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.detail || `Import failed (${r.status})`);
+    return d as { experiment_id: number; runs: number; from: { device: string | null; gpu: string } };
+  },
   experimentProtocol: (id: number, lm_eval: { tasks: string; limit: number } | null) => json(`/api/experiments/${id}/protocol`, send("PUT", { lm_eval })),
   experimentCanvas: (id: number, canvas: CanvasState) => json(`/api/experiments/${id}/canvas`, send("PUT", canvas)),
   experimentCancelQueue: (id: number) => json(`/api/experiments/${id}/cancel-queue`, send("POST", {})),

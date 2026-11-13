@@ -42,7 +42,8 @@ const FEATURES: { group: string; intro: string; items: Feature[] }[] = [
       { icon: FlaskConical, title: "Experiments", hash: "#/experiments", what: "The research hub: one experiment = a tree of profiled runs, all measured the same way.",
         can: ["Baseline profile of any model on this hardware", "Change one setting, or branch from any run", "Sweeps: queue every combination of settings (up to 32 runs), leave it overnight",
           "Repeat a setup to measure session-to-session noise", "Report view: results table, charts, long-context grid, hardware limits, telemetry",
-          "Canvas view: the experiment as a tree you work in", "Reproducibility: versions, file hashes, exact commands", "CSV / JSON export of every number"] },
+          "Canvas view: the experiment as a tree you work in", "Reproducibility: versions, file hashes, exact commands, and the hardware each run ran on",
+          "Compare devices: export JSON on one Blocky device, import it on another", "CSV / JSON export of every number"] },
       { icon: Hammer, title: "Weights workshop", hash: "#/experiments?workshop=1", tag: "Experiments → Weights → Make a variant",
         what: "Build your own versions of a model's weights with llama.cpp's tools.",
         can: ["Any quantization type (2–8 bit, K- and IQ-quants)", "Importance matrix (calibrated on separate text, so the test isn't leaked)",
@@ -218,6 +219,7 @@ export default function GuidePage() {
               </div>
               <div className="gd-loop"><Repeat size={15} /> Steps 3–6 repeat: each new run can branch from the best run so far, so the experiment grows into a tree. The canvas shows that tree.</div>
               <div className="gd-callout"><b>Results leave the box too:</b> CSV / JSON export on every experiment, the Python client, and notebooks for your own analysis.</div>
+              <div className="gd-callout"><b>Comparing hardware:</b> run the same experiment on two Blocky devices, then use <em>Export → JSON</em> on one and <em>Import</em> on the other, either as a new experiment or into an existing one. The imported runs keep their own hardware snapshot and appear in the same table and canvas, labeled with the device they ran on.</div>
             </Section>
 
             <Section id="g-example" title="Worked example: does 3-bit hurt, and can we fix it?" kicker="An example study">
@@ -273,7 +275,8 @@ export default function GuidePage() {
                 <li><b>Speeds</b> count as different only beyond twice their combined spread. If you've repeated a setup, also beyond twice the drift between the two repeats.</li>
                 <li><b>MMLU-Pro</b> uses a paired test on the same 560 questions (McNemar, p &lt; 0.05), against the baseline and against the run's parent.</li>
                 <li><b>KL divergence</b> is the sensitive one: small drifts show up here long before accuracy moves.</li>
-                <li><b>⚠ on a run</b> means its environment differs from the baseline's: another driver, data file or protocol. See Reproducibility.</li>
+                <li><b>⚠ on a run</b> means its software environment differs from the baseline's: another driver, data file or protocol. See Reproducibility.</li>
+                <li><b>“on RTX … · device”</b> under a run means it ran on different hardware than the baseline. Each run stores a snapshot of its hardware (GPU, memory speed, compute peak, CPU, RAM), so its limits and bottlenecks are always judged against the machine it actually ran on.</li>
                 <li><b>“What limits each run”</b> names the binding limit (GPU memory speed, system RAM, or software overhead) with the numbers behind it.</li>
               </ul>
             </Section>

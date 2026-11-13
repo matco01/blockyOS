@@ -447,3 +447,8 @@
 @media (max-width: 1000px) { .gd-stack { flex-wrap: wrap; } }
 table.data.gd-table td, table.data.gd-table th { white-space: normal; }
 table.data.gd-table td:first-child { white-space: nowrap; }
+
+/* hardware labels + import */
+.xhwtag { display: block; font-size: 10.5px; font-weight: 500; text-transform: none; letter-spacing: 0; color: var(--accent); margin-top: 2px; }
+.cv-hw { font-size: 11px; color: var(--accent); margin-top: -3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.imp { flex-basis: 100%; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 10px 12px; border-radius: 12px; background: var(--surface-2); }.cv-card { height: auto; min-height: 186px; }

@@ -1,12 +1,12 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertCircle, Check, Cpu, Download, FlaskConical, Gauge, Hammer, Loader2, MemoryStick, Play, Plus, Sparkles, Square, Trash2, Zap } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AlertCircle, Check, Cpu, Download, FlaskConical, Gauge, Hammer, Loader2, MemoryStick, Play, Plus, Sparkles, Square, Trash2, Upload, Zap } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { api, Engine, ExpConfig, Experiment, ExpRun, ModelFile, Provenance, Status } from "./api";
 import { LineChart, Term } from "./ui";
 import ResearchCanvas from "./ResearchCanvas";
 import WeightsWorkshop from "./WeightsWorkshop";
 import EnginesPanel from "./EnginesPanel";
-import { allMetrics, colorOf, delta, Metric, n1, nameOf, runTitle, shortModel } from "./expmetrics";
+import { allMetrics, colorOf, delta, hwLabel, Metric, n1, nameOf, runTitle, shortModel } from "./expmetrics";
 
 const PHASES = [
   { id: "loading", label: "Load", what: "memory layout, load time" },
@@ -168,7 +168,8 @@ function Board({ runs, metric, setMetric }: { runs: ExpRun[]; metric: string; se
         <thead>
           <tr><th>Metric</th>{runs.map((r, i) => (
             <th key={r.id} className="r run-label" title={r.stats?.env_mismatch?.length ? `Not directly comparable: ${r.stats.env_mismatch.join(", ")} differ from the baseline` : r.label}>
-              <span className="xdot" style={{ background: colorOf(i) }} />{nameOf(r, i)}{r.stats?.env_mismatch?.length ? <span className="xwarn">⚠</span> : null}</th>
+              <span className="xdot" style={{ background: colorOf(i) }} />{nameOf(r, i)}{r.stats?.env_mismatch?.length ? <span className="xwarn">⚠</span> : null}
+              {(r.stats?.hw_diff?.length || r.results.imported_from) ? <span className="xhwtag" title={`Ran on ${hwLabel(r)}${r.results.imported_from ? " (imported from another device)" : ""}`}>on {hwLabel(r)}</span> : null}</th>
           ))}</tr>
         </thead>
         {groups.map((g) => {
@@ -225,6 +226,39 @@ function MetricBars({ runs, metric }: { runs: ExpRun[]; metric: string }) {
         );
       })}
     </div>
+  );
+}
+
+/* ---------- Results from other devices ---------- */
+
+function ImportRuns({ exp, onDone }: { exp: Experiment | null; onDone: (expId: number) => void }) {
+  const [file, setFile] = useState<File | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const input = useRef<HTMLInputElement>(null);
+  const run = async (into?: number) => {
+    if (!file) return;
+    setErr(null);
+    try {
+      const r = await api.experimentImport(file, into);
+      setMsg(`Imported ${r.runs} runs from ${r.from.device ?? r.from.gpu}.`); setFile(null); onDone(r.experiment_id);
+    } catch (e) { setErr((e as Error).message); }
+  };
+  return (
+    <>
+      <input ref={input} type="file" accept=".json,application/json" hidden onChange={(e) => { setFile(e.target.files?.[0] ?? null); setMsg(null); e.target.value = ""; }} />
+      <button className="btn small ghost" onClick={() => input.current?.click()} title="Bring in an experiment exported (JSON) from another Blocky device, to compare hardware"><Upload /> Import</button>
+      {(file || msg || err) && (
+        <div className="imp">
+          {file && <><span className="row-sub">Import <b>{file.name}</b>: results from another device keep their own hardware snapshot.</span>
+            <button className="btn small" onClick={() => run()}>As a new experiment</button>
+            {exp && <button className="btn small ghost" onClick={() => run(exp.id)}>Into “{exp.name}”</button>}
+            <button className="btn small ghost" onClick={() => setFile(null)}>Cancel</button></>}
+          {msg && <span className="row-sub">{msg}</span>}
+          {err && <span className="error"><AlertCircle /> {err}</span>}
+        </div>
+      )}
+    </>
   );
 }
 
@@ -291,6 +325,9 @@ function TestProtocol({ exp, onSaved }: { exp: Experiment; onSaved: () => void }
 function Repro({ runs }: { runs: ExpRun[] }) {
   const [cmdRun, setCmdRun] = useState<number | null>(null);
   const rows: { label: string; get: (p: Provenance) => string | null | undefined }[] = [
+    { label: "Device", get: (p) => p.host.device ?? "–" },
+    { label: "GPU", get: (p) => `${(p.gpu.name ?? "none").replace("NVIDIA GeForce ", "")} · ${p.gpu.vram_mb ? `${Math.round(p.gpu.vram_mb / 1024)} GB` : "?"}${p.gpu.pcie ? ` · ${p.gpu.pcie}` : ""}` },
+    { label: "CPU · RAM", get: (p) => `${p.host.cpu} · ${p.host.threads} threads · ${Math.round(p.host.ram_mb / 1024)} GB` },
     { label: "llama.cpp", get: (p) => [p.llama_cpp.version, p.llama_cpp.commit].filter(Boolean).join(" @ ") },
     { label: "Model SHA-256", get: (p) => p.model.sha256?.slice(0, 16) + "…" },
     { label: "GPU driver / CUDA", get: (p) => `${p.gpu.driver ?? "?"} / toolkit ${p.gpu.cuda_toolkit ?? "?"}, driver API ${p.gpu.cuda_driver_api ?? "?"}` },
@@ -569,9 +606,10 @@ export default function ExperimentsPage({ status }: { status: Status | null }) {
           <button className="btn small ghost" onClick={() => setCreating(!creating)}><Plus /> New experiment</button>
           {exp && <>
             <a className="btn small ghost" href={`/api/experiments/${exp.id}/export.csv`}><Download /> CSV</a>
-            <a className="btn small ghost" href={`/api/experiments/${exp.id}/export.json`}><Download /> JSON</a>
+            <a className="btn small ghost" href={`/api/experiments/${exp.id}/export.json`} title="Everything, including hardware: import it on another Blocky device to compare"><Download /> JSON</a>
             <button className="icon-btn danger" title="Delete experiment" onClick={() => { if (confirm(`Delete "${exp.name}" and all its runs?`)) api.experimentDelete(exp.id).then(() => { setId(null); setExp(null); loadList(); }); }}><Trash2 /></button>
           </>}
+          <ImportRuns exp={exp} onDone={(nid) => { loadList(); if (nid !== exp?.id) setId(nid); else load(); }} />
         </div>
 
         {(creating || list.length === 0) && (

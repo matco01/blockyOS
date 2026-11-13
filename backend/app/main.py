@@ -766,6 +766,16 @@ def experiments_export(exp_id: int, fmt: str):
     raise HTTPException(400, "Use csv or json")
 
 
+@app.post("/api/experiments/import")
+async def experiments_import(request: Request, into: int | None = None):
+    """Import an experiment exported as JSON from another Blocky device (new experiment, or merged into `into`)."""
+    try:
+        data = json.loads(await request.body())
+        return profile.import_experiment(data, into)
+    except (ValueError, TypeError, KeyError) as e:
+        _bad(e)
+
+
 @app.delete("/api/experiments/{exp_id}")
 def experiments_delete(exp_id: int):
     profile.delete_experiment(exp_id)

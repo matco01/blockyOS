@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Copy, GitBranch, GitCompare, Loader2, Maximize, Minus, Plus, Repeat, Square, StickyNote, Trash2, Wand2, X } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { api, CanvasNote, CanvasState, Experiment, ExpRun } from "./api";
-import { allMetrics, colorOf, delta, METRICS, n1, runTitle } from "./expmetrics";
+import { allMetrics, colorOf, delta, hwLabel, METRICS, n1, runTitle } from "./expmetrics";
 
 /**
  * Research canvas: the experiment as a tree you work in. Every run is a card; each run was branched from a parent
@@ -57,6 +57,7 @@ function Card({ run, idx, cmp, selected, onDown, onClick, onMenu, onBranch }: { 
         {selected ? <span className="cv-pick">{selected === 1 ? "A" : "B"}</span> : null}
       </div>
       <div className="cv-model" title={run.config.model}>{run.config.model.replace(".gguf", "")} · ctx {run.config.ctx / 1024}k · KV {run.config.kv}</div>
+      {(run.stats?.hw_diff?.length || run.results.imported_from) ? <div className="cv-hw" title="This run ran on different hardware than the baseline">on {hwLabel(run)}</div> : null}
       {run.status === "done" ? (
         <>
           {SHOWN.map((key) => {

@@ -105,7 +105,14 @@ export function allMetrics(runs: ExpRun[]): Metric[] {
   return [...METRICS, ...seen.values()];
 }
 
-export const shortModel =(r: ExpRun) => r.config.model.replace(/\.gguf$/, "");
+/** The hardware a run ran on, from its own snapshot: "RTX 2080 SUPER · box-2". */
+export const hwLabel = (r: ExpRun) => {
+  const gpu = (r.results.hardware?.gpu ?? r.results.provenance?.gpu?.name ?? r.results.imported_from?.gpu ?? "unknown GPU").replace("NVIDIA GeForce ", "").replace("NVIDIA ", "");
+  const dev = r.results.hardware?.device ?? r.results.provenance?.host?.device ?? r.results.imported_from?.device;
+  return dev ? `${gpu} · ${dev}` : gpu;
+};
+
+export const shortModel = (r: ExpRun) => r.config.model.replace(/\.gguf$/, "");
 /** A run's display name. The baseline always says what it is: "Baseline · Qwen3.5-9B-Q8_0". */
 export const runTitle = (r: ExpRun, isBase = r.parent_id == null) =>
   isBase ? (r.label.startsWith("Baseline ·") ? r.label : `Baseline · ${shortModel(r)}`) : r.label;
