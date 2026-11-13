@@ -8,10 +8,22 @@ from app import engines, profile
 LIM = {"gpu_bandwidth_gbps": 500, "ram_bandwidth_gbps": 40, "gpu_tflops": 40.0, "vram_mb": 8192}
 
 
+@pytest.fixture(autouse=True)
+def sixteen_threads(monkeypatch):
+    """Presets pin up to 8 cores; tests must not depend on how many the test machine has (CI runners have 2)."""
+    monkeypatch.setattr(profile.os, "cpu_count", lambda: 16)
+
+
 @pytest.fixture
 def exp(make_gguf):
     make_gguf("M-Q4_K_M.gguf")
     return {"model": "M-Q4_K_M.gguf"}
+
+
+def test_more_cores_than_the_device_has(exp, monkeypatch):
+    monkeypatch.setattr(profile.os, "cpu_count", lambda: 2)
+    with pytest.raises(ValueError, match="2 CPU threads"):
+        profile.normalize_config(exp, {"preset": "minipc-16gb"})
 
 
 def test_preset_fills_device_settings_and_wins_over_inherited(exp):
