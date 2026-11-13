@@ -25,7 +25,7 @@ from pathlib import Path
 import httpx
 import psutil
 
-from . import arena, config, db, engines, evals, gguf, kernels, lab, power, quantlab
+from . import arena, config, db, engines, evals, gguf, kernels, lab, power, quantlab, ruler
 
 DIR = config.DATA_DIR / "experiments"
 PORT = arena.TEMP_PORT
@@ -640,7 +640,15 @@ MMLU_SEED = 20240611     # fixed forever: every experiment uses the same questio
 LETTERS = "ABCDEFGHIJ"
 
 
-def mmlu_sample(seed: int = MMLU_SEED) -> tuple[list[dict], list[dict]]:
+MMLU_SIZES = (40, 100, 250)  # questions per subject: 560, 1400 or 3500 in total (an experiment's protocol picks one)
+
+
+def mmlu_sample(seed: int = MMLU_SEED, per_category: int = MMLU_PER_CATEGORY) -> tuple[list[dict], list[dict]]:
+    """Few-shot examples and the test questions.
+
+    Larger sizes are nested: the questions are ordered in tiers (the first 40 per subject, then the next 60, ...), so the
+    first 560 answers of any size are exactly the default 560 and paired tests between sizes use the common questions.
+    """
     import random
     from . import benchmarks
     if not benchmarks.path("mmlu_pro").is_file():
@@ -650,13 +658,18 @@ def mmlu_sample(seed: int = MMLU_SEED) -> tuple[list[dict], list[dict]]:
     for q in qs:
         by_cat.setdefault(q.get("tag") or "other", []).append(q)
     rng = random.Random(seed)
-    shots, sample = [], []
+    shots, pools = [], {}
     for cat in sorted(by_cat):
         pool = by_cat[cat][:]
         rng.shuffle(pool)
-        sample += [{**q, "tag": cat} for q in pool[:MMLU_PER_CATEGORY]]
         if len(shots) < 5:
-            shots.append(pool[MMLU_PER_CATEGORY])
+            shots.append(pool.pop(MMLU_PER_CATEGORY))  # the few-shot example is never also a test question
+        pools[cat] = pool
+    sample, lo = [], 0
+    for hi in [t for t in MMLU_SIZES if t <= per_category] or [per_category]:
+        for cat in sorted(pools):
+            sample += [{**q, "tag": cat} for q in pools[cat][lo:hi]]
+        lo = hi
     return shots, sample
 
 
@@ -693,8 +706,8 @@ def letter_choice(top: list[tuple[str, float]], n_options: int, answer: str) -> 
     return max(lp, key=lp.get), (math.exp(lp[answer] - m) / z if answer in lp else 0.0)
 
 
-async def mmlu_eval(client: httpx.AsyncClient, seed: int, should_stop, progress, api: str = "llamacpp") -> dict:
-    shots, sample = mmlu_sample(seed)
+async def mmlu_eval(client: httpx.AsyncClient, seed: int, should_stop, progress, api: str = "llamacpp", per_category: int = MMLU_PER_CATEGORY) -> dict:
+    shots, sample = mmlu_sample(seed, per_category)
     prefix = "The following are multiple choice questions (with answers).\n\n" + "".join(_mc_block(s, True) for s in shots)
     correct, p_true, cats = [], [], {}
     for i, q in enumerate(sample):
@@ -729,6 +742,13 @@ def set_protocol(exp_id: int, body: dict) -> dict:
         if not _TASKS.match(tasks):
             raise ValueError("Tasks: comma-separated lm-eval task names, e.g. gsm8k,ifeval")
         proto["lm_eval"] = {"tasks": tasks, "limit": max(1, min(5000, int(lm.get("limit") or 100)))}
+    if int(body.get("mmlu_per_category") or MMLU_PER_CATEGORY) != MMLU_PER_CATEGORY:
+        n = int(body["mmlu_per_category"])
+        if n not in MMLU_SIZES:
+            raise ValueError(f"MMLU-Pro size: {', '.join(str(x * 14) for x in MMLU_SIZES)} questions")
+        proto["mmlu_per_category"] = n
+    if body.get("ruler"):
+        proto["ruler"] = {"samples": max(2, min(50, int((body["ruler"] or {}).get("samples") or 8)))}
     if body.get("kernels"):
         proto["kernels"] = True  # GPU kernel profile with Nsight Systems (llama.cpp runs)
     with db.connect() as c:
@@ -1149,7 +1169,9 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
             res["provenance"] = await asyncio.to_thread(provenance, cfg)
             res["hardware"] = await asyncio.to_thread(hardware_snapshot)
             res["provenance"]["extra_tests"] = {"needle": f"WikiText-2 haystacks {NEEDLE_LENGTHS[0]}..ctx tokens × depths {NEEDLE_DEPTHS}, seed {NEEDLE_SEED}",
-                                                "lm_eval": (exp.get("protocol") or {}).get("lm_eval")}
+                                                "lm_eval": (exp.get("protocol") or {}).get("lm_eval"),
+                                                "mmlu_questions": 14 * ((exp.get("protocol") or {}).get("mmlu_per_category") or MMLU_PER_CATEGORY),
+                                                "ruler": (exp.get("protocol") or {}).get("ruler")}
             cmds: dict[str, str] = {}
             res["commands"] = cmds
             await lab.llm_service("stop")
@@ -1213,7 +1235,8 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
                 def progress(i, n, k):
                     res["mmlu_progress"] = {"done": i, "total": n, "correct": k}
                     _save(run_id, results=res)
-                res["mmlu"] = await mmlu_eval(client, MMLU_SEED, lambda: run_id in _cancel, progress, api)
+                res["mmlu"] = await mmlu_eval(client, MMLU_SEED, lambda: run_id in _cancel, progress, api,
+                                              (exp.get("protocol") or {}).get("mmlu_per_category") or MMLU_PER_CATEGORY)
                 res.pop("mmlu_progress", None)
 
                 # 2b) Long context: needle in a haystack, up to this run's context size.
@@ -1223,6 +1246,17 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
                     _save(run_id, results=res)
                 res["needle"] = await needle_eval(client, cfg["ctx"], lambda: run_id in _cancel, nprog, api)
                 res.pop("needle_progress", None)
+
+                # 2b'') Optional: RULER-style long-context suite (harder than one needle).
+                rp = (exp.get("protocol") or {}).get("ruler")
+                if rp:
+                    phase("ruler")
+                    def rprog(i, n):
+                        res["ruler_progress"] = {"done": i, "total": n}
+                        _save(run_id, results=res)
+                    res["ruler"] = await ruler.run(client, (await quantlab.ensure_text()).read_text(), await chars_per_token(client, api), cfg["ctx"],
+                                                   rp["samples"], lambda: run_id in _cancel, rprog)
+                    res.pop("ruler_progress", None)
 
                 # 2b') Serving speed: the same client-side measurement for every engine (framework comparisons).
                 phase("serving")
@@ -1302,7 +1336,7 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
             raise _SkipRest
         except _SkipRest:
             # 5) Telemetry + bottleneck analysis (every engine ends here).
-            res["telemetry"] = {p: sampler.summary(p) for p in ("loading", "quality", "longctx", "serving", "idle", "energy", "lm_eval", "speed", "kernels", "fidelity")}
+            res["telemetry"] = {p: sampler.summary(p) for p in ("loading", "quality", "longctx", "ruler", "serving", "idle", "energy", "lm_eval", "speed", "kernels", "fidelity")}
             res["cost"] = power.costs(res.get("energy"), (res.get("speed") or res.get("serving") or {}).get("tg"),
                                       {k: settings.get(k) for k in ("device_price", "electricity_price_kwh", "currency")})
             res["series"] = sampler.series()
@@ -1485,7 +1519,21 @@ def enrich(exp: dict) -> dict:
             if parent and base and parent["id"] != base["id"] and parent["status"] == "done":
                 vp = compare(parent, r)
                 r["stats"]["vs_parent"] = {k: vp[k] for k in ("mmlu_p", "mmlu_flips") if k in vp}
+    # Many runs vs one baseline: Holm-adjusted p-values (family-wise error rate) next to the raw ones.
+    tested = [r for r in exp["runs_list"] if (r.get("stats") or {}).get("mmlu_p") is not None]
+    for r, p in zip(tested, holm([r["stats"]["mmlu_p"] for r in tested])):
+        r["stats"]["mmlu_p_holm"] = p
     return exp
+
+
+def holm(ps: list[float]) -> list[float]:
+    """Holm-Bonferroni adjusted p-values, in input order."""
+    order = sorted(range(len(ps)), key=lambda i: ps[i])
+    out, run = [0.0] * len(ps), 0.0
+    for k, i in enumerate(order):
+        run = max(run, min(1.0, (len(ps) - k) * ps[i]))
+        out[i] = round(run, 6)
+    return out
 
 
 # ---------- Export ----------

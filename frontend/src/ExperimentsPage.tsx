@@ -4,9 +4,11 @@ import type { LucideIcon } from "lucide-react";
 import { api, Device, DevicePreset, RemoteJob, Engine, ExpConfig, Experiment, ExpRun, KernelProfile, ModelFile, Provenance, Status, TorchStatus } from "./api";
 import { LineChart, Term } from "./ui";
 import ResearchCanvas from "./ResearchCanvas";
+import { Planner, RulerTable } from "./Planner";
 import WeightsWorkshop from "./WeightsWorkshop";
 import EnginesPanel from "./EnginesPanel";
-import { allMetrics, colorOf, delta, hwLabel, Metric, n1, nameOf, runTitle, shortModel } from "./expmetrics";
+import { allMetrics, colorOf, delta, hwLabel, Metric, n1, nameOf, runTitle, shortModel, adjustedP } from "./expmetrics";
+import { Correction, CORRECTION_LABEL, savedCorrection, saveCorrection } from "./stats";
 
 const PHASES = [
   { id: "loading", label: "Load", what: "memory layout, load time" },
@@ -192,10 +194,22 @@ function ChangePanel({ base: rawBase, models, onRun, onSweep, onModels }: { base
 function Board({ runs, metric, setMetric }: { runs: ExpRun[]; metric: string; setMetric: (k: string) => void }) {
   const base = runs[0];
   const METRICS = allMetrics(runs);
+  const [corr, setCorr] = useState<Correction>(savedCorrection);
+  // Every run is compared with the baseline at once: correct each metric's p-values for that many comparisons.
+  const adj = useMemo(() => new Map(METRICS.map((m) => [m.key, adjustedP(m, runs.slice(1).map((r) => ({ run: r, base })), corr)])),
+    [runs, corr]); // eslint-disable-line react-hooks/exhaustive-deps
   const groups = Array.from(new Set(METRICS.map((m) => m.group)));
   const hasData = (m: Metric) => runs.some((r) => m.get(r.results) != null);
   return (
     <div className="table-wrap xboard">
+      {runs.length > 2 && (
+        <div className="xcorr">
+          <span>Comparing {runs.length - 1} runs with the baseline: p-values corrected for multiple comparisons</span>
+          <div className="segmented">{(["holm", "bh", "none"] as Correction[]).map((c) => (
+            <button key={c} className={corr === c ? "on" : ""} title={c === "holm" ? "Controls the chance of any false positive (strict)" : c === "bh" ? "Controls the share of false positives among the hits (for large sweeps)" : "Each comparison on its own: with many runs, some will look significant by chance"}
+              onClick={() => { setCorr(c); saveCorrection(c); }}>{CORRECTION_LABEL[c]}</button>))}</div>
+        </div>
+      )}
       <table className="data">
         <thead>
           <tr><th>Metric</th>{runs.map((r, i) => (
@@ -218,7 +232,7 @@ function Board({ runs, metric, setMetric }: { runs: ExpRun[]; metric: string; se
                     const repeats = runs.slice(1).filter((q) => q.label === "Repeat of baseline" && q.id !== r.id);
                     const bv = x.get(base.results);
                     const session = Math.max(0, ...repeats.map((q) => { const qv = x.get(q.results); return qv != null && bv != null ? Math.abs(qv - bv) : 0; }));
-                    const d = i === 0 ? null : delta(x, { run: r, base }, session);
+                    const d = i === 0 ? null : delta(x, { run: r, base }, session, adj.get(x.key)?.get(r.id));
                     return (
                       <td key={r.id} className="r">
                         {v == null ? "–" : (x.fmt ?? n1)(v)}{sd ? <span className="sd"> ±{(x.fmt ?? n1)(sd)}</span> : null}
@@ -388,28 +402,38 @@ function TestProtocol({ exp, onSaved }: { exp: Experiment; onSaved: () => void }
   const [tasks, setTasks] = useState(cur?.tasks ?? "");
   const [limit, setLimit] = useState(cur?.limit ?? 100);
   const [kern, setKern] = useState(!!exp.protocol?.kernels);
+  const [mmluN, setMmluN] = useState(exp.protocol?.mmlu_per_category ?? 40);
+  const [ruler, setRuler] = useState(exp.protocol?.ruler?.samples ?? 0);
   const [err, setErr] = useState<string | null>(null);
-  useEffect(() => { setTasks(exp.protocol?.lm_eval?.tasks ?? ""); setLimit(exp.protocol?.lm_eval?.limit ?? 100); setKern(!!exp.protocol?.kernels); }, [exp.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { setTasks(exp.protocol?.lm_eval?.tasks ?? ""); setLimit(exp.protocol?.lm_eval?.limit ?? 100); setKern(!!exp.protocol?.kernels);
+    setMmluN(exp.protocol?.mmlu_per_category ?? 40); setRuler(exp.protocol?.ruler?.samples ?? 0); }, [exp.id]); // eslint-disable-line react-hooks/exhaustive-deps
   const save = async () => {
     setErr(null);
-    try { await api.experimentProtocol(exp.id, tasks.trim() ? { tasks, limit } : null, kern); setOpen(false); onSaved(); } catch (e) { setErr((e as Error).message); }
+    try { await api.experimentProtocol(exp.id, tasks.trim() ? { tasks, limit } : null, kern, mmluN, ruler ? { samples: ruler } : null); setOpen(false); onSaved(); } catch (e) { setErr((e as Error).message); }
   };
+  const extra = cur || exp.protocol?.kernels || exp.protocol?.ruler || (exp.protocol?.mmlu_per_category ?? 40) !== 40;
   return (
     <div className="tp">
-      <span className="row-sub"><b>Every run measures:</b> memory · MMLU-Pro (560) · long context (2k…ctx) · serving speed · llama-bench speed · perplexity & KLD · telemetry
-        {cur ? <> · <b>lm-eval: {cur.tasks}</b> (limit {cur.limit})</> : ""}{exp.protocol?.kernels ? <> · <b>GPU kernel profile</b></> : ""}</span>
+      <span className="row-sub"><b>Every run measures:</b> memory · <b>MMLU-Pro ({(14 * (exp.protocol?.mmlu_per_category ?? 40)).toLocaleString()})</b> · long context (2k…ctx) · serving speed · llama-bench speed · perplexity & KLD · energy · telemetry
+        {exp.protocol?.ruler ? <> · <b>long-context suite</b> ({exp.protocol.ruler.samples}/cell)</> : ""}{cur ? <> · <b>lm-eval: {cur.tasks}</b> (limit {cur.limit})</> : ""}{exp.protocol?.kernels ? <> · <b>GPU kernel profile</b></> : ""}</span>
       <button className="btn small ghost" onClick={() => setOpen(!open)}>{open ? "Close" : "Add tests"}</button>
       {open && (
         <div className="tp-edit">
           <div className="row-sub">Run <b>lm-evaluation-harness</b> tasks too, the field's standard tool, against each run's exact server (greedy, seed 0). Use generative tasks such as <code>gsm8k</code>, <code>ifeval</code>, <code>bbh_cot_fewshot</code>, <code>minerva_math</code>. Multiple-choice log-likelihood tasks need prompt log-probs, which these servers don't provide; MMLU-Pro above already covers that style. Applies to runs queued from now on.</div>
           <div className="ws-grid">
+            <label><span>MMLU-Pro size</span><select className="field select" value={mmluN} onChange={(e) => setMmluN(Number(e.target.value))}>
+              <option value={40}>560 questions (default)</option><option value={100}>1,400 questions</option><option value={250}>3,500 questions</option></select>
+              <em>More questions detect smaller accuracy differences (see “How many runs or questions do I need?” in the results). Larger sets contain the default 560, so paired tests still work against older runs.</em></label>
+            <label><span>Long-context suite (RULER-style)</span><select className="field select" value={ruler} onChange={(e) => setRuler(Number(e.target.value))}>
+              <option value={0}>Off</option><option value={4}>4 samples per task and length (quick)</option><option value={8}>8 samples (standard)</option><option value={20}>20 samples (precise)</option></select>
+              <em>Four synthetic tasks harder than one needle: multi-key retrieval with distractors, all values of a key, variable tracking, common words. Lengths 4k up to the run's context. Long contexts make it slow.</em></label>
             <label><span>Tasks</span><input className="field" value={tasks} onChange={(e) => setTasks(e.target.value)} placeholder="gsm8k,ifeval" /></label>
             <label><span>Questions per task (limit)</span><input className="field" type="number" min={1} max={5000} value={limit} onChange={(e) => setLimit(Number(e.target.value))} />
               <em>gsm8k at 100 takes a few minutes on a fast 9B setup.</em></label>
             <label className="ws-check"><input type="checkbox" checked={kern} onChange={(e) => setKern(e.target.checked)} />
               <span><b>GPU kernel profile</b><em>Traces every GPU kernel with NVIDIA Nsight Systems during short prefill and decode runs, and groups the time by operation (matrix multiply, attention, normalization…). llama.cpp runs only; needs a system where CUDA kernel tracing works (regular Linux; not WSL).</em></span></label>
           </div>
-          <div className="xc-btns"><button className="btn small" onClick={save}>Save</button>{(cur || exp.protocol?.kernels) && <button className="btn small ghost" onClick={() => { setTasks(""); setKern(false); api.experimentProtocol(exp.id, null, false).then(onSaved); setOpen(false); }}>Remove extra tests</button>}</div>
+          <div className="xc-btns"><button className="btn small" onClick={save}>Save</button>{extra && <button className="btn small ghost" onClick={() => { setTasks(""); setKern(false); setMmluN(40); setRuler(0); api.experimentProtocol(exp.id, null, false).then(onSaved); setOpen(false); }}>Back to the standard tests</button>}</div>
           {err && <div className="error"><AlertCircle /> {err}</div>}
         </div>
       )}
@@ -821,15 +845,21 @@ export default function ExperimentsPage({ status }: { status: Status | null }) {
                 <div className="group-label">3 · Results</div>
                 <div className="group pad">
                   <Board runs={done} metric={metric} setMetric={setMetric} />
-                  <div className="row-sub xnote">Speeds are the median of the repetitions; ± is the robust spread (1.4826 × median absolute deviation). A difference is colored only when it is bigger than the noise: 2σ for speeds, a paired McNemar test (p &lt; 0.05) for MMLU-Pro. Grey = not significant. If you add a “Repeat this setup” run, changes must also exceed twice the drift between the two repeats (other programs using the same GPU add noise). KL divergence measures how far each token's probability distribution drifted from the baseline's.</div>
+                  <div className="row-sub xnote">Speeds are the median of the repetitions; ± is the robust spread (1.4826 × median absolute deviation). A difference is colored only when it is significant: p &lt; 0.05 from a test on the measured noise (speeds, lm-eval) or a paired McNemar test (MMLU-Pro), after correcting for comparing many runs at once (Holm by default; hover a difference for its p-value). Grey = not significant. Metrics without a noise model use a minimum change instead. If you add a “Repeat this setup” run, changes must also exceed twice the drift between the two repeats (other programs using the same GPU add noise). KL divergence measures how far each token's probability distribution drifted from the baseline's.</div>
                   {done.length > 1 && <MetricBars runs={done} metric={metric} />}
                   <NeedleGrid runs={done} />
+                  <RulerTable runs={done} />
                   <Repro runs={done} />
                   {runs.filter((r) => !["done", "running", "queued"].includes(r.status)).map((r) => (
                     <div key={r.id} className="xfailed"><AlertCircle size={14} /> “{r.label}” {r.status}{r.error ? `: ${r.error}` : ""}
                       <button className="icon-btn danger" onClick={() => api.experimentDeleteRun(r.id).then(load)}><Trash2 /></button></div>
                   ))}
                 </div>
+
+                {done.length > 0 && <details className="group pad xadv">
+                  <summary><b>How many runs or questions do I need?</b> <span className="row-sub">sample sizes for the differences you want to detect, from this experiment's measured noise</span></summary>
+                  <Planner runs={done} />
+                </details>}
 
                 <div className="group-label">4 · What limits each run</div>
                 <div className="group pad"><LimitTable runs={done} /></div>

@@ -1,4 +1,5 @@
 import type { ExpResults, ExpRun } from "./api";
+import { adjust, Correction, zTestP } from "./stats";
 
 /* ---------- Metric registry: one place defines every number, its noise and which direction is better ---------- */
 
@@ -7,7 +8,7 @@ export type Metric = {
   key: string; group: string; label: string; term?: string; unit: string; better: "higher" | "lower" | null;
   get: (r: ExpResults) => number | null | undefined;
   sd?: (r: ExpResults) => number | null | undefined;        // ± noise of one measurement (for significance)
-  sig?: (c: Ctx) => boolean | null;                          // custom significance test
+  p?: (c: Ctx) => number | null | undefined;                 // custom test: p-value for this pair (e.g. paired McNemar)
   fmt?: (v: number) => string; note?: string;
   minRel?: number;                                           // smallest relative change treated as real (no noise model)
 };
@@ -27,12 +28,11 @@ export const METRICS: Metric[] = [
   { key: "srv_ttft", group: "Speed", label: "Serving: time to first token", unit: "ms", better: "lower", get: (r) => r.serving?.ttft_ms, sd: (r) => r.serving?.ttft_sd, fmt: (v) => v.toFixed(0) },
   { key: "ttft", group: "Speed", label: "Latency, 512-token prompt", unit: "ms", better: "lower", get: (r) => (r.speed?.pp ? (512 / r.speed.pp) * 1000 : null), fmt: (v) => v.toFixed(0) },
   { key: "mmlu", group: "Quality", label: "MMLU-Pro accuracy", unit: "%", better: "higher", get: (r) => (r.mmlu ? r.mmlu.acc * 100 : null), fmt: pct,
-    sig: (c) => {
+    p: (c) => {
       // Paired test against whichever run we're comparing with: the baseline, or this run's parent in the tree.
       const s = c.run.stats;
-      const p = c.base.id === s?.baseline_id ? s?.mmlu_p : c.base.id === c.run.parent_id ? s?.vs_parent?.mmlu_p : null;
-      return p != null ? p < 0.05 : null;
-    }, note: "paired McNemar test, p < 0.05" },
+      return c.base.id === s?.baseline_id ? s?.mmlu_p : c.base.id === c.run.parent_id ? s?.vs_parent?.mmlu_p : null;
+    }, note: "paired McNemar test" },
   { key: "mmlu_p", group: "Quality", label: "MMLU-Pro P(correct)", unit: "%", better: "higher", get: (r) => (r.mmlu ? r.mmlu.p_correct_mean * 100 : null), fmt: pct },
   { key: "needle", group: "Quality", label: "Long-context retrieval", unit: "%", better: "higher", get: (r) => (r.needle ? r.needle.acc * 100 : null), fmt: (v) => v.toFixed(0),
     note: "Needle in a haystack: a code hidden at 5 depths in 2k…ctx tokens of text", minRel: 0.1 },
@@ -69,8 +69,27 @@ export const METRICS: Metric[] = [
 
 const TOKEN_LEVEL = new Set(["ppl", "kld", "kld99", "same_top"]);
 
-/** Difference vs baseline, with a noise check: inside 2σ of the combined measurement noise = not significant. */
-export function delta(m: Metric, c: Ctx, session = 0) {
+/** p-value of the difference between two runs on one metric, or null when the metric has no noise model. */
+export function pValue(m: Metric, c: Ctx): number | null {
+  if (m.p) return m.p(c) ?? null;
+  const v = m.get(c.run.results), b = m.get(c.base.results);
+  if (v == null || b == null || !m.sd) return null;
+  const s1 = m.sd(c.run.results), s2 = m.sd(c.base.results);
+  return s1 != null && s2 != null ? zTestP(v - b, s1, s2) : null;
+}
+
+/** Adjusted p-values for many comparisons on one metric at once (run id -> adjusted p). */
+export function adjustedP(m: Metric, ctxs: Ctx[], method: Correction): Map<number, number> {
+  const withP = ctxs.map((c) => [c.run.id, pValue(m, c)] as const).filter((x): x is readonly [number, number] => x[1] != null);
+  const adj = adjust(withP.map((x) => x[1]), method);
+  return new Map(withP.map((x, i) => [x[0], adj[i]]));
+}
+
+export const fmtP = (p: number) => (p < 0.001 ? "< 0.001" : p.toFixed(3));
+
+/** Difference vs a reference run, with a noise check. Significant = p < 0.05 after the multiple-comparison correction
+ *  (pAdj, when the caller compares many runs at once); metrics without a noise model use a minimum relative change. */
+export function delta(m: Metric, c: Ctx, session = 0, pAdj?: number | null) {
   const v = m.get(c.run.results), b = m.get(c.base.results);
   if (v == null || b == null || b === 0) return null;
   // Token-level metrics are meaningless between models that split text into different tokens.
@@ -79,19 +98,18 @@ export function delta(m: Metric, c: Ctx, session = 0) {
     || (!!c.run.results.token_note && c.run.config.model.split("-")[0] !== c.base.config.model.split("-")[0]);
   if (TOKEN_LEVEL.has(m.key) && crossTok) return { text: "not comparable", tone: "same", title: "Different tokenizer" };
   const d = (v - b) / Math.abs(b);
-  let sig: boolean | null = m.sig ? m.sig(c) : null;
-  if (sig == null && m.sd) {
-    const s1 = m.sd(c.run.results), s2 = m.sd(c.base.results);
-    if (s1 != null && s2 != null) sig = Math.abs(v - b) > 2 * Math.sqrt(s1 * s1 + s2 * s2);
-  }
-  if (sig == null) sig = Math.abs(d) >= (m.minRel ?? 0.02);
+  const p = pValue(m, c);
+  const pa = pAdj ?? p;
+  let sig: boolean = pa != null ? pa < 0.05 : Math.abs(d) >= (m.minRel ?? 0.02);
   // Session-to-session drift (measured by repeating the baseline) must also be exceeded.
-  if (sig && !m.sig && session > 0 && Math.abs(v - b) <= 2 * session) sig = false;
+  if (sig && !m.p && session > 0 && Math.abs(v - b) <= 2 * session) sig = false;
+  const ptxt = p == null ? `no noise model: changes under ${Math.round((m.minRel ?? 0.02) * 100)}% are treated as noise`
+    : `p = ${fmtP(p)}${pAdj != null && pAdj !== p ? `, ${fmtP(pAdj)} after correcting for multiple comparisons` : ""}`;
   const text = `${d > 0 ? "+" : ""}${(d * 100).toFixed(Math.abs(d) < 0.1 ? 1 : 0)}%`;
-  if (!sig) return { text, tone: "same", title: "Within measurement noise" };
-  if (!m.better) return { text, tone: "same", title: "" };
+  if (!sig) return { text, tone: "same", title: `Within measurement noise (${ptxt})` };
+  if (!m.better) return { text, tone: "same", title: ptxt };
   const good = m.better === "higher" ? d > 0 : d < 0;
-  return { text, tone: good ? "good" : "bad", title: "Significant" };
+  return { text, tone: good ? "good" : "bad", title: `Significant (${ptxt})` };
 }
 
 

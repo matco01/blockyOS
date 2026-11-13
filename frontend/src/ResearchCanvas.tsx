@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Copy, GitBranch, GitCompare, Loader2, Maximize, Minus, Play, Plus, Repeat, Server, Square, StickyNote, Trash2, Wand2, X } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { api, CanvasNote, CanvasState, Device, Experiment, ExpRun, RemoteJob } from "./api";
-import { allMetrics, colorOf, delta, hwLabel, METRICS, n1, runTitle } from "./expmetrics";
+import { adjustedP, allMetrics, colorOf, delta, hwLabel, METRICS, n1, runTitle } from "./expmetrics";
+import { savedCorrection } from "./stats";
 
 /**
  * Research canvas: the experiment as a tree you work in. Each device (this one, remote Blocky devices, imported results)
@@ -64,7 +65,7 @@ const SHOWN = ["tg", "mmlu", "kld", "vram_model"] as const;
 const SHORT: Record<string, string> = { tg: "Decode", mmlu: "MMLU-Pro", kld: "KLD", vram_model: "VRAM" };
 const gb = (mb?: number | null) => (mb ? `${Math.round(mb / 1024)} GB` : "–");
 
-function Card({ run, idx, cmp, selected, onDown, onClick, onMenu, onBranch }: { run: ExpRun; idx: number; cmp: ExpRun | undefined; selected: number;
+function Card({ run, idx, cmp, adj, selected, onDown, onClick, onMenu, onBranch }: { run: ExpRun; idx: number; cmp: ExpRun | undefined; adj: Map<string, Map<number, number>>; selected: number;
   onDown: (e: React.PointerEvent) => void; onClick: (e: React.MouseEvent) => void; onMenu: (e: React.MouseEvent) => void; onBranch: () => void }) {
   const r = run.results;
   return (
@@ -81,7 +82,7 @@ function Card({ run, idx, cmp, selected, onDown, onClick, onMenu, onBranch }: { 
           {SHOWN.map((key) => {
             const m = METRICS.find((x) => x.key === key)!;
             const v = m.get(r);
-            const d = cmp && cmp.status === "done" && cmp.id !== run.id ? delta(m, { run, base: cmp }) : null;
+            const d = cmp && cmp.status === "done" && cmp.id !== run.id ? delta(m, { run, base: cmp }, 0, adj.get(key)?.get(run.id)) : null;
             return (
               <div className="cv-metric" key={key}><span>{SHORT[key]}</span>
                 <b>{v == null ? (key === "kld" && r.token_note ? "n/a" : "–") : (m.fmt ?? n1)(v)}<small>{m.unit}</small></b>
@@ -249,6 +250,11 @@ export default function ResearchCanvas({ exp, runs, branchPanel, onRepeat, onDel
   const P = (id: number) => pos[id] ?? auto.pos[id] ?? { x: 0, y: 0 };
   const D = (key: string) => pos[`d:${key}`] ?? auto.dev[key] ?? { x: 0, y: 0 };
   const cmpFor = (r: ExpRun) => (vs === "parent" ? byId.get(r.parent_id ?? -1) : baseline);
+  // The canvas shows every card's comparison at once: correct the p-values for that many comparisons.
+  const adj = useMemo(() => {
+    const ctxs = done.map((r) => ({ run: r, base: cmpFor(r)! })).filter((c) => c.base && c.base.status === "done" && c.base.id !== c.run.id);
+    return new Map(SHOWN.map((k) => [k as string, adjustedP(METRICS.find((m) => m.key === k)!, ctxs, savedCorrection())]));
+  }, [done, vs, byId, baseline]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Persist (debounced) on the Blocky box, so the map survives reloads and other browsers see it.
   const first = useRef(true);
@@ -394,7 +400,7 @@ export default function ResearchCanvas({ exp, runs, branchPanel, onRepeat, onDel
         ))}
         {shown.map((r) => (
           <div key={r.id} className="cv-node" style={{ left: P(r.id).x, top: P(r.id).y }}>
-            <Card run={r} idx={done.indexOf(r)} cmp={cmpFor(r)} selected={sel.indexOf(r.id) + 1}
+            <Card run={r} idx={done.indexOf(r)} cmp={cmpFor(r)} adj={adj} selected={sel.indexOf(r.id) + 1}
               onDown={(e) => down(e, "card", String(r.id))} onClick={(e) => click(e, r.id)} onMenu={(e) => openMenu(e, r)} onBranch={() => setBranchFrom(r.id)} />
           </div>
         ))}

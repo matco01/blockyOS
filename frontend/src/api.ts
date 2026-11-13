@@ -117,6 +117,9 @@ export type ExpResults = {
   needle_progress?: { done: number; total: number; correct: number };
   lm_eval?: { tasks?: Record<string, { metrics: Record<string, number>; stderr: Record<string, number> }>; limit?: number; error?: string; command?: string };
   energy?: Energy;
+  ruler?: { lengths: number[]; tasks: string[]; samples: number; cells: { task: string; length: number; score: number; ci95: number; n: number }[];
+    by_length: Record<string, number>; by_task: Record<string, number>; score: number; effective_length: number | null; threshold: number; method: string };
+  ruler_progress?: { done: number; total: number };
   remote_device?: { id: number; name: string; url: string };
   cost?: { currency: string; electricity_per_mtok?: number; tps_per_1k_price?: number };
 };
@@ -160,7 +163,7 @@ export type CanvasNote ={ id: string; x: number; y: number; text: string };
 export type CanvasState = { pos: Record<string, { x: number; y: number }>; notes: CanvasNote[]; view?: { x: number; y: number; k: number }; devices?: number[] };
 export type Experiment = {
   id: number; created_at: number; name: string; model: string; seed: number; runs?: number; canvas?: CanvasState | null;
-  protocol?: { lm_eval?: { tasks: string; limit: number }; kernels?: boolean } | null;
+  protocol?: { lm_eval?: { tasks: string; limit: number }; kernels?: boolean; mmlu_per_category?: number; ruler?: { samples: number } } | null;
   runs_list?: ExpRun[]; limits?: { gpu: string | null; gpu_bandwidth_gbps: number | null; gpu_tflops: number | null; gpu_tflops_kind: string | null; sm_clock_max: number | null;
     vram_mb: number; power_limit_w: number | null; ram_bandwidth_gbps: number | null; ram_mb: number; cpu: string; cpu_power_source: string | null };
 };
@@ -372,8 +375,8 @@ export const api = {
     if (!r.ok) throw new Error(d.detail || `Import failed (${r.status})`);
     return d as { experiment_id: number; runs: number; from: { device: string | null; gpu: string } };
   },
-  experimentProtocol: (id: number, lm_eval: { tasks: string; limit: number } | null, kernels = false) =>
-    json(`/api/experiments/${id}/protocol`, send("PUT", { lm_eval, kernels })),
+  experimentProtocol: (id: number, lm_eval: { tasks: string; limit: number } | null, kernels = false, mmlu_per_category = 40, ruler: { samples: number } | null = null) =>
+    json(`/api/experiments/${id}/protocol`, send("PUT", { lm_eval, kernels, mmlu_per_category, ruler })),
   experimentCanvas: (id: number, canvas: CanvasState) => json(`/api/experiments/${id}/canvas`, send("PUT", canvas)),
   experimentCancelQueue: (id: number) => json(`/api/experiments/${id}/cancel-queue`, send("POST", {})),
   experimentCancel: (runId: number) => json(`/api/experiments/runs/${runId}/cancel`, send("POST", {})),

@@ -58,6 +58,7 @@ def _compact_run(r: dict) -> dict:
         "serving": {k: sv.get(k) for k in ("tg", "tg_sd", "pp", "ttft_ms")} if sv else None,
         "mmlu_pro": {"acc": m.get("acc"), "ci95": m.get("ci95"), "n": m.get("n")} if m else None,
         "long_context_by_length": (x.get("needle") or {}).get("by_length"),
+        "ruler": {k: (x.get("ruler") or {}).get(k) for k in ("score", "effective_length", "by_length", "by_task")} if x.get("ruler") else None,
         "lm_eval": {t: v.get("metrics") for t, v in ((x.get("lm_eval") or {}).get("tasks") or {}).items()} or None,
         "kld": x.get("kld"), "kld_p99": x.get("kld_p99"), "same_top_pct": x.get("same_top"), "ppl": x.get("ppl"),
         "vram_model_mb": (hw.get("headroom") or {}).get("vram_model_mb"), "weights_on_cpu_gb": hw.get("weights_on_cpu_gb"),
@@ -137,11 +138,16 @@ def cancel_run(run_id: int) -> str:
     return json.dumps({"ok": True})
 
 
-@server.tool(description="Set extra tests every run of an experiment gets: lm-evaluation-harness tasks (generative, e.g. 'gsm8k,ifeval') with a per-task limit, and/or a GPU kernel profile.")
-def set_experiment_tests(experiment_id: int, lm_eval_tasks: str = "", lm_eval_limit: int = 100, kernel_profile: bool = False) -> str:
+@server.tool(description="Set the tests every run of an experiment gets (replaces the previous choice). mmlu_questions: 560 (default), 1400 or 3500 "
+                         "(larger detects smaller accuracy differences; nested, so paired tests vs older runs still work). ruler_samples: 0 (off), or "
+                         "samples per task and length for the RULER-style long-context suite (4 quick, 8 standard, 20 precise). lm-evaluation-harness "
+                         "tasks (generative, e.g. 'gsm8k,ifeval') with a per-task limit, and/or a GPU kernel profile.")
+def set_experiment_tests(experiment_id: int, mmlu_questions: int = 560, ruler_samples: int = 0, lm_eval_tasks: str = "", lm_eval_limit: int = 100,
+                         kernel_profile: bool = False) -> str:
     try:
         return json.dumps(profile.set_protocol(experiment_id, {"lm_eval": {"tasks": lm_eval_tasks, "limit": lm_eval_limit} if lm_eval_tasks else None,
-                                                               "kernels": kernel_profile}))
+                                                               "kernels": kernel_profile, "mmlu_per_category": max(1, mmlu_questions // 14),
+                                                               "ruler": {"samples": ruler_samples} if ruler_samples else None}))
     except ValueError as err:
         return json.dumps({"error": str(err)})
 
