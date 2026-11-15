@@ -45,6 +45,14 @@ def test_vllm_needs_to_be_installed(make_gguf, checkpoint, monkeypatch):
         profile.normalize_config({"model": "H-Q4_K_M.gguf"}, {"model": checkpoint})
 
 
+def test_vllm_does_not_claim_to_apply_llamacpp_settings(checkpoint, monkeypatch):
+    monkeypatch.setattr(profile.engines, "vllm_installed", lambda: True)
+    assert profile.normalize_config({"model": checkpoint}, {})["kv"] == "auto"
+    for settings in ({"kv": "q4_0"}, {"ngl": 8}, {"fa": "off"}, {"threads": 4}, {"ram_limit_mb": 2048}):
+        with pytest.raises(ValueError, match="does not apply"):
+            profile.normalize_config({"model": checkpoint}, settings)
+
+
 def test_checkpoint_weights_and_labels(checkpoint):
     w = profile._weights(profile.model_path(checkpoint))
     assert w == {"bytes": 4000, "params": 2000, "embedding_bytes": 0}

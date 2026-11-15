@@ -15,9 +15,11 @@ Because every run uses identical questions and text, runs are directly comparabl
 """
 import asyncio
 import json
+import math
 import os
 import re
 import shutil
+import statistics
 import subprocess
 import time
 from pathlib import Path
@@ -68,9 +70,14 @@ GPU_BANDWIDTH = {
 
 
 def init() -> None:
+    from . import validation
     DIR.mkdir(parents=True, exist_ok=True)
     with db.connect() as c:
         c.executescript(SCHEMA)
+        c.executescript(validation.SCHEMA)
+        for column in ("validation", "protocol_snapshot"):
+            if column not in [r[1] for r in c.execute("PRAGMA table_info(exp_runs)")]:
+                c.execute(f"ALTER TABLE exp_runs ADD COLUMN {column} TEXT")
         cols = [r[1] for r in c.execute("PRAGMA table_info(experiments)")]
         if "canvas" not in cols:  # research canvas layout: card positions, notes, viewport
             c.execute("ALTER TABLE experiments ADD COLUMN canvas TEXT")
@@ -193,6 +200,8 @@ def save_canvas(exp_id: int, canvas: dict) -> None:
 def _run(r) -> dict:
     d = dict(r)
     d["config"] = json.loads(d["config"]); d["results"] = json.loads(d["results"])
+    for key in ("validation", "protocol_snapshot"):
+        d[key] = json.loads(d.get(key) or "null")
     return d
 
 
@@ -210,7 +219,8 @@ def get_experiment(exp_id: int) -> dict | None:
         if not e:
             return None
         runs = [_run(r) for r in c.execute("SELECT * FROM exp_runs WHERE experiment_id = ? ORDER BY id", (exp_id,))]
-    return enrich({**_exp(e), "runs_list": runs, "limits": limits()})
+    from . import validation
+    return {**enrich({**_exp(e), "runs_list": runs, "limits": limits()}), "validations": validation.list_batches(exp_id, runs)}
 
 
 def create_experiment(name: str, model: str) -> int:
@@ -269,6 +279,8 @@ def create_sweep(exp_id: int, body: dict) -> list[int]:
     repeats = max(1, min(5, int(body.get("repeats") or 1)))
     done = [r for r in exp["runs_list"] if r["status"] == "done"]
     parent = next((r for r in exp["runs_list"] if r["id"] == int(body["parent_id"])), None) if body.get("parent_id") is not None else None
+    if body.get("parent_id") is not None and parent is None:
+        raise ValueError("The run to branch from isn't in this experiment")
     base = parent["config"] if parent else (done[0]["config"] if done else normalize_config(exp, {}))
     keys = list(grid)
     combos = [dict(zip(keys, vals)) for vals in itertools.product(*(grid[k] for k in keys))]
@@ -389,10 +401,17 @@ def normalize_config(exp: dict, cfg: dict) -> dict:
         raise ValueError("vLLM runs original Hugging Face checkpoints, not GGUF files: pick a checkpoint (Internals → Checkpoints)")
     if engines.kind(out["engine"]) == "llamacpp" and hf:
         raise ValueError("llama.cpp runs GGUF files: pick a GGUF model, or choose vLLM as the engine for a checkpoint")
+    if engines.kind(out["engine"]) == "vllm":
+        requested = cfg or {}
+        unsupported = [k for k in ("kv", "ngl", "fa") if requested.get(k) not in (None, "", "auto")]
+        unsupported += [k for k in ("threads", "ram_limit_mb") if out.get(k)]
+        if unsupported:
+            raise ValueError(f"vLLM does not apply these settings in Blocky: {', '.join(unsupported)}. Use engine defaults (auto) or llama.cpp")
+        out["kv"] = "auto"
     if not (model_path(out["model"]) / "config.json" if hf else model_path(out["model"])).is_file():
         raise ValueError("Model not found")
     out["ctx"] = max(1024, min(262144, int(out["ctx"])))
-    if out["kv"] not in lab.KV_TYPES:
+    if out["kv"] not in lab.KV_TYPES and not (out["engine"] == "vllm" and out["kv"] == "auto"):
         raise ValueError("KV cache must be f16, q8_0 or q4_0")
     if str(out["ngl"]) != "auto":
         out["ngl"] = max(0, min(999, int(out["ngl"])))
@@ -420,6 +439,10 @@ def create_run(exp_id: int, body: dict) -> int:
     exp = get_experiment(exp_id)
     if not exp:
         raise ValueError("Experiment not found")
+    baseline = next((r for r in exp["runs_list"] if r["status"] == "done"), None)
+    prior_protocol = ((baseline or {}).get("results", {}).get("provenance") or {}).get("protocol")
+    if prior_protocol and prior_protocol != PROTOCOL:
+        raise ValueError("This experiment's baseline used a different measurement protocol. Create a new experiment and baseline for new runs")
     cfg = normalize_config(exp, body.get("config") or {})
     parent = None
     if body.get("parent_id") is not None:
@@ -715,13 +738,16 @@ async def mmlu_eval(client: httpx.AsyncClient, seed: int, should_stop, progress,
             raise asyncio.CancelledError
         top = await _next_token_logprobs(client, prefix + _mc_block(q, False), api)
         pred, pt = letter_choice(top, len(q["options"]), q["answer"])
+        if pred is None:
+            raise RuntimeError("MMLU-Pro could not score an answer: the server returned no option-letter log probabilities")
         ok = int(pred == q["answer"])
         correct.append(ok); p_true.append(pt)
         c = cats.setdefault(q["tag"], [0, 0]); c[0] += ok; c[1] += 1
         if i % 20 == 19:
             progress(i + 1, len(sample), sum(correct))
     n, k = len(correct), sum(correct)
-    return {"benchmark": "MMLU-Pro", "protocol": "5-shot, letter log-likelihood", "n": n, "correct": k, "acc": round(k / n, 4),
+    return {"benchmark": "MMLU-Pro", "protocol": "5-shot, top-k option-letter scoring (not full option likelihood)", "n": n, "correct": k, "acc": round(k / n, 4),
+            "probability_note": "Scores are renormalized over option letters in the server's returned shortlist; missing letters do not have measured probabilities",
             "ci95": [round(x, 4) for x in wilson(k, n)], "p_correct_mean": round(sum(p_true) / n, 4),
             "by_category": {c: {"correct": v[0], "total": v[1]} for c, v in sorted(cats.items())},
             "answers": "".join(str(x) for x in correct), "chance": 0.1}
@@ -829,7 +855,8 @@ async def needle_eval(client: httpx.AsyncClient, ctx: int, should_stop, progress
             progress(len(cells), total, sum(c["ok"] for c in cells))
     by_len = {str(L): round(sum(c["ok"] for c in cells if c["length"] == L) / len(NEEDLE_DEPTHS), 3) for L in lengths}
     pf = {str(L): next((c["prefill_tps"] for c in cells if c["length"] == L and c["prefill_tps"]), None) for L in lengths}
-    return {"lengths": lengths, "depths": NEEDLE_DEPTHS, "cells": cells, "acc": round(sum(c["ok"] for c in cells) / max(1, len(cells)), 4),
+    return {"lengths": lengths, "depths": NEEDLE_DEPTHS, "cells": cells, "acc": round(sum(c["ok"] for c in cells) / len(cells), 4) if cells else None,
+            "note": None if cells else "No test length fits this context; retrieval was not measured",
             "by_length": by_len, "prefill_tps_by_length": pf, "max_length": lengths[-1] if lengths else None}
 
 
@@ -839,6 +866,12 @@ async def needle_eval(client: httpx.AsyncClient, ctx: int, should_stop, progress
 # 128 forced output tokens. Each repetition uses a different text slice, so no prompt cache can help.
 
 SERVING_REPS = 5
+
+
+def _usage_tokens(usage: dict, key: str) -> int | None:
+    """A stream event is not a token. Only accept counts reported by the server."""
+    value = usage.get(key)
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
 
 
 async def serving_bench(client: httpx.AsyncClient, api: str, should_stop, prompt_tokens: int = 512, gen_tokens: int = 128) -> dict:
@@ -855,11 +888,13 @@ async def serving_bench(client: httpx.AsyncClient, api: str, should_stop, prompt
         body = {"model": "blocky", "messages": [{"role": "user", "content": text[start:start + n] + "\n\nContinue this text."}],
                 "max_tokens": gen_tokens, "temperature": 0, "stream": True, "ignore_eos": True, "stream_options": {"include_usage": True}}
         t0 = time.perf_counter()
-        first = last = None
-        chunks, usage = 0, {}
+        first = None
+        usage = {}
         async with client.stream("POST", "/v1/chat/completions", json=body, timeout=httpx.Timeout(30, read=600)) as resp:
             resp.raise_for_status()
             async for line in resp.aiter_lines():
+                if should_stop():
+                    raise asyncio.CancelledError
                 if not line.startswith("data:") or line.strip() == "data: [DONE]":
                     continue
                 try:
@@ -871,20 +906,22 @@ async def serving_bench(client: httpx.AsyncClient, api: str, should_stop, prompt
                 if delta.get("content") or delta.get("reasoning_content") or delta.get("reasoning"):
                     now = time.perf_counter()
                     first = first or now
-                    last = now
-                    chunks += 1
+        finished = time.perf_counter()
         if rep == 0 or first is None:
             continue
-        out_tokens = usage.get("completion_tokens") or chunks
-        in_tokens = usage.get("prompt_tokens") or prompt_tokens
+        out_tokens = _usage_tokens(usage, "completion_tokens")
+        in_tokens = _usage_tokens(usage, "prompt_tokens")
         ttft.append((first - t0) * 1000)
-        pp.append(in_tokens / (first - t0))
-        if last > first and out_tokens > 1:
-            tg.append((out_tokens - 1) / (last - first))
+        if in_tokens is not None and first > t0:
+            pp.append(in_tokens / (first - t0))
+        if out_tokens is not None and finished > t0:
+            tg.append(out_tokens / (finished - t0))
     s_pp, s_tg, s_tt = robust_stats(pp), robust_stats(tg), robust_stats(ttft)
     return {"pp": s_pp["median"], "pp_sd": s_pp["sd"], "tg": s_tg["median"], "tg_sd": s_tg["sd"], "ttft_ms": s_tt["median"], "ttft_sd": s_tt["sd"],
-            "reps": SERVING_REPS, "prompt_tokens": prompt_tokens, "gen_tokens": gen_tokens,
-            "method": "OpenAI chat API, streaming, temperature 0, ignore_eos; median of 5 after 1 warm-up"}
+            "reps": len(tg), "requested_reps": SERVING_REPS, "prompt_tokens": prompt_tokens, "gen_tokens": gen_tokens,
+            "samples": {"pp": pp, "tg": tg, "ttft_ms": ttft}, "timing_scope": "request",
+            "note": "Token rates unavailable for responses without server usage counts" if len(pp) < SERVING_REPS or len(tg) < SERVING_REPS else None,
+            "method": "Output tokens / full request time (includes prefill); prompt tokens / time to first content chunk is a latency proxy, not isolated prefill. Server usage counts only; median of 5 after 1 warm-up"}
 
 
 ENERGY_IDLE_S = 8
@@ -892,12 +929,12 @@ ENERGY_GEN_S = 15
 
 
 async def sustained_generation(client: httpx.AsyncClient, tg_est: float | None, ctx: int, should_stop) -> tuple[int, float, float]:
-    """Generate for ~ENERGY_GEN_S seconds in one streaming request; returns (tokens after the first, first time, last time)."""
+    """Return actual output tokens and the full request interval, including prefill."""
     n = int(min(max(256, (tg_est or 30) * ENERGY_GEN_S), max(64, ctx - 256), 8192))
     body = {"model": "blocky", "messages": [{"role": "user", "content": "Write a long, detailed story about a lighthouse keeper."}],
             "max_tokens": n, "temperature": 0, "stream": True, "ignore_eos": True, "stream_options": {"include_usage": True}}
-    first = last = None
-    chunks, usage = 0, {}
+    started = time.monotonic()
+    usage = {}
     async with client.stream("POST", "/v1/chat/completions", json=body, timeout=httpx.Timeout(30, read=900)) as resp:
         resp.raise_for_status()
         async for line in resp.aiter_lines():
@@ -910,14 +947,8 @@ async def sustained_generation(client: httpx.AsyncClient, tg_est: float | None, 
             except ValueError:
                 continue
             usage = d.get("usage") or usage
-            delta = ((d.get("choices") or [{}])[0].get("delta") or {})
-            if delta.get("content") or delta.get("reasoning_content") or delta.get("reasoning"):
-                last = time.monotonic()
-                first = first or last
-                chunks += 1
-    if first is None:
-        return 0, 0.0, 0.0
-    return max(0, (usage.get("completion_tokens") or chunks) - 1), first, last
+    finished = time.monotonic()
+    return _usage_tokens(usage, "completion_tokens") or 0, started, finished
 
 
 def wilson(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
@@ -947,7 +978,7 @@ def mcnemar_p(a: str, b: str) -> float | None:
 
 # ---------- Provenance: everything needed to reproduce (or question) a run ----------
 
-PROTOCOL = "blocky-profile/2 (MMLU-Pro 560q 5-shot loglik · llama-bench p512 n128 d0,4096 r5 · PPL/KLD WikiText-2 c512 x32)"
+PROTOCOL = "blocky-profile/3 (MMLU-Pro option logprobs · llama-bench p512 n128 d0,4096 r5 · PPL/KLD WikiText-2 c512 x32 · serving/energy: actual usage, full request interval)"
 REPO = Path(__file__).resolve().parents[2]
 
 
@@ -1070,22 +1101,49 @@ async def _bench(cfg: dict, vram_total: float, run_id: int, log: list[str], cmds
     if cmds is not None:
         cmds["speed"] = _cmdline(cmd)
     out = await quantlab._proc(cmd, log, run_id, timeout=900)
+    _retain_output(run_id, "speed", out)
     return parse_bench(out)
+
+
+def _retain_output(run_id: int, phase: str, output: str) -> None:
+    with db.connect() as c:
+        row = c.execute("SELECT experiment_id FROM exp_runs WHERE id = ?", (run_id,)).fetchone()
+    if row:
+        folder = DIR / str(row["experiment_id"])
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / f"run{run_id}-{phase}.txt").write_text(output, encoding="utf-8")
+
+
+def evidence_outputs(run_id: int) -> dict:
+    with db.connect() as c:
+        row = c.execute("SELECT experiment_id, results FROM exp_runs WHERE id = ?", (run_id,)).fetchone()
+    if not row:
+        raise ValueError("Run not found")
+    if json.loads(row["results"]).get("imported_from"):
+        return {"outputs": {}, "note": "Raw output files were not included in the imported experiment"}
+    folder = DIR / str(row["experiment_id"])
+    outputs = {}
+    for phase in ("speed", "fidelity", "log"):
+        path = folder / f"run{run_id}-{phase}.txt"
+        if path.is_file():
+            with path.open(encoding="utf-8", errors="replace") as f:
+                content = f.read(1_000_001)
+            outputs[phase] = {"text": content[:1_000_000], "truncated": len(content) > 1_000_000}
+    return {"outputs": outputs, "note": "Output retention applies to new runs; earlier results may contain summaries only"}
 
 
 def robust_stats(raw: list[float]) -> dict:
     """Median and robust spread of repeated measurements.
 
-    Impossible repetitions (0, or a timer glitch far from the rest) are dropped: anything more than 50% away from the
-    median. Spread = 1.4826 × median absolute deviation (≈ σ for normal noise, but one outlier can't inflate it).
+    Only non-finite/non-positive samples are invalid. Slow or unusually fast positive repetitions remain visible:
+    this summary cannot distinguish a timer bug from a real performance change. Spread = 1.4826 × MAD.
     """
-    pos = sorted(s for s in raw if s and s > 0)
-    m0 = pos[len(pos) // 2] if pos else 0
-    samples = [s for s in pos if 0.5 * m0 <= s <= 1.5 * m0]
+    pos = sorted(s for s in raw if isinstance(s, (int, float)) and not isinstance(s, bool) and math.isfinite(s) and s > 0)
+    samples = pos
     if not samples:
         return {"median": None, "sd": None, "dropped": len(raw)}
-    med = samples[len(samples) // 2]
-    mad = sorted(abs(s - med) for s in samples)[len(samples) // 2]
+    med = statistics.median(samples)
+    mad = statistics.median(abs(s - med) for s in samples)
     return {"median": round(med, 2), "sd": round(1.4826 * mad, 2), "dropped": len(raw) - len(samples)}
 
 
@@ -1102,14 +1160,27 @@ def parse_bench(out: str) -> dict:
                 res[key + "_dropped"] = st["dropped"]
             if st["median"] is not None:
                 res[key], res[key + "_sd"] = st["median"], st["sd"]
-                res[key + "_samples"] = [round(s, 2) for s in raw]
+                res[key + "_samples"] = [round(s, 2) if isinstance(s, (int, float)) and math.isfinite(s) else None for s in raw]
+            elif not raw:
+                avg, sd = x.get("avg_ts"), x.get("stddev_ts")
+                res[key] = avg if isinstance(avg, (int, float)) and math.isfinite(avg) and avg > 0 else None
+                res[key + "_sd"] = sd if isinstance(sd, (int, float)) and math.isfinite(sd) and sd >= 0 else None
             else:
-                res[key], res[key + "_sd"] = round(x.get("avg_ts") or 0, 2), round(x.get("stddev_ts") or 0, 2)
+                res[key] = res[key + "_sd"] = None
     return res
 
 
 class _SkipRest(Exception):
     """Jump to the final analysis step (used when an engine can't run the remaining phases)."""
+
+
+def _check_kld_reference(path: Path, baseline: dict | None) -> None:
+    try:
+        ref = json.loads(path.with_suffix(".json").read_text())
+    except (OSError, ValueError):
+        ref = {}
+    if not path.is_file() or not baseline or ref.get("run_id") != baseline["id"] or ref.get("protocol") != PROTOCOL:
+        raise RuntimeError("Baseline logits are missing or belong to a different run/protocol. Create a new experiment and profile its baseline before comparing KL divergence")
 
 
 async def _stop_server(proc: asyncio.subprocess.Process | None) -> None:
@@ -1142,9 +1213,15 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
         rec = _run(c.execute("SELECT * FROM exp_runs WHERE id = ?", (run_id,)).fetchone())
     exp = get_experiment(rec["experiment_id"])
     cfg = rec["config"]
+    snapshot = rec.get("protocol_snapshot")
+    if snapshot:
+        if snapshot["version"] != PROTOCOL:
+            _save(run_id, status="error", error="Queued validation uses a different protocol; create a new batch")
+            return
+        exp["protocol"] = snapshot["tests"]
     lim = exp["limits"]
     vram_total = lim["vram_mb"] or 0
-    res: dict = {"config": cfg}
+    res: dict = {"config": cfg, "validation": rec.get("validation")}
     log: list[str] = []
     status, error = "done", None
     exp_dir = DIR / str(exp["id"]); exp_dir.mkdir(parents=True, exist_ok=True)
@@ -1167,6 +1244,7 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
         _save(run_id, status="running")
         try:
             res["provenance"] = await asyncio.to_thread(provenance, cfg)
+            res["weight_summary"] = await asyncio.to_thread(_weights, model_path(cfg["model"]))
             res["hardware"] = await asyncio.to_thread(hardware_snapshot)
             res["provenance"]["extra_tests"] = {"needle": f"WikiText-2 haystacks {NEEDLE_LENGTHS[0]}..ctx tokens × depths {NEEDLE_DEPTHS}, seed {NEEDLE_SEED}",
                                                 "lm_eval": (exp.get("protocol") or {}).get("lm_eval"),
@@ -1190,9 +1268,11 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
                 await asyncio.sleep(1.5)
                 used = (sampler.samples[-1].get("vram_mb") if sampler.samples else 0) or 0
                 budget = min(vram_total - used - 300, cfg.get("vram_limit_mb") or vram_total)
-                util = max(0.2, min(0.92, budget / vram_total)) if vram_total else 0.85
+                if not vram_total or budget <= 0:
+                    raise RuntimeError("Cannot determine a positive GPU memory budget for vLLM")
+                util = min(0.92, budget / vram_total)
                 cmd = [str(ebin / "vllm"), "serve", str(model_path(cfg["model"])), "--host", "127.0.0.1", "--port", str(PORT),
-                       "--served-model-name", "blocky", "--max-model-len", str(cfg["ctx"]), "--gpu-memory-utilization", f"{util:.2f}",
+                       "--served-model-name", "blocky", "--max-model-len", str(cfg["ctx"]), "--gpu-memory-utilization", f"{util:.6f}",
                        "--max-num-seqs", "4", "--default-chat-template-kwargs", '{"enable_thinking": false}']
                 env = dict(os.environ)
             else:
@@ -1269,8 +1349,9 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
                 idle = [x for x in sampler.samples if x["phase"] == "idle" and x["t"] >= t_idle + 2]  # let boost clocks settle
                 phase("energy")
                 tokens, t1, t2 = await sustained_generation(client, (res["serving"] or {}).get("tg"), cfg["ctx"], lambda: run_id in _cancel)
-                load = [x for x in sampler.samples if x["phase"] == "energy" and t1 + 0.5 <= x["t"] <= t2]
+                load = [x for x in sampler.samples if x["phase"] == "energy" and t1 <= x["t"] <= t2]
                 res["energy"] = power.energy_summary(idle, load, tokens, t2 - t1)
+                res["energy"]["method"] = "Sampled mean power over the full request, including prefill, divided by server-reported output tokens"
                 res["energy"]["meter"] = bool(meter)
 
                 # 2c) Optional: lm-evaluation-harness tasks chosen for this experiment, against this same server.
@@ -1315,14 +1396,18 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
                 res["ppl_sd"] = quantlab._num(r"Final estimate: PPL = [\d.]+\s*\+/-\s*([\d.]+)", out)
                 res["kld"] = res["same_top"] = None
                 res["token_note"] = "different tokenizer than the baseline: KL divergence and perplexity can't be compared"
-            elif is_baseline or not base_kld.is_file():
+            elif is_baseline:
                 cmds["fidelity"] = _cmdline(pcmd + ["--kl-divergence-base", str(base_kld)])
                 out = await quantlab._proc(pcmd + ["--kl-divergence-base", str(base_kld)], log, run_id)
                 res["ppl"] = quantlab._num(r"Final estimate: PPL = ([\d.]+)", out)
                 res["ppl_sd"] = quantlab._num(r"Final estimate: PPL = [\d.]+\s*\+/-\s*([\d.]+)", out)
+                if res["ppl"] is None or not base_kld.is_file():
+                    raise RuntimeError("The evaluator did not produce baseline perplexity and logits")
+                base_kld.with_suffix(".json").write_text(json.dumps({"run_id": run_id, "protocol": PROTOCOL}))
                 res["kld"], res["same_top"] = 0.0, 100.0
                 res["kld_reference"] = True
             else:
+                _check_kld_reference(base_kld, base_run)
                 cmds["fidelity"] = _cmdline(pcmd + ["--kl-divergence-base", str(base_kld), "--kl-divergence"])
                 out = await quantlab._proc(pcmd + ["--kl-divergence-base", str(base_kld), "--kl-divergence"], log, run_id)
                 res["ppl"] = quantlab._num(r"Mean PPL\(Q\)\s*:\s*([\d.]+)", out)
@@ -1333,6 +1418,7 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
                 res["same_top"] = quantlab._num(r"Same top p:\s*([\d.]+)", out)
                 res["same_top_sd"] = quantlab._num(r"Same top p:\s*[\d.]+\s*±\s*([\d.]+)", out)
 
+            _retain_output(run_id, "fidelity", out)
             raise _SkipRest
         except _SkipRest:
             # 5) Telemetry + bottleneck analysis (every engine ends here).
@@ -1347,6 +1433,7 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
             status, error = "error", str(e)[:400]
         finally:
             await sampler.stop()
+            _retain_output(run_id, "log", "\n".join(log))
             await _stop_server(proc)
             if res.get("series") is None and sampler.samples:
                 res["series"] = sampler.series()
@@ -1385,13 +1472,17 @@ def _weights(path: Path) -> dict:
 
 def analyze(res: dict, cfg: dict, lim: dict) -> dict:
     """Measured numbers against the hardware's physical limits. Pure function of stored data, so it can be recomputed."""
-    path = model_path(cfg["model"])
-    if not (path.is_file() or (path / "config.json").is_file()):
-        return {}
-    w = _weights(path)
+    w = res.get("weight_summary")
+    if not w:
+        path = model_path(cfg["model"])
+        if not (path.is_file() or (path / "config.json").is_file()):
+            return {}
+        w = _weights(path)
     mem = res.get("memory") or {}
     # llama-bench numbers when there are any; otherwise (vLLM) the engine-neutral serving measurement.
-    speed = res.get("speed") or res.get("serving") or {}
+    serving = res.get("serving") or {}
+    # Full-request throughput includes prefill and cannot describe isolated decode/compute utilization.
+    speed = res.get("speed") or (serving if serving.get("timing_scope") != "request" else {})
     tel = (res.get("telemetry") or {}).get("speed") or (res.get("telemetry") or {}).get("serving") or {}
     tg, pp = speed.get("tg"), speed.get("pp")
     bw, ram_bw, peak_tf = lim.get("gpu_bandwidth_gbps"), lim.get("ram_bandwidth_gbps"), lim.get("gpu_tflops")
@@ -1409,16 +1500,16 @@ def analyze(res: dict, cfg: dict, lim: dict) -> dict:
                            "sm_clock_mhz": lim.get("sm_clock_max")}}
 
     if tg:
-        t_gpu = gpu_gb / bw * 1000 if bw else None
-        t_cpu = cpu_gb / ram_bw * 1000 if (cpu_gb and ram_bw) else 0.0
+        t_gpu = gpu_gb / bw * 1000 if bw else (0.0 if not gpu_gb else None)
+        t_cpu = cpu_gb / ram_bw * 1000 if ram_bw else (0.0 if not cpu_gb else None)
         t_meas = 1000 / tg
-        roof_ms = (t_gpu or 0) + (t_cpu or 0) if t_gpu is not None else None
+        roof_ms = t_gpu + t_cpu if t_gpu is not None and t_cpu is not None else None
         out["decode"] = {
             "ms_per_token": round(t_meas, 2),
             "effective_gbps": round(gb * tg, 1),
             "roof_tps": round(1000 / roof_ms, 1) if roof_ms else None,
-            "roof_util": round(min(1.0, roof_ms / t_meas), 3) if roof_ms else None,
-            "time_split_ms": {"vram_reads": round(t_gpu, 2) if t_gpu is not None else None, "ram_reads": round(t_cpu, 2),
+            "roof_util": round(roof_ms / t_meas, 3) if roof_ms else None,
+            "time_split_ms": {"vram_reads": round(t_gpu, 2) if t_gpu is not None else None, "ram_reads": round(t_cpu, 2) if t_cpu is not None else None,
                               "other": round(max(0.0, t_meas - (roof_ms or 0)), 2) if roof_ms else None},
             "achieved_tflops": round(flops * tg / 1e12, 3) if flops else None,
             "arithmetic_intensity": round(flops / w["bytes"], 2) if flops else None,
@@ -1463,14 +1554,16 @@ def analyze(res: dict, cfg: dict, lim: dict) -> dict:
     # The binding constraint for generation, decided from the numbers above.
     d = out.get("decode") or {}
     split = d.get("time_split_ms") or {}
-    if cpu_gb > 0.05 and split.get("ram_reads"):
-        out["limiter"] = {"what": "System-RAM bandwidth",
-                          "evidence": f"{split['ram_reads']:.1f} of {d['ms_per_token']:.1f} ms per token is reading {cpu_gb:.2f} GB of weights from RAM at {ram_bw} GB/s"}
+    if d.get("roof_util") is not None and d["roof_util"] > 1:
+        out["limiter"] = {"what": "Roofline estimate exceeded", "evidence": "Measured throughput exceeds this simplified weight-read model; its assumptions do not explain this run"}
+    elif cpu_gb > 0.05 and split.get("ram_reads"):
+        out["limiter"] = {"what": "Possible RAM bandwidth limit",
+                          "evidence": f"The model estimates at least {split['ram_reads']:.1f} ms of RAM reads per token; total measured time is {d['ms_per_token']:.1f} ms. This is not a measured time breakdown"}
     elif d.get("roof_util") is not None and d["roof_util"] >= 0.6:
-        out["limiter"] = {"what": "VRAM bandwidth", "evidence": f"{d['effective_gbps']} GB/s effective of {bw} GB/s peak ({d['roof_util'] * 100:.0f}%)"}
+        out["limiter"] = {"what": "Possible VRAM bandwidth limit", "evidence": f"Estimated weight traffic is {d['effective_gbps']} GB/s against {bw} GB/s nominal peak; a kernel profile is needed to confirm the cause"}
     elif d.get("roof_util") is not None:
-        out["limiter"] = {"what": "Software overhead",
-                          "evidence": f"only {d['roof_util'] * 100:.0f}% of the VRAM-bandwidth roof; {split.get('other')} ms per token is spent outside weight reads"}
+        out["limiter"] = {"what": "Bottleneck undetermined",
+                          "evidence": f"{d['roof_util'] * 100:.0f}% of the estimated memory-bandwidth roof. Low utilization alone does not identify the bottleneck"}
     return out
 
 
@@ -1485,14 +1578,18 @@ def compare(base: dict | None, run: dict) -> dict:
         out["env_mismatch"] = [name for name, path in PROV_KEYS if _get(pa, path) != _get(pb, path)]
         if (base["config"].get("engine") or "stock") != (run["config"].get("engine") or "stock"):
             out["env_mismatch"] = [x for x in out["env_mismatch"] if x != "llama.cpp commit"]  # the engine is the variable here
-        if pa["model"]["file"] == pb["model"]["file"] and pa["model"]["sha256"] != pb["model"]["sha256"]:
+        if _get(pa, ("model", "file")) == _get(pb, ("model", "file")) and _get(pa, ("model", "sha256")) != _get(pb, ("model", "sha256")):
             out["env_mismatch"].append("model file changed on disk")
         # Different hardware is information, not a problem: it's what you compare when testing devices.
         out["hw_diff"] = [name for name, path in HW_KEYS
                           if _get(pa, path) is not None and _get(pb, path) is not None and _get(pa, path) != _get(pb, path)]
     elif pa or pb:
         out["env_mismatch"] = ["provenance missing"]
-    if a.get("answers") and b.get("answers"):
+    if pa and pb:
+        for name, path in (("MMLU-Pro seed", ("data", "mmlu_seed")), ("MMLU-Pro question count", ("extra_tests", "mmlu_questions"))):
+            if _get(pa, path) != _get(pb, path):
+                out["env_mismatch"].append(name)
+    if a.get("answers") and b.get("answers") and not out.get("env_mismatch"):
         out["mmlu_p"] = mcnemar_p(a["answers"], b["answers"])
         out["mmlu_flips"] = {"lost": sum(1 for x, y in zip(a["answers"], b["answers"]) if x == "1" and y == "0"),
                              "gained": sum(1 for x, y in zip(a["answers"], b["answers"]) if x == "0" and y == "1")}
@@ -1510,7 +1607,10 @@ def enrich(exp: dict) -> dict:
             r["parent_id"] = base["id"]
         if r["status"] == "done":
             # Each run is judged against the hardware it actually ran on (its snapshot), not today's machine.
-            r["results"]["hw"] = analyze(r["results"], r["config"], r["results"].get("hardware") or lim)
+            if not r["results"].get("imported_from"):
+                analysis = analyze(r["results"], r["config"], r["results"].get("hardware") or lim)
+                if analysis:
+                    r["results"]["hw"] = analysis
             r["results"].pop("bottleneck", None)
             r["stats"] = compare(base, r)
             if base:
@@ -1518,7 +1618,7 @@ def enrich(exp: dict) -> dict:
             parent = by_id.get(r.get("parent_id"))
             if parent and base and parent["id"] != base["id"] and parent["status"] == "done":
                 vp = compare(parent, r)
-                r["stats"]["vs_parent"] = {k: vp[k] for k in ("mmlu_p", "mmlu_flips") if k in vp}
+                r["stats"]["vs_parent"] = {k: vp[k] for k in ("mmlu_p", "mmlu_flips", "env_mismatch") if k in vp}
     # Many runs vs one baseline: Holm-adjusted p-values (family-wise error rate) next to the raw ones.
     tested = [r for r in exp["runs_list"] if (r.get("stats") or {}).get("mmlu_p") is not None]
     for r, p in zip(tested, holm([r["stats"]["mmlu_p"] for r in tested])):
@@ -1574,6 +1674,7 @@ def import_experiment(data: dict, into: int | None = None) -> dict:
                                (time.time(), f"{data.get('name') or 'Imported'} (from {src_device or src_gpu})"[:80], runs[0]["config"]["model"],
                                 int(data.get("seed") or 0))).lastrowid
             local_root = None
+            c.execute("UPDATE experiments SET protocol = ? WHERE id = ?", (json.dumps(data.get("protocol") or {}), exp_id))
         else:
             exp_id = into
             r0 = c.execute("SELECT id FROM exp_runs WHERE experiment_id = ? AND status = 'done' ORDER BY id LIMIT 1", (into,)).fetchone()

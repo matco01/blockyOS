@@ -131,7 +131,7 @@ async def run(client: httpx.AsyncClient, text: str, chars_per_tok: float, ctx: i
                 progress(done, total)
             cells.append({"task": task, "length": L, "score": round(sum(scores) / len(scores), 4), "ci95": round(_ci(scores), 4), "n": len(scores)})
     by_len = {str(L): round(sum(c["score"] for c in cells if c["length"] == L) / len(TASKS), 4) for L in lengths}
-    by_task = {t: round(sum(c["score"] for c in cells if c["task"] == t) / max(1, len(lengths)), 4) for t in TASKS}
+    by_task = {t: round(sum(c["score"] for c in cells if c["task"] == t) / len(lengths), 4) for t in TASKS} if lengths else {}
     eff = None
     for L in lengths:
         if by_len[str(L)] >= THRESHOLD:
@@ -140,5 +140,5 @@ async def run(client: httpx.AsyncClient, text: str, chars_per_tok: float, ctx: i
             break
     allx = [c["score"] for c in cells]
     return {"lengths": lengths, "tasks": list(TASKS), "samples": samples, "cells": cells, "by_length": by_len, "by_task": by_task,
-            "score": round(sum(allx) / max(1, len(allx)), 4), "effective_length": eff, "threshold": THRESHOLD,
+            "score": round(sum(allx) / len(allx), 4) if allx else None, "effective_length": eff, "threshold": THRESHOLD,
             "method": f"RULER-style synthetic tasks ({', '.join(TASKS)}), {samples} samples per task and length, seed {SEED}, greedy"}

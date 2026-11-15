@@ -5,9 +5,10 @@ After=network.target blocky-llm.service
 [Service]
 User=blocky
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/lib/wsl/lib
+Environment=UVICORN_HOST=127.0.0.1
 EnvironmentFile=-/etc/blocky/blocky.env
 WorkingDirectory=/opt/blocky/app/backend
-ExecStart=/opt/blocky/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+ExecStart=/opt/blocky/venv/bin/uvicorn app.main:app --port 8000
 Restart=always
 RestartSec=3
 

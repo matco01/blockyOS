@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ExpRun } from "./api";
-import { allMetrics, delta, hwLabel, METRICS, runTitle } from "./expmetrics";
+import { allMetrics, delta, hwLabel, METRICS, pValue, runTitle } from "./expmetrics";
 
 const run = (id: number, results: Record<string, unknown>, extra: Partial<ExpRun> = {}): ExpRun => ({
   id, experiment_id: 1, created_at: 0, status: "done", label: `run ${id}`, phase: null, error: null, parent_id: id === 1 ? null : 1,
@@ -14,17 +14,18 @@ describe("delta: only differences bigger than the noise are colored", () => {
     const d = delta(m("tg"), { base: run(1, { speed: { tg: 60, tg_sd: 2 } }), run: run(2, { speed: { tg: 63, tg_sd: 2 } }) });
     expect(d?.tone).toBe("same");
   });
-  it("a speed change beyond 2σ is green when higher is better", () => {
+  it("a speed change with descriptive spread does not claim statistical significance", () => {
     const d = delta(m("tg"), { base: run(1, { speed: { tg: 60, tg_sd: 0.5 } }), run: run(2, { speed: { tg: 66, tg_sd: 0.5 } }) });
-    expect(d).toMatchObject({ tone: "good", text: "+10%" });
+    expect(d).toMatchObject({ tone: "same", text: "+10%" });
+    expect(d?.title).toContain("not been established");
   });
-  it("lower-is-better metrics turn red when they go up", () => {
+  it("metrics without uncertainty remain descriptive even for large changes", () => {
     const d = delta(m("kld"), { base: run(1, { kld: 0.01 }), run: run(2, { kld: 0.05 }) });
-    expect(d?.tone).toBe("bad");
+    expect(d?.tone).toBe("same");
   });
   it("session drift from a repeated setup raises the bar", () => {
     const ctx = { base: run(1, { speed: { tg: 60, tg_sd: 0.2 } }), run: run(2, { speed: { tg: 62, tg_sd: 0.2 } }) };
-    expect(delta(m("tg"), ctx)?.tone).toBe("good");
+    expect(delta(m("tg"), ctx)?.tone).toBe("same");
     expect(delta(m("tg"), ctx, 1.5)?.tone).toBe("same");   // a repeat drifted 1.5 tok/s: 2 isn't beyond 2 × 1.5
   });
   it("MMLU-Pro uses the paired test against the baseline, and against the parent", () => {
@@ -40,6 +41,23 @@ describe("delta: only differences bigger than the noise are colored", () => {
   it("token-level metrics are not comparable across tokenizers", () => {
     const d = delta(m("ppl"), { base: run(1, { ppl: 6.7 }), run: run(2, { ppl: 13.9, token_note: "different tokenizer" }, { config: { ...run(2, {}).config, model: "Qwen3-4B-Q4_K_M.gguf" } }) });
     expect(d?.text).toBe("not comparable");
+  });
+  it("missing paired tests never fall back to a percentage threshold", () => {
+    expect(delta(m("mmlu"), { base: run(1, { mmlu: { acc: 0.9 } }), run: run(2, { mmlu: { acc: 0.1 } }) })?.tone).toBe("same");
+  });
+  it("different protocols block both comparison and p-values", () => {
+    const base = run(1, { mmlu: { acc: 0.9 }, provenance: { protocol: "v2" } });
+    const other = run(2, { mmlu: { acc: 0.1 }, provenance: { protocol: "v3" } }, { stats: { baseline_id: 1, mmlu_p: 0.001 } });
+    expect(delta(m("mmlu"), { base, run: other })?.text).toBe("not comparable");
+    expect(pValue(m("mmlu"), { base, run: other })).toBeNull();
+  });
+  it("KL scores relative to different imported baselines are not comparable", () => {
+    const base = run(1, { kld: 0.01 });
+    const other = run(2, { kld: 0.02, imported_from: { imported_at: 123 } });
+    expect(delta(m("kld"), { base, run: other })?.text).toBe("not comparable");
+  });
+  it("no retrieval trials does not mean zero accuracy", () => {
+    expect(m("needle").get(run(1, { needle: { cells: [], acc: 0 } }).results)).toBeNull();
   });
 });
 

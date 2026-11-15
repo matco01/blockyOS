@@ -546,3 +546,23 @@ table.data.gd-table td:first-child { white-space: nowrap; }
 @media (max-width: 760px) { .xplan-grid { grid-template-columns: 1fr; } }
 
 .qs-export select { margin: 0 4px; }
+.xe-badge { display: inline-block; margin: 3px 0 3px 6px; padding: 3px 7px; border: 1px solid var(--separator); border-radius: 8px; font-size: 10px; color: var(--text-2); background: var(--surface-2); cursor: pointer; }
+.xevidence { width: min(850px, 92vw); max-height: 88vh; overflow: auto; color: var(--text); background: var(--surface); border: 1px solid var(--separator); border-radius: 16px; padding: 24px; box-shadow: var(--shadow-hair); }
+.xevidence::backdrop { background: rgba(0,0,0,.4); }
+.xe-head { display: flex; justify-content: space-between; gap: 12px; align-items: center; }
+.xe-head h2 { margin: 0; font-size: 19px; }
+.xevidence pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 350px; overflow: auto; background: var(--surface-2); padding: 12px; font-size: 12px; }
+.xevidence details { margin-top: 12px; }
+.xv-panel { margin-bottom: 16px; }
+.xv-controls { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; }
+.xv-controls label { display: flex; flex-direction: column; gap: 5px; font-size: 12px; max-width: 100%; }
+.xv-controls select { max-width: 320px; }
+.xv-controls input { width: 110px; }
+.xv-batch { margin-top: 15px; border-top: 1px solid var(--separator); padding-top: 12px; font-size: 13px; }
+.rp-controls { display: flex; align-items: end; flex-wrap: wrap; gap: 10px; margin: 10px 0; }
+.rp-controls label { display: flex; flex-direction: column; gap: 5px; font-size: 12px; }
+.rp-controls input { min-width: 160px; }
+.rp-controls input[type=checkbox] { min-width: 0; }
+.rp-code { width: 100%; min-height: 320px; margin: 12px 0; font-family: var(--mono); font-size: 12px; tab-size: 4; }
+.rp-config { display: block; width: 100%; min-height: 85px; font-family: var(--mono); }
+.rp-output { max-height: 400px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surface-2); padding: 12px; font-size: 12px; }

@@ -86,7 +86,7 @@ export type HwAnalysis = {
   weights_gb_per_token: number; weights_on_gpu_gb: number; weights_on_cpu_gb: number; params_active_b: number | null;
   peaks: { vram_gbps: number | null; ram_gbps: number | null; tflops: number | null; tflops_kind: string | null; sm_clock_mhz: number | null };
   decode?: { ms_per_token: number; effective_gbps: number; roof_tps: number | null; roof_util: number | null;
-    time_split_ms: { vram_reads: number | null; ram_reads: number; other: number | null }; achieved_tflops: number | null; arithmetic_intensity: number | null; long_context_ratio: number | null };
+    time_split_ms: { vram_reads: number | null; ram_reads: number | null; other: number | null }; achieved_tflops: number | null; arithmetic_intensity: number | null; long_context_ratio: number | null };
   prefill?: { achieved_tflops: number; arithmetic_intensity: number; roof_tflops: number | null; roof_util: number | null; long_context_ratio: number | null };
   clocks: { sm_avg_mhz: number | null; sm_max_mhz: number | null; ratio: number | null; temp_max_c: number | null; gpu_util_avg: number | null;
     mem_util_avg: number | null; cpu_util_avg: number | null; power_avg_w: number | null; cpu_power_avg_w: number | null };
@@ -112,13 +112,13 @@ export type ExpResults = {
   hardware?: { gpu: string | null; gpu_bandwidth_gbps: number | null; gpu_tflops: number | null; vram_mb: number; ram_mb: number; ram_bandwidth_gbps: number | null;
     cpu: string; cpu_threads: number; power_limit_w: number | null; sm_clock_max: number | null; compute_capability?: string | null; device?: string };
   imported_from?: { device: string | null; gpu: string; experiment: string; imported_at: number };
-  needle?: { lengths: number[]; depths: number[]; cells: { length: number; depth: number; ok: boolean; prefill_tps: number | null }[]; acc: number;
+  needle?: { lengths: number[]; depths: number[]; cells: { length: number; depth: number; ok: boolean; prefill_tps: number | null }[]; acc: number | null;
     by_length: Record<string, number>; prefill_tps_by_length: Record<string, number | null>; max_length: number | null };
   needle_progress?: { done: number; total: number; correct: number };
   lm_eval?: { tasks?: Record<string, { metrics: Record<string, number>; stderr: Record<string, number> }>; limit?: number; error?: string; command?: string };
   energy?: Energy;
   ruler?: { lengths: number[]; tasks: string[]; samples: number; cells: { task: string; length: number; score: number; ci95: number; n: number }[];
-    by_length: Record<string, number>; by_task: Record<string, number>; score: number; effective_length: number | null; threshold: number; method: string };
+    by_length: Record<string, number>; by_task: Record<string, number>; score: number | null; effective_length: number | null; threshold: number; method: string };
   ruler_progress?: { done: number; total: number };
   remote_device?: { id: number; name: string; url: string };
   cost?: { currency: string; electricity_per_mtok?: number; tps_per_1k_price?: number };
@@ -140,9 +140,10 @@ export type Provenance = {
 export type KernelProfile = { total_ms: number; categories: { category: string; ms: number; share: number; calls: number; kernels: number }[];
   top: { name: string; ms: number; share: number; calls: number; category: string }[] };
 export type ExpRun ={ id: number; experiment_id: number; created_at: number; status: string; label: string; config: ExpConfig; results: ExpResults;
+  log?: string | null;
   phase: string | null; error: string | null; parent_id?: number | null;
   stats?: { mmlu_p?: number | null; mmlu_flips?: { lost: number; gained: number }; env_mismatch?: string[]; hw_diff?: string[]; baseline_id?: number;
-    vs_parent?: { mmlu_p?: number | null; mmlu_flips?: { lost: number; gained: number } } } };
+    vs_parent?: { mmlu_p?: number | null; mmlu_flips?: { lost: number; gained: number }; env_mismatch?: string[] } } };
 export type TorchStatus = { installed: boolean; converter: boolean; torch?: string; cuda?: boolean; transformers?: string; peft?: string;
   checkpoints: { id: string; repo: string; architecture: string; layers: number | null; size_bytes: number }[] };
 export type TorchJob = { id: number; created_at: number; kind: string; status: string; step: string | null; error: string | null;
@@ -162,6 +163,7 @@ export type WeightJob = VariantSpec & { id: string; out: string; status: string;
 export type CanvasNote ={ id: string; x: number; y: number; text: string };
 export type CanvasState = { pos: Record<string, { x: number; y: number }>; notes: CanvasNote[]; view?: { x: number; y: number; k: number }; devices?: number[] };
 export type Experiment = {
+  validations?: ValidationBatch[];
   id: number; created_at: number; name: string; model: string; seed: number; runs?: number; canvas?: CanvasState | null;
   protocol?: { lm_eval?: { tasks: string; limit: number }; kernels?: boolean; mmlu_per_category?: number; ruler?: { samples: number } } | null;
   runs_list?: ExpRun[]; limits?: { gpu: string | null; gpu_bandwidth_gbps: number | null; gpu_tflops: number | null; gpu_tflops_kind: string | null; sm_clock_max: number | null;
@@ -272,6 +274,16 @@ const send = (method: string, body?: unknown): RequestInit => ({
 });
 
 export const api = {
+  researchProjects: () => json<{ projects: ResearchProject[]; python: string }>("/api/research/projects"),
+  researchCreate: (name: string, template: string) => json<{ id: number }>("/api/research/projects", send("POST", { name, template })),
+  researchFiles: (pid: number) => json<string[]>(`/api/research/projects/${pid}/files`),
+  researchRead: (pid: number, name: string) => json<{ content: string }>(`/api/research/projects/${pid}/file?name=${encodeURIComponent(name)}`),
+  researchWrite: (pid: number, name: string, content: string) => json(`/api/research/projects/${pid}/file`, send("PUT", { name, content })),
+  researchJobs: (pid: number) => json<ResearchJob[]>(`/api/research/projects/${pid}/jobs`),
+  researchQueue: (pid: number, body: unknown) => json<{ id: number }>(`/api/research/projects/${pid}/jobs`, send("POST", body)),
+  researchCancel: (jid: number) => json(`/api/research/jobs/${jid}/cancel`, send("POST", {})),
+  researchCompare: (ids: string[]) => json<ResearchComparison>(`/api/research/compare?ids=${encodeURIComponent(ids.join(","))}`),
+  researchProfileRuns: () => json<{ id: number; label: string; experiment: string }[]>("/api/research/profile-runs"),
   conversations: () => json<Conversation[]>("/api/conversations"),
   messages: (id: number) => json<Message[]>(`/api/conversations/${id}`),
   remove: (id: number) => json(`/api/conversations/${id}`, { method: "DELETE" }),
@@ -322,6 +334,9 @@ export const api = {
   evalDelete: (id: number) => json(`/api/evals/${id}`, { method: "DELETE" }),
   experiments: () => json<Experiment[]>("/api/experiments"),
   experiment: (id: number) => json<Experiment>(`/api/experiments/${id}`),
+  experimentEvidence: (id: number) => json<{ outputs: Record<string, { text: string; truncated: boolean }>; note: string }>(`/api/experiments/runs/${id}/evidence`),
+  experimentValidate: (id: number, body: { reference_id: number; candidate_id: number; pairs: number; metric: string; min_effect_pct: number }) => json<{ id: number; run_ids: number[] }>(`/api/experiments/${id}/validate`, send("POST", body)),
+  validationCancel: (id: number, vid: number) => json(`/api/experiments/${id}/validations/${vid}/cancel`, send("POST", {})),
   experimentCreate: (name: string, model: string) => json<{ id: number }>("/api/experiments", send("POST", { name, model })),
   experimentDelete: (id: number) => json(`/api/experiments/${id}`, { method: "DELETE" }),
   experimentRun: (id: number, label: string, config: Partial<ExpConfig>, parentId?: number | null) =>
@@ -470,3 +485,14 @@ export async function streamChat(
     }
   }
 }
+export type ValidationBatch = {
+  id: number; created_at: number;
+  plan: { pairs: number; metric: string; min_effect_pct: number; protocol: string; sources: { id: number; label: string }[] };
+  summary: { metric_label: string; unit: string; conclusion: string; complete: boolean; problems: string[]; note: string;
+    stats: { n: number; median_pct: number | null; sd_pct: number | null; range_pct: number[] | null; ci95_pct: number[] | null; p: number | null };
+    pairs: { pair: number; run_ids: number[]; states: string[]; reference: number | null; candidate: number | null; improvement_pct: number | null }[] };
+};
+export type ResearchMetric = { type: string; name?: string; value?: number; unit?: string; kind?: string; protocol?: string; task?: string; dataset_sha256?: string; scope?: string; samples?: number[] | null; spread?: { n: number; sd: number | null }; note?: string; path?: string; message?: string };
+export type ResearchProject = { id: number; name: string; path: string; created_at: number };
+export type ResearchJob = { id: number; project_id: number; parent_id: number | null; status: string; error: string | null; directory: string; log: string; events: ResearchMetric[]; spec: { argv: string[]; config: Record<string, unknown>; python: string; gpu: boolean; timeout_s: number }; provenance: Record<string, unknown> };
+export type ResearchComparison = { runs: { id: number | string; project_id: number | null; status: string }[]; metrics: { name: string; compatible: boolean; reasons: string[]; values: (ResearchMetric | null)[] }[]; note: string };

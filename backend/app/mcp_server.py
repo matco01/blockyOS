@@ -9,7 +9,7 @@ import json
 
 from mcp.server.mcpserver import MCPServer
 
-from . import db, engines, lab, profile, scans, torchlab, weights
+from . import db, engines, lab, profile, scans, torchlab, weights, research_jobs
 
 INSTRUCTIONS = """Blocky is a local-AI research lab running on the user's own hardware. You can measure and improve how
 models run on this device.
@@ -17,14 +17,17 @@ models run on this device.
 How it works:
 - An *experiment* is a tree of *runs*. Each run profiles one setup (model file, engine, KV cache, context size, GPU
   layers, VRAM limit, flash attention, threads) with an identical protocol: memory layout, MMLU-Pro (560 fixed
-  questions, 5-shot letter log-likelihood), long-context needle test, engine-neutral serving speed, llama-bench speed,
+  questions, 5-shot top-k option-letter scoring), long-context needle test, engine-neutral serving throughput, llama-bench speed,
   perplexity + KL divergence vs the experiment's baseline, telemetry, and a roofline-style hardware analysis.
 - Branch from a run: the new run = that run's exact setup + your changes. Change ONE thing at a time.
 - A profile takes ~3-10 minutes and needs the GPU: runs wait in a queue and execute one after another. Use
   get_status / get_experiment to follow progress; don't poll more than every ~30 s.
-- Read significance, not raw differences: speeds carry a spread (sd); MMLU-Pro has a 95% CI and a paired McNemar
+- Read significance, not raw differences: speed spread is descriptive, not a standard error; MMLU-Pro has a 95% CI and a paired McNemar
   p-value vs baseline/parent; KL divergence is the most sensitive quality signal (0 = identical outputs).
 - KL divergence / perplexity only compare models with the same tokenizer; vLLM runs don't have them.
+- Protocol 3 serving throughput and energy include the full request, including prefill, and require actual server token counts.
+- Different protocols or KL reference baselines cannot be compared. Create a fresh experiment when the measurement protocol changes.
+- Hardware bottlenecks and weight-read time splits are estimates, not direct measurements of where time went.
 - Weights: build variants with build_weight_variant (quantization type, importance matrix, per-tensor precision
   overrides as regexes, layer pruning) from a high-precision source; find sensitive layers with start_layer_scan.
 - Energy: each run measures idle and generating power (wall meter if configured, else GPU/CPU sensors) -> energy per
@@ -37,6 +40,26 @@ How it works:
 """
 
 server = MCPServer(name="blocky", title="Blocky local-AI lab", instructions=INSTRUCTIONS, version="1")
+
+
+@server.tool(description="List custom research projects and jobs. These run architecture/training/evaluation programs alongside the built-in lab. project_id=0 lists projects; otherwise lists recent jobs with declared metrics and evidence.")
+def get_research_projects(project_id: int = 0) -> str:
+    try:
+        if not project_id:
+            return json.dumps(research_jobs.projects(), default=str)
+        return json.dumps([{"id": j["id"], "status": j["status"], "parent_id": j["parent_id"], "error": j["error"],
+                            "spec": j["spec"], "metrics": [e for e in j["events"] if e.get("type") == "metric"][-20:]}
+                           for j in research_jobs.jobs(project_id)[:20]], default=str)
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
+
+
+@server.tool(description="Compare 2–8 research jobs or built-in profiles (use 'profile:<run id>'). Reports matching/mismatched dataset, task, measurement protocol and units. Does not infer significance from raw differences.")
+def compare_research_jobs(run_ids: list[str]) -> str:
+    try:
+        return json.dumps(research_jobs.compare(run_ids), default=str)
+    except (ValueError, TypeError) as e:
+        return json.dumps({"error": str(e)})
 
 
 def _energy(e: dict | None) -> dict | None:
@@ -66,7 +89,7 @@ def _compact_run(r: dict) -> dict:
         "energy": _energy(x.get("energy")), "cost": x.get("cost"),
         "hardware": {"gpu": (x.get("hardware") or {}).get("gpu"), "device": (x.get("hardware") or {}).get("device")},
         "stats_vs_baseline_and_parent": r.get("stats"),
-        "notes": [n for n in (x.get("token_note"), x.get("fidelity_note")) if n] or None,
+        "notes": [n for n in (x.get("token_note"), x.get("fidelity_note"), sv.get("note"), sv.get("method"), m.get("probability_note")) if n] or None,
     }
 
 

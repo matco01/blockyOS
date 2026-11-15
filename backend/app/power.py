@@ -66,7 +66,7 @@ def _stats(v: list[float]) -> dict | None:
 def energy_summary(idle: list[dict], load: list[dict], tokens: int, seconds: float) -> dict:
     """Energy per generated token from telemetry samples taken while idle (model loaded) and while generating."""
     if not tokens or seconds <= 0:
-        return {"error": "No tokens were generated"}
+        return {"error": "No valid generated-token usage or measurement interval; energy per token is unavailable"}
     tps = tokens / seconds
     out: dict = {"tokens": tokens, "seconds": round(seconds, 2), "tps": round(tps, 2), "sources": {}}
     sources = {"wall": ["wall_power"], "gpu": ["power"], "cpu": ["cpu_power"], "parts": ["power", "cpu_power"]}
@@ -84,9 +84,9 @@ def energy_summary(idle: list[dict], load: list[dict], tokens: int, seconds: flo
         out["sources"][name] = src
     if "parts" in out["sources"] and "cpu" not in out["sources"]:
         out["sources"].pop("parts")  # GPU only: "parts" would just repeat it
-    primary = next((k for k in ("wall", "parts", "gpu") if k in out["sources"]), None)
+    primary = next((k for k in ("wall", "parts", "gpu", "cpu") if k in out["sources"]), None)
     out["primary"] = primary
-    out["primary_label"] = {"wall": "whole device (wall meter)", "parts": "GPU + CPU package (sensors)", "gpu": "GPU only (sensor)"}.get(primary)
+    out["primary_label"] = {"wall": "whole device (wall meter)", "parts": "GPU + CPU package (sensors)", "gpu": "GPU only (sensor)", "cpu": "CPU package only (sensor)"}.get(primary)
     if not primary:
         out["note"] = "No power reading on this device: the GPU driver reports none, CPU energy counters aren't readable, and no wall meter is set (Settings → Energy & cost)."
     return out

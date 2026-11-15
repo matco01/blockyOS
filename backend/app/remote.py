@@ -154,6 +154,8 @@ async def _run(job_id: int, dev: dict, exp: dict) -> None:
             r.raise_for_status()
             rexp = r.json()["id"]
             job["remote"]["experiment_id"] = rexp
+            r = await c.put(f"/api/experiments/{rexp}/protocol", json=exp.get("protocol") or {})
+            r.raise_for_status()
             root = None
             for cfg in job["configs"]:
                 r = await c.post(f"/api/experiments/{rexp}/runs", json={"config": cfg, "parent_id": root})

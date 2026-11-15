@@ -26,7 +26,7 @@ export function RulerTable({ runs }: { runs: ExpRun[] }) {
                 return <td key={L} className="r" title={ci.length ? `± ${(Math.max(...ci) * 100).toFixed(0)} points (95% CI, per task)` : ""}
                   style={v != null ? { background: `color-mix(in srgb, var(--success) ${Math.round(v * 35)}%, transparent)` } : undefined}>{v != null ? `${(v * 100).toFixed(0)}%` : "–"}</td>;
               })}
-              <td className="r"><b>{x.effective_length ? `${x.effective_length / 1024}k` : "< " + (lengths[0] / 1024) + "k"}</b></td>
+              <td className="r"><b>{x.effective_length ? `${x.effective_length / 1024}k` : x.lengths.length ? "< " + (x.lengths[0] / 1024) + "k" : "Not measured"}</b></td>
               {tasks.map((t) => <td key={t} className="r">{x.by_task[t] != null ? `${(x.by_task[t] * 100).toFixed(0)}%` : "–"}</td>)}
             </tr>
           );

@@ -45,10 +45,10 @@ def test_mcnemar_rejects_mismatched_question_sets():
     assert profile.mcnemar_p("", "") is None
 
 
-def test_robust_stats_ignore_impossible_repetitions():
+def test_robust_stats_preserve_positive_outliers_and_reject_invalid_samples():
     st = profile.robust_stats([60.03, 0.0, 58.44, 113831.0, 57.68])
-    assert st["median"] == 58.44
-    assert st["dropped"] == 2
+    assert st["median"] == 59.23
+    assert st["dropped"] == 1
     assert st["sd"] < 2
 
 
@@ -70,6 +70,6 @@ def test_parse_bench_reads_llama_bench_jsonl():
         '{"n_prompt": 0, "n_gen": 128, "n_depth": 4096, "samples_ts": [60.0, 59.5, 59.8, 59.9, 60.1]}',
     ])
     r = profile.parse_bench(out)
-    assert r["pp"] == 1720 and r["tg"] == 62.3 and r["tg_d4096"] == 59.9
+    assert r["pp"] == 1720 and r["tg"] == 62.2 and r["tg_d4096"] == 59.9
     assert r["tg_dropped"] == 1 and "pp_dropped" not in r
     assert r["pp_samples"] == [1700, 1750, 1720, 1730, 1690]

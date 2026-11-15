@@ -22,7 +22,7 @@ def test_decode_roof_and_utilization(model):
     assert d["roof_tps"] == pytest.approx(100.0, rel=0.01)      # 500 GB/s ÷ 5 GB
     assert d["roof_util"] == pytest.approx(0.5, rel=0.01)
     assert d["effective_gbps"] == pytest.approx(250.0, rel=0.01)
-    assert hw["limiter"]["what"] == "Software overhead"           # only 50% of the memory roof
+    assert hw["limiter"]["what"] == "Bottleneck undetermined"
     assert hw["clocks"]["ratio"] == pytest.approx(0.95)
     p = hw["prefill"]
     assert p["achieved_tflops"] == pytest.approx(2 * 8e9 * 1600 / 1e12, rel=0.01)
@@ -31,7 +31,7 @@ def test_decode_roof_and_utilization(model):
 
 def test_bandwidth_bound_when_close_to_the_roof(model):
     hw = profile.analyze({"speed": {"tg": 80.0}, "memory": {"gpu": {"model": 5000}, "ram": {"model": 477}}}, model, LIM)
-    assert hw["limiter"]["what"] == "VRAM bandwidth"
+    assert hw["limiter"]["what"] == "Possible VRAM bandwidth limit"
 
 
 def test_weights_in_system_ram_dominate(model):
@@ -41,7 +41,37 @@ def test_weights_in_system_ram_dominate(model):
     assert hw["weights_on_cpu_gb"] == pytest.approx(2.0, rel=0.01)
     split = hw["decode"]["time_split_ms"]
     assert split["ram_reads"] == pytest.approx(2.0 / 50 * 1000, rel=0.01)   # 40 ms at 50 GB/s
-    assert hw["limiter"]["what"] == "System-RAM bandwidth"
+    assert hw["limiter"]["what"] == "Possible RAM bandwidth limit"
+
+
+def test_missing_ram_bandwidth_is_unknown_not_zero(model):
+    res = {"speed": {"tg": 12}, "memory": {"ram": {"model": 2.5e9 / 2**20}}}
+    hw = profile.analyze(res, model, dict(LIM, ram_bandwidth_gbps=None))
+    assert hw["decode"]["time_split_ms"]["ram_reads"] is None
+    assert hw["decode"]["roof_tps"] is None
+
+
+def test_roof_overrun_is_visible(model):
+    hw = profile.analyze({"speed": {"tg": 200}}, model, LIM)
+    assert hw["decode"]["roof_util"] > 1
+    assert hw["limiter"]["what"] == "Roofline estimate exceeded"
+
+
+def test_saved_weight_summary_survives_missing_model():
+    res = {"speed": {"tg": 50}, "weight_summary": {"bytes": 5e9, "params": 8e9, "embedding_bytes": 0}}
+    assert profile.analyze(res, {"model": "missing.gguf"}, LIM)["decode"]["roof_tps"] == 100
+
+
+def test_imported_analysis_is_not_replaced_by_local_model(model):
+    res = {"hw": {"source": "remote"}, "imported_from": {"device": "other"}, "speed": {"tg": 50}}
+    exp = {"limits": LIM, "runs_list": [{"id": 1, "status": "done", "config": model, "results": res}]}
+    profile.enrich(exp)
+    assert res["hw"] == {"source": "remote"}
+
+
+def test_request_throughput_is_not_isolated_decode(model):
+    hw = profile.analyze({"serving": {"tg": 50, "pp": 100, "timing_scope": "request"}}, model, LIM)
+    assert "decode" not in hw and "prefill" not in hw
 
 
 def test_each_run_is_judged_against_its_own_hardware(model, fresh_db):

@@ -25,6 +25,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import agent, arena, benchmarks, config, db, engines, evals, generate, lab, mcp_server, memory, power, profile, quantlab, remote, scans, system, tools, torchlab, weights
+from . import research_jobs
 
 
 @asynccontextmanager
@@ -41,14 +42,22 @@ async def lifespan(app: FastAPI):
     torchlab.init()
     remote.init()
     agent.init()
+    research_jobs.init()
     psutil.cpu_percent(interval=None)  # prime the CPU counter so the first reading isn't 0
     app.state.llm = httpx.AsyncClient(base_url=config.LLM_URL, timeout=httpx.Timeout(10, read=300))
     app.state.background = set()  # keep references so tasks aren't garbage-collected
     worker = asyncio.create_task(profile.worker(app.state.llm))
     app.state.background.add(worker)
+    research_worker = asyncio.create_task(research_jobs.worker(app.state.llm))
+    app.state.background.add(research_worker)
     async with mcp_server.server.session_manager.run():
         yield
     worker.cancel()
+    research_worker.cancel()
+    _, pending = await asyncio.wait({worker, research_worker}, timeout=10)
+    for task in pending:
+        task.cancel()
+    await asyncio.gather(worker, research_worker, return_exceptions=True)
     await app.state.llm.aclose()
 
 
@@ -95,6 +104,87 @@ app.add_middleware(LocalOnly)
 
 
 # ---------- Conversations ----------
+
+@app.get("/api/research/projects")
+def research_projects():
+    return {"projects": research_jobs.projects(), "python": __import__("sys").executable}
+
+
+@app.post("/api/research/projects")
+def research_create(body: dict):
+    try:
+        return research_jobs.create(body.get("name"), body.get("template", "byte"))
+    except (ValueError, TypeError) as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/research/projects/{pid}/files")
+def research_files(pid: int):
+    try:
+        return research_jobs.files(pid)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+
+
+@app.get("/api/research/projects/{pid}/file")
+def research_file(pid: int, name: str):
+    try:
+        return {"content": research_jobs.read_file(pid, name)}
+    except (ValueError, OSError, UnicodeError) as e:
+        raise HTTPException(400, str(e))
+
+
+@app.put("/api/research/projects/{pid}/file")
+def research_write(pid: int, body: dict):
+    try:
+        research_jobs.write_file(pid, body["name"], body["content"])
+        return {"ok": True}
+    except (ValueError, KeyError, TypeError, OSError) as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/research/projects/{pid}/jobs")
+def research_job_list(pid: int):
+    return research_jobs.jobs(pid)
+
+
+@app.post("/api/research/projects/{pid}/jobs")
+def research_queue(pid: int, body: dict):
+    try:
+        return research_jobs.queue(pid, body)
+    except (ValueError, TypeError, OSError) as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/research/jobs/{jid}/cancel")
+def research_cancel(jid: int):
+    try:
+        research_jobs.cancel(jid)
+        return {"ok": True}
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+
+
+@app.get("/api/research/jobs/{jid}/artifact")
+def research_artifact(jid: int, name: str):
+    try:
+        path = research_jobs.artifact(jid, name)
+        return FileResponse(path, filename=path.name, media_type="application/octet-stream")
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+
+
+@app.get("/api/research/compare")
+def research_compare(ids: str):
+    try:
+        return research_jobs.compare(ids.split(","))
+    except (ValueError, TypeError) as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/research/profile-runs")
+def research_profile_runs():
+    return research_jobs.profile_runs()
 
 @app.get("/api/conversations")
 def list_conversations():
@@ -1027,6 +1117,32 @@ def experiments_sweep(exp_id: int, body: dict):
 
 
 # ---------- Inference engines (llama.cpp builds) ----------
+
+@app.post("/api/experiments/{exp_id}/validate")
+def experiments_validate(exp_id: int, body: dict):
+    from . import validation
+    try:
+        return validation.create(exp_id, body)
+    except (ValueError, TypeError) as e:
+        _bad(e)
+
+
+@app.get("/api/experiments/runs/{run_id}/evidence")
+def experiments_evidence(run_id: int):
+    try:
+        return profile.evidence_outputs(run_id)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+
+
+@app.post("/api/experiments/{exp_id}/validations/{vid}/cancel")
+def experiments_validation_cancel(exp_id: int, vid: int):
+    from . import validation
+    try:
+        validation.cancel(exp_id, vid)
+        return {"ok": True}
+    except ValueError as e:
+        _bad(e)
 
 @app.get("/api/engines")
 def engines_list():

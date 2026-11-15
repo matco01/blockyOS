@@ -89,7 +89,7 @@ function Card({ run, idx, cmp, adj, selected, onDown, onClick, onMenu, onBranch 
                 {d && <em className={`d ${d.tone}`} title={d.title}>{d.text}</em>}</div>
             );
           })}
-          {r.hw?.limiter && <div className="cv-lim">limited by {r.hw.limiter.what.toLowerCase()}</div>}
+          {r.hw?.limiter && <div className="cv-lim">estimate: {r.hw.limiter.what.toLowerCase()}</div>}
         </>
       ) : (
         <div className="cv-status">
@@ -139,7 +139,7 @@ function Compare({ a, b, onClose }: { a: ExpRun; b: ExpRun; onClose: () => void 
               <td className="r">{vb == null ? "–" : (m.fmt ?? n1)(vb)}</td><td className="r">{d ? <span className={`d ${d.tone}`}>{d.text}</span> : "–"}</td></tr>;
           })}</tbody>
         </table>
-        <div className="row-sub">Same noise rules as the results table. MMLU-Pro significance is computed against a run's baseline and its parent; for other pairs a 2% threshold is used.</div>
+        <div className="row-sub">Same comparison rules as the results table. MMLU-Pro uses a paired test against the baseline or parent. Other differences remain descriptive unless a statistical test is available.</div>
       </div>
     </div>
   );

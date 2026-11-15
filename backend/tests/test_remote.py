@@ -1,7 +1,35 @@
 """Remote access: local-only by default, token required from other devices; device registry validation."""
 import pytest
+import asyncio
+import httpx
+import json
 
 from app import remote
+
+
+def test_remote_run_copies_protocol_before_queuing(monkeypatch):
+    calls = []
+    exp = {"id": 1, "name": "Source", "protocol": {"mmlu_per_category": 100, "ruler": {"samples": 3}}}
+    def handler(request):
+        body = json.loads(request.content) if request.content else None
+        calls.append((request.method, request.url.path, body))
+        if request.method == "POST":
+            return httpx.Response(200, json={"id": 20})
+        if request.url.path.endswith("export.json"):
+            return httpx.Response(200, json={"runs_list": []})
+        if request.method == "GET":
+            return httpx.Response(200, json={"runs_list": [{"status": "done"}]})
+        return httpx.Response(200, json={"ok": True})
+    async def check(dev_id):
+        return {"ok": True, "models": ["m.gguf"]}
+    monkeypatch.setattr(remote, "check", check)
+    monkeypatch.setattr(remote, "_client", lambda dev: httpx.AsyncClient(base_url="http://other", transport=httpx.MockTransport(handler)))
+    monkeypatch.setattr(remote.profile, "import_experiment", lambda data, into: {"runs": 1})
+    monkeypatch.setattr(remote, "jobs", {1: {"configs": [{"model": "m.gguf"}], "remote": {}, "experiment_id": 1}})
+    asyncio.run(remote._run(1, {"id": 1, "name": "Other"}, exp))
+    assert calls[1] == ("PUT", "/api/experiments/20/protocol", exp["protocol"])
+    assert calls[2][1].endswith("/runs")
+    assert remote.jobs[1]["status"] == "done"
 
 
 def test_local_only_by_default(fresh_db):

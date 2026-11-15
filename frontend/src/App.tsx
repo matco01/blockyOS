@@ -11,6 +11,7 @@ import TestsPage from "./TestsPage";
 import ExperimentsPage from "./ExperimentsPage";
 import NotebooksPage from "./NotebooksPage";
 import InternalsPage from "./InternalsPage";
+import ResearchPage from "./ResearchPage";
 import GuidePage from "./GuidePage";
 import { Mode, ModeContext } from "./ui";
 import ModelsPage from "./ModelsPage";
@@ -20,11 +21,12 @@ import SettingsPage from "./SettingsPage";
 import Logo from "./Logo";
 import { Accent, BLOCK_COLORS, Theme, useSetting } from "./settings";
 
-export type Page = "chat" | "agent" | "home" | "experiments" | "notebooks" | "internals" | "guide" | "models" | "arena" | "tests" | "bench" | "memory" | "system" | "settings";
+export type Page = "chat" | "agent" | "home" | "experiments" | "projects" | "notebooks" | "internals" | "guide" | "models" | "arena" | "tests" | "bench" | "memory" | "system" | "settings";
 
 const PAGES = [
   { id: "agent", label: "Agent", icon: Bot },
   { id: "experiments", label: "Experiments", icon: FlaskConical },
+  { id: "projects", label: "Research projects", icon: Microscope },
   { id: "home", label: "Overview", icon: LayoutDashboard },
   { id: "internals", label: "Internals", icon: Microscope },
   { id: "notebooks", label: "Notebooks", icon: BookOpen },
@@ -40,7 +42,7 @@ const PAGES = [
 
 /** Sidebar groups: what you do with models, then the device itself. */
 const NAV_GROUPS: { label: string; ids: readonly Page[] }[] = [
-  { label: "Research", ids: ["agent", "experiments", "internals", "home", "notebooks"] },
+  { label: "Research", ids: ["agent", "experiments", "projects", "internals", "home", "notebooks"] },
   { label: "Tools", ids: ["models", "arena", "tests", "bench"] },
   { label: "Device", ids: ["memory", "system", "settings", "guide"] },
 ];
@@ -298,6 +300,7 @@ export default function App() {
           {page === "notebooks" && <NotebooksPage />}
           {page === "agent" && <AgentPage />}
           {page === "internals" && <InternalsPage />}
+          {page === "projects" && <ResearchPage />}
           {page === "guide" && <GuidePage />}
           {page === "models" && <ModelsPage status={status} />}
           {page === "arena" && <ArenaPage status={status} />}

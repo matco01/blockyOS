@@ -7,10 +7,11 @@ export type Ctx = { run: ExpRun; base: ExpRun };
 export type Metric = {
   key: string; group: string; label: string; term?: string; unit: string; better: "higher" | "lower" | null;
   get: (r: ExpResults) => number | null | undefined;
-  sd?: (r: ExpResults) => number | null | undefined;        // ± noise of one measurement (for significance)
+  sd?: (r: ExpResults) => number | null | undefined;        // descriptive spread shown next to the value
+  se?: (r: ExpResults) => number | null | undefined;        // standard error, only when the source explicitly reports one
   p?: (c: Ctx) => number | null | undefined;                 // custom test: p-value for this pair (e.g. paired McNemar)
   fmt?: (v: number) => string; note?: string;
-  minRel?: number;                                           // smallest relative change treated as real (no noise model)
+  minRel?: number;                                           // legacy display metadata; never a significance test
 };
 const esrc = (r: ExpResults) => (r.energy?.primary ? r.energy.sources?.[r.energy.primary] : undefined);
 export const n1 = (v: number) => (Math.abs(v) >= 100 ? v.toFixed(0) : v.toFixed(1));
@@ -22,9 +23,9 @@ export const METRICS: Metric[] = [
   { key: "tg_long", group: "Speed", label: "Decode at 4k context", unit: "tok/s", better: "higher", get: (r) => r.speed?.tg_d4096, sd: (r) => r.speed?.tg_d4096_sd },
   { key: "pp", group: "Speed", label: "Prefill (reading)", term: "pp", unit: "tok/s", better: "higher", get: (r) => r.speed?.pp, sd: (r) => r.speed?.pp_sd, fmt: (v) => v.toFixed(0) },
   { key: "pp_long", group: "Speed", label: "Prefill at 4k context", unit: "tok/s", better: "higher", get: (r) => r.speed?.pp_d4096, sd: (r) => r.speed?.pp_d4096_sd, fmt: (v) => v.toFixed(0) },
-  { key: "srv_tg", group: "Speed", label: "Serving: decode (any engine)", unit: "tok/s", better: "higher", get: (r) => r.serving?.tg, sd: (r) => r.serving?.tg_sd,
-    note: "Measured the same way for every engine: streaming through the chat API, 512-token prompt, 128 tokens" },
-  { key: "srv_pp", group: "Speed", label: "Serving: prefill (any engine)", unit: "tok/s", better: "higher", get: (r) => r.serving?.pp, sd: (r) => r.serving?.pp_sd, fmt: (v) => v.toFixed(0) },
+  { key: "srv_tg", group: "Speed", label: "Serving: output throughput", unit: "tok/s", better: "higher", get: (r) => r.serving?.tg, sd: (r) => r.serving?.tg_sd,
+    note: "Protocol 3: server-reported output tokens / full request time, including prefill. Older protocols measured a different interval; check provenance." },
+  { key: "srv_pp", group: "Speed", label: "Serving: prompt / first-chunk latency", unit: "tok/s", better: "higher", get: (r) => r.serving?.pp, sd: (r) => r.serving?.pp_sd, fmt: (v) => v.toFixed(0), note: "A client-side latency proxy, not isolated prefill speed" },
   { key: "srv_ttft", group: "Speed", label: "Serving: time to first token", unit: "ms", better: "lower", get: (r) => r.serving?.ttft_ms, sd: (r) => r.serving?.ttft_sd, fmt: (v) => v.toFixed(0) },
   { key: "ttft", group: "Speed", label: "Latency, 512-token prompt", unit: "ms", better: "lower", get: (r) => (r.speed?.pp ? (512 / r.speed.pp) * 1000 : null), fmt: (v) => v.toFixed(0) },
   { key: "mmlu", group: "Quality", label: "MMLU-Pro accuracy", unit: "%", better: "higher", get: (r) => (r.mmlu ? r.mmlu.acc * 100 : null), fmt: pct,
@@ -33,8 +34,9 @@ export const METRICS: Metric[] = [
       const s = c.run.stats;
       return c.base.id === s?.baseline_id ? s?.mmlu_p : c.base.id === c.run.parent_id ? s?.vs_parent?.mmlu_p : null;
     }, note: "paired McNemar test" },
-  { key: "mmlu_p", group: "Quality", label: "MMLU-Pro P(correct)", unit: "%", better: "higher", get: (r) => (r.mmlu ? r.mmlu.p_correct_mean * 100 : null), fmt: pct },
-  { key: "needle", group: "Quality", label: "Long-context retrieval", unit: "%", better: "higher", get: (r) => (r.needle ? r.needle.acc * 100 : null), fmt: (v) => v.toFixed(0),
+  { key: "mmlu_p", group: "Quality", label: "MMLU-Pro returned-option score", unit: "%", better: "higher", get: (r) => (r.mmlu ? r.mmlu.p_correct_mean * 100 : null), fmt: pct,
+    note: "Renormalized over option letters in the server's top-k shortlist; not the model's full probability of the correct answer" },
+  { key: "needle", group: "Quality", label: "Long-context retrieval", unit: "%", better: "higher", get: (r) => (r.needle?.cells.length && r.needle.acc != null ? r.needle.acc * 100 : null), fmt: (v) => v.toFixed(0),
     note: "Needle in a haystack: a code hidden at 5 depths in 2k…ctx tokens of text", minRel: 0.1 },
   { key: "kld", group: "Quality", label: "KL divergence vs baseline", unit: "", better: "lower", get: (r) => r.kld, fmt: (v) => v.toFixed(4) },
   { key: "kld99", group: "Quality", label: "KLD, 99th percentile", unit: "", better: "lower", get: (r) => r.kld_p99, fmt: (v) => v.toFixed(3) },
@@ -58,7 +60,7 @@ export const METRICS: Metric[] = [
   { key: "power", group: "Energy", label: "GPU power during speed tests", unit: "W", better: "lower", get: (r) => r.hw?.clocks.power_avg_w, fmt: (v) => v.toFixed(0) },
   { key: "e_idle", group: "Energy", label: "Power at idle (model loaded)", unit: "W", better: "lower", get: (r) => esrc(r)?.idle_w?.avg, sd: (r) => esrc(r)?.idle_w?.sd, fmt: (v) => v.toFixed(0) },
   { key: "jpt", group: "Energy", label: "Energy per token", unit: "J", better: "lower", get: (r) => esrc(r)?.j_per_token, fmt: (v) => v.toFixed(3), minRel: 0.05,
-    note: "Everything the measured source drew during ~15 s of generation, divided by tokens" },
+    note: "Protocol 3: sampled energy over the full request, including prefill, divided by server-reported output tokens. Sensor totals cover only the named components." },
   { key: "jpt_net", group: "Energy", label: "Energy per token above idle", unit: "J", better: "lower", get: (r) => esrc(r)?.net_j_per_token, fmt: (v) => v.toFixed(3), minRel: 0.05 },
   { key: "tpwh", group: "Energy", label: "Tokens per watt-hour", term: "tpj", unit: "tok/Wh", better: "higher", get: (r) => esrc(r)?.tokens_per_wh, fmt: (v) => v.toFixed(0), minRel: 0.05 },
   { key: "cost_mtok", group: "Energy", label: "Electricity per 1M tokens", unit: "", better: "lower", get: (r) => r.cost?.electricity_per_mtok, fmt: (v) => v.toFixed(3), minRel: 0.05,
@@ -68,14 +70,27 @@ export const METRICS: Metric[] = [
 ];
 
 const TOKEN_LEVEL = new Set(["ppl", "kld", "kld99", "same_top"]);
+const RELATIVE_TO_BASELINE = new Set(["kld", "kld99", "same_top"]);
+
+/** Refuse comparisons whose measurement protocol or reference distribution differs. */
+function incomparable(m: Metric, c: Ctx): string | null {
+  const a = c.base.results, b = c.run.results;
+  if (a.provenance?.protocol !== b.provenance?.protocol) return "Different or missing measurement protocols";
+  const stats = c.base.id === c.run.stats?.baseline_id ? c.run.stats : c.base.id === c.run.parent_id ? c.run.stats?.vs_parent : null;
+  if (stats?.env_mismatch?.length) return `Different measurement conditions: ${stats.env_mismatch.join(", ")}`;
+  if (TOKEN_LEVEL.has(m.key) && (a.token_note || b.token_note)) return "Tokenizer compatibility is not established for this pair";
+  if (RELATIVE_TO_BASELINE.has(m.key) && (a.imported_from?.imported_at !== b.imported_from?.imported_at)) return "Different KL reference baselines";
+  return null;
+}
 
 /** p-value of the difference between two runs on one metric, or null when the metric has no noise model. */
 export function pValue(m: Metric, c: Ctx): number | null {
+  if (incomparable(m, c)) return null;
   if (m.p) return m.p(c) ?? null;
   const v = m.get(c.run.results), b = m.get(c.base.results);
-  if (v == null || b == null || !m.sd) return null;
-  const s1 = m.sd(c.run.results), s2 = m.sd(c.base.results);
-  return s1 != null && s2 != null ? zTestP(v - b, s1, s2) : null;
+  if (v == null || b == null || !m.se) return null;
+  const s1 = m.se(c.run.results), s2 = m.se(c.base.results);
+  return s1 != null && s2 != null && Number.isFinite(s1) && Number.isFinite(s2) && s1 > 0 && s2 > 0 ? zTestP(v - b, s1, s2) : null;
 }
 
 /** Adjusted p-values for many comparisons on one metric at once (run id -> adjusted p). */
@@ -87,26 +102,23 @@ export function adjustedP(m: Metric, ctxs: Ctx[], method: Correction): Map<numbe
 
 export const fmtP = (p: number) => (p < 0.001 ? "< 0.001" : p.toFixed(3));
 
-/** Difference vs a reference run, with a noise check. Significant = p < 0.05 after the multiple-comparison correction
- *  (pAdj, when the caller compares many runs at once); metrics without a noise model use a minimum relative change. */
+/** Color only comparisons supported by a statistical test. Descriptive differences remain neutral. */
 export function delta(m: Metric, c: Ctx, session = 0, pAdj?: number | null) {
   const v = m.get(c.run.results), b = m.get(c.base.results);
-  if (v == null || b == null || b === 0) return null;
-  // Token-level metrics are meaningless between models that split text into different tokens.
-  // (token_note marks a run whose tokenizer differs from the experiment's baseline.)
-  const crossTok = !!c.run.results.token_note !== !!c.base.results.token_note
-    || (!!c.run.results.token_note && c.run.config.model.split("-")[0] !== c.base.config.model.split("-")[0]);
-  if (TOKEN_LEVEL.has(m.key) && crossTok) return { text: "not comparable", tone: "same", title: "Different tokenizer" };
+  if (v == null || b == null || !Number.isFinite(v) || !Number.isFinite(b)) return null;
+  const reason = incomparable(m, c);
+  if (reason) return { text: "not comparable", tone: "same", title: reason };
+  if (b === 0) return null;
   const d = (v - b) / Math.abs(b);
   const p = pValue(m, c);
   const pa = pAdj ?? p;
-  let sig: boolean = pa != null ? pa < 0.05 : Math.abs(d) >= (m.minRel ?? 0.02);
+  const text = `${d > 0 ? "+" : ""}${(d * 100).toFixed(Math.abs(d) < 0.1 ? 1 : 0)}%`;
+  if (pa == null) return { text, tone: "same", title: "Observed difference; statistical significance has not been established. Reported spread is not a standard error." };
+  let sig = pa < 0.05;
   // Session-to-session drift (measured by repeating the baseline) must also be exceeded.
   if (sig && !m.p && session > 0 && Math.abs(v - b) <= 2 * session) sig = false;
-  const ptxt = p == null ? `no noise model: changes under ${Math.round((m.minRel ?? 0.02) * 100)}% are treated as noise`
-    : `p = ${fmtP(p)}${pAdj != null && pAdj !== p ? `, ${fmtP(pAdj)} after correcting for multiple comparisons` : ""}`;
-  const text = `${d > 0 ? "+" : ""}${(d * 100).toFixed(Math.abs(d) < 0.1 ? 1 : 0)}%`;
-  if (!sig) return { text, tone: "same", title: `Within measurement noise (${ptxt})` };
+  const ptxt = `p = ${fmtP(pa)}${pAdj != null && pAdj !== p ? " after correcting for multiple comparisons" : ""}`;
+  if (!sig) return { text, tone: "same", title: `No statistically established difference (${ptxt}); this does not prove equivalence` };
   if (!m.better) return { text, tone: "same", title: ptxt };
   const good = m.better === "higher" ? d > 0 : d < 0;
   return { text, tone: good ? "good" : "bad", title: `Significant (${ptxt})` };
@@ -129,6 +141,7 @@ export function allMetrics(runs: ExpRun[]): Metric[] {
           key, group: "lm-eval", label: `${task} · ${k.replace(",none", "").replace(",", " · ")}`, unit: pctLike ? "%" : "", better: "higher",
           get: (x) => { const v = x.lm_eval?.tasks?.[task]?.metrics?.[k]; return v == null ? null : pctLike ? v * 100 : v; },
           sd: (x) => { const e = x.lm_eval?.tasks?.[task]?.stderr?.[k]; return e == null ? null : pctLike ? e * 100 : e; },
+          se: (x) => { const e = x.lm_eval?.tasks?.[task]?.stderr?.[k]; return e == null ? null : pctLike ? e * 100 : e; },
           fmt: (v) => v.toFixed(1), note: "lm-evaluation-harness; ± is its standard error",
         });
       }

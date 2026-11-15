@@ -51,6 +51,16 @@ WSL stops Linux when no terminal is attached. Keep `wsl -d blocky` open while us
 - **Custom engines** (llama.cpp builds) and **weight variants** need nothing extra: they're built from the UI into
   `/opt/blocky/engines` and the models folder. Building an engine runs that repository's code, so only add ones you trust.
 
+## Remote access
+
+The web service binds to `127.0.0.1` by default. An SSH tunnel can reach it without exposing a network listener:
+`ssh -L 8001:localhost:8000 user@device`, then open `http://localhost:8001`.
+
+For direct access on a trusted network, enable remote access in Settings, add `UVICORN_HOST=0.0.0.0` to
+`/etc/blocky/blocky.env`, and restart `blocky-web`. Remote clients still need the token. Removing that setting
+and restarting restores localhost binding. Existing installations must install the updated service unit and run
+`systemctl daemon-reload` before this default takes effect.
+
 ## Tests
 
 - Backend: `python -m venv .venv && .venv/bin/pip install -r backend/requirements-dev.txt && .venv/bin/python -m pytest backend/tests`

@@ -4,6 +4,9 @@ import type { LucideIcon } from "lucide-react";
 import { api, Device, DevicePreset, RemoteJob, Engine, ExpConfig, Experiment, ExpRun, KernelProfile, ModelFile, Provenance, Status, TorchStatus } from "./api";
 import { LineChart, Term } from "./ui";
 import ResearchCanvas from "./ResearchCanvas";
+import MetricEvidence from "./MetricEvidence";
+import ValidationPanel from "./ValidationPanel";
+import { evidence } from "./evidence";
 import { Planner, RulerTable } from "./Planner";
 import WeightsWorkshop from "./WeightsWorkshop";
 import EnginesPanel from "./EnginesPanel";
@@ -103,6 +106,8 @@ function ChangePanel({ base: rawBase, models, onRun, onSweep, onModels }: { base
     else if (DEVICE_KEYS.some((k) => k in patch)) next.preset = null;  // customizing the device: no longer the preset
     // Engines run different formats: vLLM takes checkpoints, llama.cpp takes GGUF. Keep the pair valid.
     if (patch.engine === "vllm" && !next.model.startsWith("hf:") && ckpts[0]) next.model = `hf:${ckpts[0].id}`;
+    if (patch.engine === "vllm") next = { ...next, kv: "auto", ngl: "auto", fa: "auto", threads: null, ram_limit_mb: null, device: "gpu", preset: null };
+    if (patch.engine && patch.engine !== "vllm" && next.kv === "auto") next.kv = "q8_0";
     if (patch.engine && patch.engine !== "vllm" && next.model.startsWith("hf:")) next.model = base.model.startsWith("hf:") ? (family[0]?.file ?? models[0]?.file ?? next.model) : base.model;
     return next;
   });
@@ -113,7 +118,7 @@ function ChangePanel({ base: rawBase, models, onRun, onSweep, onModels }: { base
     return { ...g, [k]: next };
   });
   const Opt = ({ k, v, label }: { k: keyof ExpConfig; v: unknown; label: string }) => mode === "single"
-    ? <button className={String(cfg[k] ?? "") === String(v ?? "") ? "on" : ""} onClick={() => set({ [k]: v } as Partial<ExpConfig>)}>{label}</button>
+    ? <button disabled={cfg.engine === "vllm" && ((["kv", "ngl", "fa"].includes(k) && v !== "auto") || (k === "ram_limit_mb" && v != null) || (k === "device" && v === "cpu") || (k === "preset" && !!v))} className={String(cfg[k] ?? "") === String(v ?? "") ? "on" : ""} onClick={() => set({ [k]: v } as Partial<ExpConfig>)}>{label}</button>
     : <button className={inGrid(k, v) ? "on multi" : ""} onClick={() => toggle(k, v)}>{label}</button>;
   const swept = (Object.keys(grid) as (keyof ExpConfig)[]).filter((k) => (grid[k] ?? []).length > 0);
   const nRuns = swept.length ? swept.reduce((n, k) => n * (grid[k]!.length), 1) * repeats : 0;
@@ -156,7 +161,7 @@ function ChangePanel({ base: rawBase, models, onRun, onSweep, onModels }: { base
       <div className="xc-row"><div><b>RAM limit</b><span>The run fails if the model's CPU-side memory plus a minimal system wouldn't fit</span></div>
         <div className="segmented">{RAM_SIM.map((v) => <Opt key={String(v)} k="ram_limit_mb" v={v} label={v ? `${v / 1024} GB` : "Full"} />)}</div></div>
       <div className="xc-row"><div><b><Term k="kv">KV cache type</Term></b><span>-ctk / -ctv</span></div>
-        <div className="segmented"><Opt k="kv" v="f16" label="f16" /><Opt k="kv" v="q8_0" label="q8_0" /><Opt k="kv" v="q4_0" label="q4_0" /></div></div>
+        <div className="segmented">{cfg.engine === "vllm" && <Opt k="kv" v="auto" label="Engine default" />}<Opt k="kv" v="f16" label="f16" /><Opt k="kv" v="q8_0" label="q8_0" /><Opt k="kv" v="q4_0" label="q4_0" /></div></div>
       <div className="xc-row"><div><b><Term k="context">Context size</Term></b><span>-c</span></div>
         <div className="segmented">{CTX.map((c) => <Opt key={c} k="ctx" v={c} label={`${c / 1024}k`} />)}</div></div>
       <div className="xc-row"><div><b>VRAM limit</b><span>Simulates a smaller GPU (--fit-target)</span></div>
@@ -192,6 +197,8 @@ function ChangePanel({ base: rawBase, models, onRun, onSweep, onModels }: { base
 }
 
 function Board({ runs, metric, setMetric }: { runs: ExpRun[]; metric: string; setMetric: (k: string) => void }) {
+  const [selected, setSelected] = useState<{ metric: Metric; run: ExpRun } | null>(null);
+  const [showUnavailable, setShowUnavailable] = useState(false);
   const base = runs[0];
   const METRICS = allMetrics(runs);
   const [corr, setCorr] = useState<Correction>(savedCorrection);
@@ -202,6 +209,9 @@ function Board({ runs, metric, setMetric }: { runs: ExpRun[]; metric: string; se
   const hasData = (m: Metric) => runs.some((r) => m.get(r.results) != null);
   return (
     <div className="table-wrap xboard">
+      {selected && <MetricEvidence metric={selected.metric} run={selected.run} onClose={() => setSelected(null)} />}
+      <p className="row-sub">Select the evidence label beside a value to inspect its source, samples, commands and retained log. Simulated means measured here with device constraints.</p>
+      <label className="row-sub"><input type="checkbox" checked={showUnavailable} onChange={(ev) => setShowUnavailable(ev.target.checked)} /> Show metrics unavailable in every run</label>
       {runs.length > 2 && (
         <div className="xcorr">
           <span>Comparing {runs.length - 1} runs with the baseline: p-values corrected for multiple comparisons</span>
@@ -224,7 +234,7 @@ function Board({ runs, metric, setMetric }: { runs: ExpRun[]; metric: string; se
           return (
             <tbody key={g}>
               <tr className="grp-row"><td colSpan={runs.length + 1}>{g}{g === "Energy" && !any && <span className="muted"> · no power reading for these runs: add a wall meter in Settings → Energy & cost, or use hardware whose sensors report power</span>}</td></tr>
-              {rows.filter(hasData).map((x) => (
+              {rows.filter((x) => showUnavailable || hasData(x)).map((x) => (
                 <tr key={x.key} className={metric === x.key ? "sel" : ""} onClick={() => setMetric(x.key)} title={x.note ?? "Click to chart"}>
                   <td className="mlabel">{x.term ? <Term k={x.term}>{x.label}</Term> : x.label}{x.unit && <span className="u"> {x.unit}</span>}</td>
                   {runs.map((r, i) => {
@@ -237,6 +247,7 @@ function Board({ runs, metric, setMetric }: { runs: ExpRun[]; metric: string; se
                       <td key={r.id} className="r">
                         {v == null ? "–" : (x.fmt ?? n1)(v)}{sd ? <span className="sd"> ±{(x.fmt ?? n1)(sd)}</span> : null}
                         {d && <span className={`d ${d.tone}`} title={d.title}>{d.text}</span>}
+                        <button className="xe-badge" onClick={(ev) => { ev.stopPropagation(); setSelected({ metric: x, run: r }); }} aria-label={`Evidence for ${x.label}, run ${r.id}`}>{evidence(x, r).kind}</button>
                       </td>
                     );
                   })}
@@ -518,9 +529,10 @@ function Repro({ runs }: { runs: ExpRun[] }) {
 /* ---------- Hardware views ---------- */
 
 const LIMIT_TEXT: Record<string, { short: string; fix: string }> = {
-  "VRAM bandwidth": { short: "GPU memory speed", fix: "Normal for local AI. Only a smaller/more-compressed model or a GPU with faster memory makes writing much faster." },
-  "System-RAM bandwidth": { short: "System RAM speed", fix: "Part of the model doesn't fit on the GPU and is read from much slower RAM. Fit it on the GPU: smaller quantization, shorter context, or more VRAM." },
-  "Software overhead": { short: "Software overhead", fix: "The hardware has spare capacity, but time goes to things other than reading weights (attention, kernel launches, cache decompression)." },
+  "Possible VRAM bandwidth limit": { short: "Possible GPU memory limit", fix: "Estimated weight traffic is near nominal memory bandwidth. Confirm with a kernel profile before attributing the bottleneck." },
+  "Possible RAM bandwidth limit": { short: "Possible system RAM limit", fix: "The weight-read model suggests RAM traffic may matter; these times are estimates, not measurements of individual operations." },
+  "Bottleneck undetermined": { short: "Undetermined", fix: "Bandwidth utilization alone cannot distinguish compute, attention, transfers, or software overhead." },
+  "Roofline estimate exceeded": { short: "Estimate exceeded", fix: "Check weight traffic and hardware assumptions; the simplified roofline is not explaining this run." },
 };
 
 function UseBar({ value, max, color, text }: { value: number; max: number; color: string; text: string }) {
@@ -528,7 +540,7 @@ function UseBar({ value, max, color, text }: { value: number; max: number; color
   return (
     <div className="xuse">
       <div className="xuse-track"><div style={{ width: `${p}%`, background: color }} /></div>
-      <div className="xuse-text"><b>{p.toFixed(0)}%</b> {text}</div>
+      <div className="xuse-text"><b>{((value / max) * 100).toFixed(0)}%</b> {text}</div>
     </div>
   );
 }
@@ -537,7 +549,7 @@ function UseBar({ value, max, color, text }: { value: number; max: number; color
 function LimitTable({ runs }: { runs: ExpRun[] }) {
   return (
     <div className="xlimit-table">
-      <div className="xlt-head"><span>Run</span><span>What limits writing</span><span>Writing: share of the speed limit</span><span>Reading: share of the GPU's compute</span></div>
+      <div className="xlt-head"><span>Run</span><span>Possible bottleneck (estimate)</span><span>Writing: share of estimated roof</span><span>Reading: share of nominal compute</span></div>
       {runs.map((r, i) => {
         const h = r.results.hw, d = h?.decode, p = h?.prefill, lim = h?.limiter;
         const t = lim ? LIMIT_TEXT[lim.what] : null;
@@ -570,12 +582,15 @@ function LimitTable({ runs }: { runs: ExpRun[] }) {
 
 /** Where each generated token's time goes. Full-width bars on one shared scale, labels inside the segments. */
 function TimeSplit({ runs }: { runs: ExpRun[] }) {
-  const rows = runs.map((r, i) => ({ r, i })).filter(({ r }) => r.results.hw?.decode);
+  const rows = runs.map((r, i) => ({ r, i })).filter(({ r }) => {
+    const d = r.results.hw?.decode;
+    return d && d.roof_util != null && d.roof_util <= 1 && Object.values(d.time_split_ms).every((v) => v != null);
+  });
   const max = Math.max(...rows.map(({ r }) => r.results.hw!.decode!.ms_per_token), 1);
   const parts = [
-    { k: "vram_reads" as const, label: "Reading weights from GPU memory", c: "var(--series-1)" },
-    { k: "ram_reads" as const, label: "Reading weights from system RAM", c: "var(--series-3)" },
-    { k: "other" as const, label: "Everything else", c: "var(--split-other)" },
+    { k: "vram_reads" as const, label: "Estimated minimum GPU weight-read time", c: "var(--series-1)" },
+    { k: "ram_reads" as const, label: "Estimated minimum RAM weight-read time", c: "var(--series-3)" },
+    { k: "other" as const, label: "Unexplained remainder", c: "var(--split-other)" },
   ];
   return (
     <div className="xsplit2">
@@ -595,7 +610,7 @@ function TimeSplit({ runs }: { runs: ExpRun[] }) {
           </div>
         );
       })}
-      <div className="row-sub">The purple part is the physical minimum: the time to stream the weights once at the GPU's full memory speed. Everything beyond it is where speed could still be gained.</div>
+      <div className="row-sub">Only total time is measured. The segments estimate weight-read time from assumed traffic and bandwidth; the remainder is not a measured overhead or a promise of recoverable performance.</div>
     </div>
   );
 }
@@ -843,9 +858,10 @@ export default function ExperimentsPage({ status }: { status: Status | null }) {
                 <div className="group pad"><ChangePanel base={baseline.config} models={models} onRun={runProfile} onSweep={runSweep} onModels={reloadModels} /></div>
 
                 <div className="group-label">3 · Results</div>
+                <ValidationPanel key={exp.id} exp={exp} runs={runs} onChanged={load} />
                 <div className="group pad">
                   <Board runs={done} metric={metric} setMetric={setMetric} />
-                  <div className="row-sub xnote">Speeds are the median of the repetitions; ± is the robust spread (1.4826 × median absolute deviation). A difference is colored only when it is significant: p &lt; 0.05 from a test on the measured noise (speeds, lm-eval) or a paired McNemar test (MMLU-Pro), after correcting for comparing many runs at once (Holm by default; hover a difference for its p-value). Grey = not significant. Metrics without a noise model use a minimum change instead. If you add a “Repeat this setup” run, changes must also exceed twice the drift between the two repeats (other programs using the same GPU add noise). KL divergence measures how far each token's probability distribution drifted from the baseline's.</div>
+                  <div className="row-sub xnote">Speeds are medians; ± is descriptive spread (1.4826 × median absolute deviation), not a standard error. Differences are colored only when a statistical test supports them: paired McNemar for MMLU-Pro, or an approximate normal test using explicitly reported lm-eval standard errors, with multiple-comparison correction (Holm by default). Grey means significance is unavailable or not established; it does not prove equivalence. Different protocols and KL reference baselines are not compared. Protocol 3 serving throughput and energy include the full request, including prefill.</div>
                   {done.length > 1 && <MetricBars runs={done} metric={metric} />}
                   <NeedleGrid runs={done} />
                   <RulerTable runs={done} />

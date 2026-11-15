@@ -118,15 +118,15 @@ const FEATURES: { group: string; intro: string; items: Feature[] }[] = [
 
 const MEASURES = [
   ["Load", "Memory layout (GPU / system RAM, per buffer), layers on GPU, load time", "llama.cpp's own load log", "—"],
-  ["Quality", "MMLU-Pro: 560 fixed questions (40 per subject), 10 options, 5-shot", "Probability of each answer letter (Open LLM Leaderboard method)", "95% interval; paired McNemar test vs baseline and parent"],
+  ["Quality", "MMLU-Pro: fixed questions, 5-shot; sample size set per experiment", "Scores option letters from returned top-k log probabilities; this is not a full official benchmark reproduction", "95% interval; paired McNemar test vs compatible baseline and parent"],
   ["Long context", "A code hidden at 5 depths in texts from 2k tokens up to the run's context", "Exact retrieval of the code", "Fixed seed: identical haystacks for every run"],
   ["lm-eval (optional)", "Any generative lm-evaluation-harness task you add, e.g. gsm8k, ifeval", "The field's standard harness, against this run's own server", "Its standard error"],
-  ["Serving speed", "Prefill, decode and time to first token as an application sees them", "Streaming through the chat API, same client for every engine (llama.cpp, vLLM)", "Median of 5 after a warm-up; robust spread"],
-  ["Speed (llama.cpp)", "Prompt reading and writing speed, at 0 and 4k tokens of context", "llama-bench, 5 repetitions", "Median; robust spread; impossible repetitions dropped"],
+  ["Serving speed", "Output throughput over the full request and time to first content chunk; prompt/latency proxy", "Streaming through the chat API; server-reported token counts only", "Median of available repetitions after a warm-up; descriptive spread"],
+  ["Speed (llama.cpp)", "Prompt reading and writing speed, at 0 and 4k tokens of context", "llama-bench, 5 repetitions", "Median; robust spread; only non-finite/non-positive samples dropped"],
   ["GPU kernels (optional)", "Time per operation type: matrix multiply, attention, normalization, …", "Nsight Systems trace of short llama-bench runs", "Regular Linux only; not available in WSL"],
   ["Fidelity", "Perplexity, and KL divergence + same-top-token vs the baseline's outputs", "llama-perplexity on WikiText-2 (16k tokens)", "Its ± values; only between models with the same tokenizer"],
   ["Telemetry", "GPU and memory-controller load, clocks, temperature, VRAM, CPU, RAM, power", "nvidia-smi and the OS, every 0.5 s", "Per phase"],
-  ["Hardware analysis", "Share of the memory-speed limit and of peak compute; time per token split; the binding limit", "Measured numbers vs the GPU's spec sheet and measured RAM speed", "Recomputed from stored data"],
+  ["Hardware analysis", "Estimated roofline utilization and possible bottlenecks; estimated weight-read time", "Simplified weight-traffic model vs nominal hardware limits", "Only total time is measured; a kernel profile is needed to investigate causes"],
 ];
 
 const CANVAS = [
@@ -256,18 +256,18 @@ export default function GuidePage() {
             </Section>
 
             <Section id="g-example" title="Worked example: does 3-bit hurt, and can we fix it?" kicker="An example study">
-              <p>An example of the workflow end to end: a quantization study of Qwen3.5-9B on a GPU with 8 GB of memory, with the near-lossless Q8_0 file as the reference. Your numbers will differ with your model and hardware; the steps are the same.</p>
+              <p>Use a high-precision model as the reference, then compare lower-precision variants on your device. This is a workflow template; results come from your experiment, not from preset example numbers.</p>
               <div className="table-wrap"><table className="data gd-table">
-                <thead><tr><th>Step</th><th>What we did</th><th>What we learned</th></tr></thead>
+                <thead><tr><th>Step</th><th>What to run</th><th>What to check</th></tr></thead>
                 <tbody>
-                  <tr><td>1</td><td>Baseline: Q8_0 (8.9 GB)</td><td>Doesn't fit in 8 GB of VRAM: 10.9 tok/s, limited by system-RAM speed. MMLU-Pro 60.0%.</td></tr>
-                  <tr><td>2</td><td>Sweep: the downloaded Q4_K_M and a 3-bit Q3_K_M built in the workshop</td><td>Q4_K_M: 58.9 tok/s, no significant quality loss. Q3_K_M: significant drop (56.1%, p = 0.02) and slower than 4-bit on this GPU.</td></tr>
-                  <tr><td>3</td><td>Workshop: Q3_K_M again, with an importance matrix</td><td>Drift (KLD) fell 40% at the same 4.3 GB. Still significantly below Q8_0.</td></tr>
-                  <tr><td>4</td><td>Branch from Q4_K_M: KV cache at q4_0</td><td>No quality change vs its parent; slightly more drift.</td></tr>
-                  <tr><td>5</td><td>Branch: newest llama.cpp as the engine</td><td>Writing 7.7% faster, reading 18% slower, outputs bit-identical.</td></tr>
+                  <tr><td>1</td><td>Profile the high-precision baseline</td><td>Record memory placement, speed spread, quality scores, and provenance.</td></tr>
+                  <tr><td>2</td><td>Sweep compatible 4-bit and 3-bit variants</td><td>Compare quality and speed with uncertainty; smaller weights do not guarantee faster inference.</td></tr>
+                  <tr><td>3</td><td>Build a variant with an importance matrix</td><td>Measure whether drift changes against the same reference distribution.</td></tr>
+                  <tr><td>4</td><td>Branch from one variant and change KV precision</td><td>Compare with that parent and repeat the long-context tests.</td></tr>
+                  <tr><td>5</td><td>Repeat the setup with another engine build</td><td>Record the exact engine commit; check decode, prefill, and quality separately.</td></tr>
                 </tbody>
               </table></div>
-              <p className="row-sub">Conclusion for that GPU: Q4_K_M with the stock settings was the sweet spot. Every number above has its noise, provenance and exact commands in the experiment.</p>
+              <p className="row-sub">Choose a setup only after checking your measured tradeoffs. Failure to detect a quality difference does not establish that two configurations are equivalent.</p>
             </Section>
 
             <Section id="g-features" title="Every feature" kicker="Page by page">
@@ -301,7 +301,7 @@ export default function GuidePage() {
               <div className="gd-legend">
                 <div><span className="d good">+8%</span><span>Better than the comparison run, and bigger than the measurement noise.</span></div>
                 <div><span className="d bad">−12%</span><span>Worse, and bigger than the noise.</span></div>
-                <div><span className="d same">+1.5%</span><span>Grey: within the noise. Treat it as “no detectable difference”.</span></div>
+                <div><span className="d same">+1.5%</span><span>Grey: statistical significance is unavailable or not established. This does not prove equivalence.</span></div>
                 <div><span className="d same">not comparable</span><span>Token-level metrics between models that split text differently.</span></div>
               </div>
               <ul className="gd-list">

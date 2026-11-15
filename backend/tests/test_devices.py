@@ -60,7 +60,7 @@ def test_cpu_only_analysis_and_projection(exp, monkeypatch):
     res = {"speed": {"tg": 10.0, "pp": 100.0}, "memory": {"gpu": {}, "ram": {"model": 2e9 / 2**20}}}
     hw = profile.analyze(res, cfg, LIM)
     assert hw["weights_on_cpu_gb"] == pytest.approx(2.0)
-    assert hw["limiter"]["what"] == "System-RAM bandwidth"
+    assert hw["limiter"]["what"] == "Possible RAM bandwidth limit"
     assert hw["prefill"]["roof_tflops"] is None          # no GPU compute roof for a CPU-only run
     pr = hw["projection"]
     assert pr["bandwidth_share"] == pytest.approx(0.5)  # 2 GB × 10 tok/s of 40 GB/s

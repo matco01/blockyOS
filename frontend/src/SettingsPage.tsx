@@ -182,6 +182,7 @@ function RemoteSettings() {
           <div className="row-main">
             <div>Let other devices control this Blocky</div>
             <div className="row-sub">Off: only this device can use it. On: other devices need the token below. Anyone with the token can run experiments and build engines here, so only turn it on for a network you trust; otherwise use an SSH tunnel (<code>ssh -L 8001:localhost:8000 user@this-device</code>).</div>
+            <div className="row-sub">The service listens on localhost by default. Direct network access also requires setting <code>UVICORN_HOST=0.0.0.0</code> in <code>/etc/blocky/blocky.env</code> and restarting the web service. An SSH tunnel works with the default listener.</div>
             {access?.enabled && access.token && <div className="row-sub" style={{ marginTop: 6 }}>Token: <code style={{ userSelect: "all" }}>{access.token}</code> · in a browser on another device, open <code>http://&lt;this-device&gt;:8000/?key=…</code> once</div>}
           </div>
           <div className="segmented">
