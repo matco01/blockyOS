@@ -5,6 +5,7 @@ import { adjust, Correction, zTestP } from "./stats";
 
 export type Ctx = { run: ExpRun; base: ExpRun };
 export type Metric = {
+  researchName?: string;
   key: string; group: string; label: string; term?: string; unit: string; better: "higher" | "lower" | null;
   get: (r: ExpResults) => number | null | undefined;
   sd?: (r: ExpResults) => number | null | undefined;        // descriptive spread shown next to the value
@@ -75,6 +76,15 @@ const RELATIVE_TO_BASELINE = new Set(["kld", "kld99", "same_top"]);
 /** Refuse comparisons whose measurement protocol or reference distribution differs. */
 function incomparable(m: Metric, c: Ctx): string | null {
   const a = c.base.results, b = c.run.results;
+  if (m.researchName) {
+    const x = a.research_metrics?.[m.researchName], y = b.research_metrics?.[m.researchName];
+    if (!x || !y) return "The evaluator did not report this shared metric";
+    for (const key of ["unit", "protocol", "task", "dataset_sha256", "scope", "kind", "better"] as const) {
+      if (x[key] !== y[key] || key !== "better" && !x[key]) return `Different or missing ${key}`;
+    }
+    if (x.unit?.toLowerCase().includes("token") && (!x.tokenizer_sha256 || x.tokenizer_sha256 !== y.tokenizer_sha256)) return "Different or unknown tokenizers";
+    return null;
+  }
   if (a.provenance?.protocol !== b.provenance?.protocol) return "Different or missing measurement protocols";
   const stats = c.base.id === c.run.stats?.baseline_id ? c.run.stats : c.base.id === c.run.parent_id ? c.run.stats?.vs_parent : null;
   if (stats?.env_mismatch?.length) return `Different measurement conditions: ${stats.env_mismatch.join(", ")}`;
@@ -130,6 +140,17 @@ export const colorOf = (i: number) => SERIES[i] ?? "var(--text-2)";
 /** The static metrics plus one row per lm-evaluation-harness task/metric found in these runs. */
 export function allMetrics(runs: ExpRun[]): Metric[] {
   const seen = new Map<string, Metric>();
+  for (const r of runs) {
+    for (const [name, event] of Object.entries(r.results.research_metrics ?? {})) {
+      const key = `research:${name}`;
+      if (seen.has(key)) continue;
+      seen.set(key, { key, researchName: name, group: "Shared evaluations", label: name.replaceAll("_", " "), unit: event.unit ?? "",
+        better: event.better === "higher" || event.better === "lower" ? event.better : null,
+        get: (x) => x.research_metrics?.[name]?.value,
+        sd: (x) => x.research_metrics?.[name]?.spread?.sd,
+        note: "Evaluator-reported metric. Compare only matching task, dataset, protocol and scope; expand evidence to inspect the contract." });
+    }
+  }
   for (const r of runs) {
     for (const [task, t] of Object.entries(r.results.lm_eval?.tasks ?? {})) {
       for (const k of Object.keys(t.metrics)) {

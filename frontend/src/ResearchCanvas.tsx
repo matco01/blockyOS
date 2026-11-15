@@ -79,12 +79,12 @@ function Card({ run, idx, cmp, adj, selected, onDown, onClick, onMenu, onBranch 
       <div className="cv-model" title={run.config.model}>{run.config.model.replace(".gguf", "")} · ctx {run.config.ctx / 1024}k · KV {run.config.kv}</div>
       {run.status === "done" ? (
         <>
-          {SHOWN.map((key) => {
-            const m = METRICS.find((x) => x.key === key)!;
+          {(run.config.engine === "research" ? allMetrics([run]).filter((m) => m.researchName).slice(0, 4).map((m) => m.key) : SHOWN).map((key) => {
+            const m = allMetrics([run]).find((x) => x.key === key)!;
             const v = m.get(r);
             const d = cmp && cmp.status === "done" && cmp.id !== run.id ? delta(m, { run, base: cmp }, 0, adj.get(key)?.get(run.id)) : null;
             return (
-              <div className="cv-metric" key={key}><span>{SHORT[key]}</span>
+              <div className="cv-metric" key={key}><span>{SHORT[key] ?? m.label}</span>
                 <b>{v == null ? (key === "kld" && r.token_note ? "n/a" : "–") : (m.fmt ?? n1)(v)}<small>{m.unit}</small></b>
                 {d && <em className={`d ${d.tone}`} title={d.title}>{d.text}</em>}</div>
             );

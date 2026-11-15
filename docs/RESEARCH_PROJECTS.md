@@ -69,6 +69,34 @@ through the artifact endpoint. Up to 10,000 report events are shown; save longer
 
 ## Compare architectures and conventional models
 
+### Register a method in Experiments
+
+After a successful job reports complete metric contracts, select it in Research projects, enter a method name, and
+click **Register for Experiments**. Registration records that tested job's source snapshot and execution settings.
+Later edits to the working project do not change the registered version; run and register a new version deliberately.
+External checkpoint/data paths and Python environments remain external dependencies. Registration does not certify
+the evaluator's correctness or make unsupported native phases available.
+
+The method appears in **Experiments → New experiment**. Select it, create the experiment, and run the baseline.
+Use **Evaluate a registered method or conventional model** to branch another registered method, change its JSON
+settings, or add an existing GGUF model. Existing native-model experiments also show this panel for adding a method.
+The canvas can branch registered methods as well. Native flags such as context size or KV precision are rejected
+for a registered evaluator; implement supported controls explicitly in its `method_config`.
+
+Each custom evaluation becomes a normal experiment run with a separately preserved research job. Experiment queue
+ordering, cancellation, run trees, JSON/CSV exports, metric charts and evidence inspection apply. Native model phases
+use their existing protocols; custom results appear under **Shared evaluations**. Metrics that were not supplied remain
+unavailable. Their deltas require matching evaluator contracts and stay descriptive without an appropriate test.
+
+**Repeat and validate** accepts matching measured metrics from two registered-method setups. Runtime/energy quantities
+can use the existing paired sign test and median interval, subject to stable hardware, source and environment checks.
+Quality metrics on a fixed dataset get descriptive repeats only: repeating deterministic scores does not create
+independent quality evidence. A dataset/task-specific statistical evaluator is still needed for those claims.
+
+Imported experiment files preserve declared metrics and provenance, but remote research job IDs are not linked to
+local artifacts. Running a method on a different installation requires local registration of its code and dependencies.
+Method registrations and external assets are not installed automatically by importing an experiment.
+
 Select completed jobs from one or several projects and choose **Compare selected jobs**. You can also add existing
 Experiments profile runs. Blocky checks metric name, dataset hash, task, unit, protocol, measurement scope, evidence
 kind, direction and hardware metadata. Missing or mismatched contracts remain visible with a reason and do not become
@@ -103,6 +131,8 @@ and a universal automatic evaluator are not supplied by this first project runne
 - `POST /api/research/jobs/{id}/cancel`: cancel a queued or running job.
 - `GET /api/research/jobs/{id}/artifact?name=...`: download a file within that run.
 - `GET /api/research/compare?ids=1,2,profile:40`: compare jobs and built-in profiles.
+- `POST /api/research/jobs/{id}/register`: register a tested evaluator; `GET /api/research/methods` lists registrations.
+- Experiments uses `model="method:<registration id>"` and optional `method_config={...}` for registered evaluators.
 
 These local HTTP APIs are usable from notebooks and custom clients. MCP exposes project/job discovery and comparisons.
 Arbitrary code execution remains an explicit UI/API action rather than an automatically callable MCP execution tool.

@@ -5,6 +5,12 @@ export function evidence(m: Metric, run: ExpRun) {
   const r = run.results;
   const value = m.get(r);
   const valid = value != null && Number.isFinite(value);
+  if (m.researchName) {
+    const event = r.research_metrics?.[m.researchName];
+    return { kind: !valid ? "Unavailable" : event?.kind === "estimated" ? "Estimated" : event?.kind === "simulated" ? "Simulated" : "Measured",
+      source: event?.protocol ?? "Registered evaluator", raw: { metric: event, provenance: r.research_provenance },
+      reason: valid ? "Reported by the evaluator; inspect its dataset, scope, samples and source evidence." : "This evaluator did not supply this metric.", simulated: event?.kind === "simulated" };
+  }
   const simulated = !!run.config.preset || !!run.config.vram_limit_mb || !!run.config.ram_limit_mb || run.config.device === "cpu" && !!run.config.cores;
   const estimated = ["ttft", "srv_pp", "mmlu_p", "w_cpu", "kv", "vram_free", "eff_bw", "roof", "tflops", "croof", "clock", "cost_mtok", "tps_price"].includes(m.key)
     || ["kld", "same_top"].includes(m.key) && !!(r as unknown as Record<string, unknown>).kld_reference;

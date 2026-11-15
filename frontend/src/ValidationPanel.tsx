@@ -1,14 +1,15 @@
 import { useState } from "react";
 import { api, Experiment, ExpRun } from "./api";
-import { runTitle } from "./expmetrics";
+import { allMetrics, runTitle } from "./expmetrics";
 
 const conclusions: Record<string, string> = { pending: "Waiting for all repeats", insufficient: "Insufficient evidence to choose a setup", candidate_better: "Candidate improvement supported for the selected metric", reference_better: "Reference advantage supported for the selected metric" };
 const fmt = (v: number | null) => v == null ? "—" : v.toFixed(2);
 export default function ValidationPanel({ exp, runs, onChanged }: { exp: Experiment; runs: ExpRun[]; onChanged: () => void }) {
   const choices = runs.filter((r) => r.status === "done" && !r.results.imported_from);
+  const shared = allMetrics(choices).filter((m) => m.researchName && m.better && choices.some((r) => r.config.engine === "research" && m.get(r.results) != null));
   const [reference, setReference] = useState(choices[0]?.id ?? 0);
   const [candidate, setCandidate] = useState(choices[1]?.id ?? 0);
-  const [pairs, setPairs] = useState(6), [metric, setMetric] = useState("tg"), [minimum, setMinimum] = useState(3);
+  const [pairs, setPairs] = useState(6), [metric, setMetric] = useState(choices[0]?.config.engine === "research" ? shared[0]?.key ?? "tg" : "tg"), [minimum, setMinimum] = useState(3);
   const [error, setError] = useState(""), [busy, setBusy] = useState(false);
   const queue = async () => {
     setBusy(true); setError("");
@@ -19,11 +20,11 @@ export default function ValidationPanel({ exp, runs, onChanged }: { exp: Experim
   return <div className="group pad xv-panel">
     <b>Repeat and validate</b><p className="row-sub">Queue fresh measurements in A → B → A → B order. Choose the metric and minimum meaningful improvement before running. Six pairs is the minimum for a finite distribution-free 95% interval. Test settings are saved with the batch.</p>
     <div className="xv-controls">{select("Reference (A)", reference, setReference)}{select("Candidate (B)", candidate, setCandidate)}
-      <label>Metric<select className="field select" value={metric} onChange={(e) => setMetric(e.target.value)}><option value="tg">Decode speed</option><option value="pp">Prefill speed</option><option value="srv_tg">Serving output throughput</option><option value="jpt">Energy per output token</option></select></label>
+      <label>Metric<select className="field select" value={metric} onChange={(e) => setMetric(e.target.value)}>{shared.map((m) => <option key={m.key} value={m.key}>{m.label} (shared evaluator)</option>)}<option value="tg">Decode speed</option><option value="pp">Prefill speed</option><option value="srv_tg">Serving output throughput</option><option value="jpt">Energy per output token</option></select></label>
       <label>Pairs<select className="field select" value={pairs} onChange={(e) => setPairs(Number(e.target.value))}>{[3, 6, 8, 10, 12].map((n) => <option key={n}>{n}</option>)}</select></label>
       <label>Minimum improvement (%)<input className="field" type="number" min={0} max={100} value={minimum} onChange={(e) => setMinimum(Number(e.target.value))} /></label>
       <button className="btn" disabled={busy || !reference || !candidate || reference === candidate} onClick={queue}>Queue {pairs * 2} validation runs</button>
-    </div><p className="row-sub">Each item is a full profile and can take several minutes or longer. Conclusions apply to this metric only; inspect quality separately.</p>
+    </div><p className="row-sub">Each item reruns its evaluator; native profiles can take several minutes or longer. Conclusions apply to this metric only; inspect quality separately.</p>
     {error && <p className="error" role="alert">{error}</p>}
     {(exp.validations ?? []).map((batch) => { const s = batch.summary, st = s.stats; return <details key={batch.id} className="xv-batch" open>
       <summary>Validation #{batch.id} · {s.metric_label} · {conclusions[s.conclusion]}</summary>

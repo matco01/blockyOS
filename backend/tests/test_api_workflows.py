@@ -103,3 +103,23 @@ def test_research_http_project_and_job(api, tmp_path, monkeypatch):
     assert api.post(f"/api/research/jobs/{jid}/cancel").status_code == 200
     assert api.get(f"/api/research/jobs/{jid}/artifact", params={"name": "source/main.py"}).status_code == 200
     assert api.get(f"/api/research/jobs/{jid}/artifact", params={"name": "../../../../etc/passwd"}).status_code == 404
+
+
+def test_register_and_evaluate_method_via_experiment_http(api, tmp_path, monkeypatch):
+    monkeypatch.setattr(research_jobs, "ROOT", tmp_path / "methods")
+    research_jobs.init()
+    pid = api.post("/api/research/projects", json={"name": "Bridge", "template": "byte"}).json()["id"]
+    jid = api.post(f"/api/research/projects/{pid}/jobs", json={}).json()["id"]
+    assert api.post(f"/api/research/jobs/{jid}/register", json={"name": "Untested"}).status_code == 400
+    asyncio.run(research_jobs.execute(jid, None))
+    registered = api.post(f"/api/research/jobs/{jid}/register", json={"name": "Byte evaluator"})
+    assert registered.status_code == 200
+    mid = registered.json()["id"]
+    assert api.get("/api/research/methods").json()[0]["id"] == mid
+    eid = api.post("/api/experiments", json={"name": "Unified", "model": f"method:{mid}"}).json()["id"]
+    response = api.post(f"/api/experiments/{eid}/runs", json={"config": {}})
+    assert response.status_code == 200
+    asyncio.run(profile.run(response.json()["id"], None))
+    result = api.get(f"/api/experiments/{eid}").json()["runs_list"][0]
+    assert result["status"] == "done"
+    assert result["results"]["research_metrics"]["bits_per_byte"]["value"] > 0

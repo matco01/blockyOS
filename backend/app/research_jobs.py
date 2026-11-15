@@ -151,8 +151,8 @@ def jobs(pid):
     return [job(jid) for jid in ids]
 
 
-def queue(pid, body):
-    source = folder(pid) / "source"
+def queue(pid, body, *, source_root=None, profile_run_id=None):
+    source = Path(source_root) if source_root is not None else folder(pid) / "source"
     argv = body.get("argv", ["{python}", "main.py"])
     if not isinstance(argv, list) or not 1 <= len(argv) <= 100 or any(not isinstance(x, str) or not x or "\0" in x for x in argv):
         raise ValueError("Command must be a nonempty list of arguments")
@@ -171,6 +171,8 @@ def queue(pid, body):
     if not 1 <= timeout <= 7 * 86400:
         raise ValueError("Timeout must be between 1 second and 7 days")
     spec = {"argv": argv, "python": python, "config": cfg, "gpu": bool(body.get("gpu")), "timeout_s": timeout}
+    if profile_run_id is not None:
+        spec["profile_run_id"] = profile_run_id
     candidates = [p for p in source.rglob("*") if p.is_file() and not any(x in p.relative_to(source).parts for x in (".git", ".venv", "__pycache__"))]
     if len(candidates) > 500 or sum(p.stat().st_size for p in candidates) > 20_000_000:
         raise ValueError("Source snapshot limit is 500 files / 20 MB. Keep datasets/checkpoints outside source and reference their absolute paths")
@@ -189,7 +191,8 @@ def queue(pid, body):
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(path, target)
             hashes[str(relative)] = hashlib.sha256(target.read_bytes()).hexdigest()
-        shutil.copyfile(SDK / "blocky_research.py", snapshot / "blocky_research.py")
+        if source_root is None or not (snapshot / "blocky_research.py").is_file():
+            shutil.copyfile(SDK / "blocky_research.py", snapshot / "blocky_research.py")
         hashes["blocky_research.py"] = hashlib.sha256((snapshot / "blocky_research.py").read_bytes()).hexdigest()
         provenance = {"files": hashes, "snapshot_sha256": hashlib.sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest(), "runner": "blocky-research/1"}
         with db.connect() as c:
@@ -299,7 +302,7 @@ async def worker(llm):
             with db.connect() as c:
                 # Existing profile queues keep priority.
                 profile_waiting = c.execute("SELECT 1 FROM exp_runs WHERE status IN ('queued','running') LIMIT 1").fetchone()
-                row = c.execute("SELECT id FROM research_jobs WHERE status='queued' ORDER BY id LIMIT 1").fetchone()
+                row = c.execute("SELECT id FROM research_jobs WHERE status='queued' AND json_extract(spec,'$.profile_run_id') IS NULL ORDER BY id LIMIT 1").fetchone()
             if row and not profile_waiting and not lab.busy and not lab._lock.locked():
                 await execute(row[0], llm)
         except asyncio.CancelledError:
@@ -327,6 +330,11 @@ def _profile_job(rid):
     if not row:
         raise ValueError("Profile run not found")
     res = json.loads(row["results"])
+    return {"id": f"profile:{rid}", "project_id": None, "status": row["status"], "events": list(res["research_metrics"].values()) if res.get("research_metrics") else native_metrics(res),
+            "provenance": {"hardware": res.get("hardware") or (res.get("research_provenance") or {}).get("hardware")}}
+
+
+def native_metrics(res):
     prov = res.get("provenance") or {}
     events = []
     mmlu = res.get("mmlu") or {}
@@ -343,8 +351,7 @@ def _profile_job(rid):
                            "unit": "token/s", "kind": "measured", "better": "higher", "protocol": prov.get("protocol"), "task": "llama-bench",
                            "dataset_sha256": "llama-bench-generated-input", "scope": "token units specific to model " + str((prov.get("model") or {}).get("sha256")),
                            "samples": (res.get("speed") or {}).get(key + "_samples")})
-    return {"id": f"profile:{rid}", "project_id": None, "status": row["status"], "events": events,
-            "provenance": {"hardware": res.get("hardware")}}
+    return events
 
 
 def compare(ids):

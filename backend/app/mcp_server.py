@@ -54,6 +54,12 @@ def get_research_projects(project_id: int = 0) -> str:
         return json.dumps({"error": str(e)})
 
 
+@server.tool(description="List registered research methods selectable in Experiments using model='method:<id>'. Each pins tested source and evaluator settings and declares supported metric contracts. Registration itself is a user action in Research projects.")
+def get_registered_methods() -> str:
+    from . import methods
+    return json.dumps(methods.list_methods())
+
+
 @server.tool(description="Compare 2–8 research jobs or built-in profiles (use 'profile:<run id>'). Reports matching/mismatched dataset, task, measurement protocol and units. Does not infer significance from raw differences.")
 def compare_research_jobs(run_ids: list[str]) -> str:
     try:
@@ -84,6 +90,7 @@ def _compact_run(r: dict) -> dict:
         "ruler": {k: (x.get("ruler") or {}).get(k) for k in ("score", "effective_length", "by_length", "by_task")} if x.get("ruler") else None,
         "lm_eval": {t: v.get("metrics") for t, v in ((x.get("lm_eval") or {}).get("tasks") or {}).items()} or None,
         "kld": x.get("kld"), "kld_p99": x.get("kld_p99"), "same_top_pct": x.get("same_top"), "ppl": x.get("ppl"),
+        "shared_evaluations": x.get("research_metrics"), "research_job_id": x.get("research_job_id"),
         "vram_model_mb": (hw.get("headroom") or {}).get("vram_model_mb"), "weights_on_cpu_gb": hw.get("weights_on_cpu_gb"),
         "decode_roof_util": (hw.get("decode") or {}).get("roof_util"), "limiter": hw.get("limiter"),
         "energy": _energy(x.get("energy")), "cost": x.get("cost"),
@@ -140,6 +147,10 @@ def queue_run(experiment_id: int, changes: dict | None = None, parent_run_id: in
         return json.dumps({"error": "Experiment not found"})
     parent = next((r for r in e["runs_list"] if r["id"] == parent_run_id), None) if parent_run_id else None
     base_cfg = parent["config"] if parent else {}
+    if str((changes or {}).get("model", "")).startswith("method:") and (changes or {}).get("model") != base_cfg.get("model"):
+        base_cfg = {}
+    elif base_cfg.get("engine") == "research" and (changes or {}).get("model") and not changes["model"].startswith("method:"):
+        base_cfg = {}
     try:
         rid = profile.create_run(experiment_id, {"label": label, "config": {**base_cfg, **(changes or {})}, "parent_id": parent_run_id})
         return json.dumps({"run_id": rid, "queued": True})

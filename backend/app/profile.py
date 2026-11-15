@@ -71,6 +71,7 @@ GPU_BANDWIDTH = {
 
 def init() -> None:
     from . import validation
+    from . import methods
     DIR.mkdir(parents=True, exist_ok=True)
     with db.connect() as c:
         c.executescript(SCHEMA)
@@ -88,6 +89,8 @@ def init() -> None:
             c.execute("ALTER TABLE exp_runs ADD COLUMN parent_id INTEGER")
         # Queued runs survive a restart (the worker picks them up); a run that was mid-way is lost.
         c.execute("UPDATE exp_runs SET status = 'error', error = 'Interrupted by a restart' WHERE status = 'running'")
+        c.execute("UPDATE exp_runs SET status = 'error', error = 'Interrupted while preparing a method run' WHERE status = 'preparing'")
+    methods.init()
 
 
 # ---------- Hardware limits ----------
@@ -225,6 +228,11 @@ def get_experiment(exp_id: int) -> dict | None:
 
 def create_experiment(name: str, model: str) -> int:
     import random
+    from . import methods
+    if model.startswith(methods.PREFIX):
+        method = methods.get(int(model.removeprefix(methods.PREFIX)))
+        with db.connect() as c:
+            return c.execute("INSERT INTO experiments (created_at,name,model,seed) VALUES (?,?,?,?)", (time.time(), name or method["name"], model, random.randint(1, 2**31 - 1))).lastrowid
     model = HF_PREFIX + Path(model[len(HF_PREFIX):]).name if model.startswith(HF_PREFIX) else Path(model).name
     mp = model_path(model)
     if not ((mp / "config.json").is_file() if model.startswith(HF_PREFIX) else mp.is_file()):
@@ -235,6 +243,10 @@ def create_experiment(name: str, model: str) -> int:
 
 
 def delete_experiment(exp_id: int) -> None:
+    with db.connect() as c:
+        active = [r[0] for r in c.execute("SELECT id FROM exp_runs WHERE experiment_id=? AND status IN ('queued','running')", (exp_id,))]
+    for rid in active:
+        cancel(rid)
     with db.connect() as c:
         c.execute("DELETE FROM exp_runs WHERE experiment_id = ?", (exp_id,))
         c.execute("DELETE FROM experiments WHERE id = ?", (exp_id,))
@@ -252,6 +264,11 @@ def delete_run(run_id: int) -> None:
 
 
 def cancel(run_id: int) -> None:
+    from . import research_jobs
+    with db.connect() as c:
+        linked = c.execute("SELECT job_id FROM method_profile_jobs WHERE run_id=?", (run_id,)).fetchone()
+    if linked:
+        research_jobs.cancel(linked[0])
     with db.connect() as c:
         queued = c.execute("UPDATE exp_runs SET status = 'cancelled' WHERE id = ? AND status = 'queued'", (run_id,)).rowcount
     if not queued:
@@ -260,7 +277,10 @@ def cancel(run_id: int) -> None:
 
 def cancel_queue(exp_id: int) -> int:
     with db.connect() as c:
-        return c.execute("UPDATE exp_runs SET status = 'cancelled' WHERE experiment_id = ? AND status = 'queued'", (exp_id,)).rowcount
+        ids = [r[0] for r in c.execute("SELECT id FROM exp_runs WHERE experiment_id=? AND status='queued'", (exp_id,))]
+    for rid in ids:
+        cancel(rid)
+    return len(ids)
 
 
 SWEEP_KEYS = ("model", "engine", "kv", "ctx", "vram_limit_mb", "ngl", "fa", "threads", "device", "cores", "ram_limit_mb", "preset")
@@ -384,6 +404,10 @@ def checkpoint_bytes(d: Path) -> int:
 
 
 def normalize_config(exp: dict, cfg: dict) -> dict:
+    from . import methods
+    model = str((cfg or {}).get("model") or exp["model"])
+    if model.startswith(methods.PREFIX):
+        return methods.normalize(model, cfg or {})
     preset = (cfg or {}).get("preset") or None
     if preset and preset not in DEVICE_PRESETS:
         raise ValueError(f"Unknown device preset (choose from {', '.join(DEVICE_PRESETS)})")
@@ -439,6 +463,9 @@ def create_run(exp_id: int, body: dict) -> int:
     exp = get_experiment(exp_id)
     if not exp:
         raise ValueError("Experiment not found")
+    from . import methods
+    if str((body.get("config") or {}).get("model") or exp["model"]).startswith(methods.PREFIX):
+        return methods.queue_profile(exp_id, body, normalize_config(exp, body.get("config") or {}))
     baseline = next((r for r in exp["runs_list"] if r["status"] == "done"), None)
     prior_protocol = ((baseline or {}).get("results", {}).get("provenance") or {}).get("protocol")
     if prior_protocol and prior_protocol != PROTOCOL:
@@ -1211,6 +1238,10 @@ async def _stop_server(proc: asyncio.subprocess.Process | None) -> None:
 async def run(run_id: int, llm: httpx.AsyncClient) -> None:
     with db.connect() as c:
         rec = _run(c.execute("SELECT * FROM exp_runs WHERE id = ?", (run_id,)).fetchone())
+    from . import methods
+    if rec["config"]["model"].startswith(methods.PREFIX):
+        await methods.run_profile(rec, llm)
+        return
     exp = get_experiment(rec["experiment_id"])
     cfg = rec["config"]
     snapshot = rec.get("protocol_snapshot")
@@ -1226,7 +1257,7 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
     status, error = "done", None
     exp_dir = DIR / str(exp["id"]); exp_dir.mkdir(parents=True, exist_ok=True)
     base_kld = exp_dir / "base.kld"
-    is_baseline = not any(r["status"] == "done" for r in exp["runs_list"] if r["id"] != run_id)
+    is_baseline = not any(r["status"] == "done" and not r["config"]["model"].startswith(methods.PREFIX) for r in exp["runs_list"] if r["id"] != run_id)
     settings = db.get_settings()
     try:
         meter = power.meter_config(settings)
@@ -1384,7 +1415,7 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
             pcmd = [str(ebin / "llama-perplexity"), "-m", str(lab.MODELS_DIR / cfg["model"]), "-f", str(text), "-c", "512",
                     "--chunks", "32", "-ctk", cfg["kv"], "-ctv", cfg["kv"], "-fa", cfg["fa"]] + _placement_args(cfg, vram_total)
             pcmd = _pin(pcmd, cfg)
-            base_run = next((r for r in exp["runs_list"] if r["status"] == "done" and r["id"] != run_id), None)
+            base_run = next((r for r in exp["runs_list"] if r["status"] == "done" and r["id"] != run_id and not r["config"]["model"].startswith(methods.PREFIX)), None)
             same_tok = is_baseline or not base_run or (
                 gguf.metadata(lab.MODELS_DIR / cfg["model"]).get("tokenizer") == gguf.metadata(lab.MODELS_DIR / base_run["config"]["model"]).get("tokenizer"))
             if not same_tok:
@@ -1602,12 +1633,17 @@ def enrich(exp: dict) -> dict:
     base = next((r for r in exp["runs_list"] if r["status"] == "done"), None)
     by_id = {r["id"]: r for r in exp["runs_list"]}
     for r in exp["runs_list"]:
+        if r["config"].get("engine") != "research" and any(x["config"].get("engine") == "research" for x in exp["runs_list"]):
+            from . import research_jobs
+            native = research_jobs.native_metrics(r["results"])
+            if native:
+                r["results"]["research_metrics"] = {e["name"]: e for e in native}
         # Runs made before the tree existed (no parent) were all derived from the baseline.
         if r.get("parent_id") is None and base and r["id"] != base["id"]:
             r["parent_id"] = base["id"]
         if r["status"] == "done":
             # Each run is judged against the hardware it actually ran on (its snapshot), not today's machine.
-            if not r["results"].get("imported_from"):
+            if not r["results"].get("imported_from") and not r["config"].get("engine") == "research":
                 analysis = analyze(r["results"], r["config"], r["results"].get("hardware") or lim)
                 if analysis:
                     r["results"]["hw"] = analysis
@@ -1686,6 +1722,9 @@ def import_experiment(data: dict, into: int | None = None) -> dict:
             res = dict(r["results"])
             res.setdefault("hardware", src_limits)  # exports from before per-run snapshots: use the export's hardware
             res["imported_from"] = origin
+            # Job IDs belong to the source device; never link imported evidence to unrelated local files.
+            if res.get("research_job_id"):
+                res["source_research_job_id"] = res.pop("research_job_id")
             parent = id_map.get(r.get("parent_id")) if r.get("parent_id") is not None else None
             if parent is None and r.get("parent_id") is None and local_root is not None:
                 parent = local_root  # the other device's baseline hangs under ours when merging

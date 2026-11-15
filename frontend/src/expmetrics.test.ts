@@ -82,3 +82,21 @@ describe("lm-eval metrics", () => {
     expect(rows[0].sd!(r.results)).toBeCloseTo(7);
   });
 });
+
+describe("registered evaluator metrics", () => {
+  const result = (value: number, overrides = {}) => ({ research_metrics: { bits_per_byte: { value, unit: "bit/byte", protocol: "eval/1", task: "text", dataset_sha256: "hash", scope: "all bytes", kind: "measured", better: "lower", spread: { n: 3, sd: .1 }, ...overrides } } });
+  it("shows shared values and spread without inventing native measurements", () => {
+    const r = run(1, result(2));
+    const metric = allMetrics([r]).find((m) => m.researchName === "bits_per_byte")!;
+    expect(metric.get(r.results)).toBe(2);
+    expect(metric.sd!(r.results)).toBe(.1);
+    expect(METRICS.find((m) => m.key === "tg")!.get(r.results)).toBeUndefined();
+  });
+  it("blocks differences across changed datasets and units", () => {
+    const base = run(1, result(2));
+    const other = run(2, result(1, { dataset_sha256: "different" }));
+    const metric = allMetrics([base, other]).find((m) => m.researchName === "bits_per_byte")!;
+    expect(delta(metric, { base, run: other })?.text).toBe("not comparable");
+    expect(delta(metric, { base, run: run(2, result(1)) })?.tone).toBe("same");
+  });
+});

@@ -6,6 +6,8 @@ import { LineChart, Term } from "./ui";
 import ResearchCanvas from "./ResearchCanvas";
 import MetricEvidence from "./MetricEvidence";
 import ValidationPanel from "./ValidationPanel";
+import MethodChangePanel from "./MethodChangePanel";
+import type { RegisteredMethod } from "./api";
 import { evidence } from "./evidence";
 import { Planner, RulerTable } from "./Planner";
 import WeightsWorkshop from "./WeightsWorkshop";
@@ -34,6 +36,7 @@ function Tile({ icon: Icon, color, label, value, unit, sub }: { icon: LucideIcon
 }
 
 function Profile({ run }: { run: ExpRun }) {
+  if (run.config.engine === "research") return <div><b>{run.results.method?.name ?? run.label}</b><p className="row-sub">Registered evaluator · job #{run.results.research_job_id}. Open metric evidence in the results table for samples, contracts and artifacts.</p><div className="xt-grid">{allMetrics([run]).filter((m) => m.researchName).slice(0, 4).map((m) => <div key={m.key}><b>{m.label}</b><p>{m.get(run.results)?.toPrecision(5)} {m.unit}</p></div>)}</div></div>;
   const r = run.results, s = r.speed ?? (r.serving ? { tg: r.serving.tg ?? undefined, tg_sd: r.serving.tg_sd ?? undefined, pp: r.serving.pp ?? undefined, pp_sd: r.serving.pp_sd ?? undefined } : undefined),
     m = r.mmlu, hw = r.hw;
   return (
@@ -51,6 +54,7 @@ function Profile({ run }: { run: ExpRun }) {
 }
 
 function Running({ run, onStop }: { run: ExpRun; onStop: () => void }) {
+  if (run.config.engine === "research") return <div className="xrun"><b>Evaluating {run.label}</b><p>Registered evaluator · {run.status}. Its supported measurements will appear in the report.</p><button className="btn small ghost" onClick={onStop}>Stop evaluation</button></div>;
   const idx = PHASES.findIndex((p) => p.id === (run.phase === "lm_eval" ? "longctx" : run.phase));
   const mp = run.results.mmlu_progress, np = run.results.needle_progress;
   return (
@@ -505,7 +509,7 @@ function Repro({ runs }: { runs: ExpRun[] }) {
   return (
     <details className="xrepro">
       <summary><b>Reproducibility</b> <span className="row-sub">versions, file hashes and exact commands for every run{runs.some((r) => r.stats?.env_mismatch?.length) ? " · ⚠ some runs used a different environment" : ""}</span></summary>
-      {withProv.length === 0 ? <div className="row-sub">Runs made before provenance tracking don't have this. New runs record it automatically.</div> : <>
+      {withProv.length === 0 ? <div className="row-sub">{runs.some((r) => r.results.research_provenance) ? "Registered evaluator provenance, source hashes, environment and artifacts are available from each metric's evidence button." : "Runs made before provenance tracking don't have this. New runs record it automatically."}</div> : <>
         <div className="row-sub">Protocol: {withProv[0].results.provenance!.protocol}</div>
         <div className="table-wrap"><table className="data">
           <thead><tr><th />{runs.map((r, i) => <th key={r.id}>{nameOf(r, i)}</th>)}</tr></thead>
@@ -708,6 +712,7 @@ function Telemetry({ run }: { run: ExpRun }) {
 /* ---------- Page ---------- */
 
 export default function ExperimentsPage({ status }: { status: Status | null }) {
+  const [methods, setMethods] = useState<RegisteredMethod[]>([]);
   const [list, setList] = useState<Experiment[]>([]);
   const [id, setId] = useState<number | null>(null);
   const [exp, setExp] = useState<Experiment | null>(null);
@@ -727,7 +732,8 @@ export default function ExperimentsPage({ status }: { status: Status | null }) {
   }).catch(() => {}), []);
   useEffect(() => {
     loadList();
-    api.models().then((d) => { setModels(d.models); setNewModel(d.runtime.model ?? d.models[0]?.file ?? ""); }).catch(() => {});
+    api.researchMethods().then((m) => { setMethods(m); setNewModel((current) => current || (m[0] ? `method:${m[0].id}` : "")); }).catch(() => {});
+    api.models().then((d) => { setModels(d.models); setNewModel((current) => current || d.runtime.model || d.models[0]?.file || ""); }).catch(() => {});
   }, [loadList]);
   const load = useCallback(() => { if (id) api.experiment(id).then(setExp).catch(() => {}); }, [id]);
   useEffect(() => { setExp(null); load(); }, [load]);
@@ -747,7 +753,7 @@ export default function ExperimentsPage({ status }: { status: Status | null }) {
     setErr(null);
     try {
       const m = models.find((x) => x.file === newModel);
-      const { id: nid } = await api.experimentCreate(`${m?.name ?? newModel}`, newModel);
+      const { id: nid } = await api.experimentCreate(`${methods.find((m) => `method:${m.id}` === newModel)?.name ?? m?.name ?? newModel}`, newModel);
       setCreating(false); setId(nid); loadList();
     } catch (e) { setErr((e as Error).message); }
   };
@@ -764,7 +770,7 @@ export default function ExperimentsPage({ status }: { status: Status | null }) {
   const reloadModels = () => api.models().then((d) => setModels(d.models)).catch(() => {});
   // The canvas reuses the same change panel, but branches from whichever card you picked.
   const branchPanel = (parent: ExpRun, close: () => void) => exp && (
-    <ChangePanel base={parent.config} models={models} onModels={reloadModels}
+    parent.config.engine === "research" ? <MethodChangePanel methods={methods} models={models} parent={parent} onRun={(label, cfg) => { api.experimentRun(exp.id, label, cfg, parent.id).then(() => { load(); close(); }).catch((e) => setErr((e as Error).message)); }} /> : <ChangePanel base={parent.config} models={models} onModels={reloadModels}
       onRun={(label, cfg) => { setErr(null); api.experimentRun(exp.id, label, cfg, parent.id).then(() => { load(); close(); }).catch((e) => setErr((e as Error).message)); }}
       onSweep={(grid, reps) => { setErr(null); api.experimentSweep(exp.id, grid as Record<string, unknown[]>, reps, parent.id).then(() => { load(); close(); }).catch((e) => setErr((e as Error).message)); }} />
   );
@@ -775,7 +781,7 @@ export default function ExperimentsPage({ status }: { status: Status | null }) {
     <div className="page">
       <div className={`page-inner wide ${tab === "canvas" ? "xfull" : ""}`}>
         <h1 className="page-title">Experiments</h1>
-        <p className="page-sub">Start from a baseline, branch one change at a time, and compare setups or whole different models. Every run is measured the same way, with its noise shown, so you can tell real differences from luck.</p>
+        <p className="page-sub">Start from a baseline, branch a change, and compare models or registered research methods. Inspect measurement contracts and uncertainty before drawing conclusions.</p>
 
         <div className="xbar">
           <select className="field select" value={id ?? ""} onChange={(e) => { setId(Number(e.target.value)); setFocus(null); }} disabled={list.length === 0}>
@@ -798,6 +804,7 @@ export default function ExperimentsPage({ status }: { status: Status | null }) {
             <div className="row-sub">An experiment follows one model: a baseline profile first, then variations of its setup.</div>
             <div className="xnew-row">
               <select className="field select" value={newModel} onChange={(e) => setNewModel(e.target.value)}>
+                {methods.map((m) => <option key={`method:${m.id}`} value={`method:${m.id}`}>{m.name} · registered method</option>)}
                 {models.map((m) => <option key={m.file} value={m.file}>{m.name ?? m.file} · {m.quant}</option>)}
               </select>
               <button className="btn" onClick={create}><FlaskConical /> Start experiment</button>
@@ -826,7 +833,7 @@ export default function ExperimentsPage({ status }: { status: Status | null }) {
               </div>
             )}
 
-            <TestProtocol exp={exp} onSaved={load} />
+            {exp.model.startsWith("method:") ? <p className="row-sub">Registered methods use their own evaluator contracts. Native profile phases are unavailable unless a compatible evaluator explicitly supplies them.</p> : <TestProtocol exp={exp} onSaved={load} />}
             <div className="xviewbar">
               <div className="segmented">
                 <button className={tab === "report" ? "on" : ""} onClick={() => setTab("report")}>Report</button>
@@ -847,7 +854,7 @@ export default function ExperimentsPage({ status }: { status: Status | null }) {
             ) : !running && (
               <div className="group pad xcta">
                 <div><b>Measure the starting point</b>
-                  <span className="row-sub">Load (memory layout from llama.cpp's own log) → MMLU-Pro, 560 questions, 5-shot log-likelihood → llama-bench decode and prefill at 0 and 4k context, 5 repetitions (median, robust spread) → perplexity on 16k tokens of WikiText-2, saving logits for the KL divergence of later runs. GPU and CPU telemetry throughout.</span></div>
+                  <span className="row-sub">{exp.model.startsWith("method:") ? "Run the registered evaluator with its saved source and settings. Its supported metrics, logs and artifacts become the baseline; unsupported native phases stay unavailable." : "Load the model, evaluate quality, measure llama-bench speed and perplexity, and save reference logits and telemetry."}</span></div>
                 <button className="btn" onClick={() => runProfile("Baseline", {})}><Play /> {status?.busy ? "Queue baseline" : "Run baseline"}</button>
               </div>
             )}
@@ -855,7 +862,8 @@ export default function ExperimentsPage({ status }: { status: Status | null }) {
             {baseline && (
               <>
                 <div className="group-label">2 · Change one variable</div>
-                <div className="group pad"><ChangePanel base={baseline.config} models={models} onRun={runProfile} onSweep={runSweep} onModels={reloadModels} /></div>
+                {baseline.config.engine !== "research" && <div className="group pad"><ChangePanel base={baseline.config} models={models} onRun={runProfile} onSweep={runSweep} onModels={reloadModels} /></div>}
+                {methods.length > 0 && <div className="group pad"><MethodChangePanel key={`${exp.id}-${baseline.id}`} methods={methods} models={models} parent={baseline} onRun={(label, cfg) => { api.experimentRun(exp.id, label, cfg, baseline.id).then(load).catch((e) => setErr((e as Error).message)); }} /></div>}
 
                 <div className="group-label">3 · Results</div>
                 <ValidationPanel key={exp.id} exp={exp} runs={runs} onChanged={load} />

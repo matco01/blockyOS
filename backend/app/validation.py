@@ -30,6 +30,9 @@ def get(d, path):
 
 
 def create(exp_id: int, body: dict) -> dict:
+    if str(body.get("metric", "")).startswith("research:"):
+        from . import methods
+        return methods.create_validation(exp_id, body)
     from . import profile
     exp = profile.get_experiment(exp_id)
     if not exp:
@@ -102,6 +105,9 @@ def paired_stats(changes: list[float]) -> dict:
 
 
 def summarize(plan: dict, runs: list[dict]) -> dict:
+    if plan.get("research_metric"):
+        from . import methods
+        return methods.summarize_validation(plan, runs)
     by_id = {r["id"]: r for r in runs}
     title, unit, path, direction = METRICS[plan["metric"]]
     pairs, changes, problems = [], [], []

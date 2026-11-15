@@ -25,7 +25,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import agent, arena, benchmarks, config, db, engines, evals, generate, lab, mcp_server, memory, power, profile, quantlab, remote, scans, system, tools, torchlab, weights
-from . import research_jobs
+from . import research_jobs, methods
 
 
 @asynccontextmanager
@@ -108,6 +108,19 @@ app.add_middleware(LocalOnly)
 @app.get("/api/research/projects")
 def research_projects():
     return {"projects": research_jobs.projects(), "python": __import__("sys").executable}
+
+
+@app.get("/api/research/methods")
+def research_methods():
+    return methods.list_methods()
+
+
+@app.post("/api/research/jobs/{jid}/register")
+def research_register(jid: int, body: dict):
+    try:
+        return methods.register(jid, body.get("name"))
+    except (ValueError, TypeError, OSError) as e:
+        raise HTTPException(400, str(e))
 
 
 @app.post("/api/research/projects")

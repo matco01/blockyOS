@@ -74,6 +74,7 @@ export type ToolRun = {
 };
 
 export type ExpConfig = { model: string; ctx: number; kv: string; ngl: string | number; vram_limit_mb: number | null; fa: string; threads: number | null; engine?: string;
+  method_config?: Record<string, unknown>;
   device?: "gpu" | "cpu"; cores?: number | null; ram_limit_mb?: number | null; preset?: string | null };
 export type Device = { id: number; name: string; url: string; token: boolean; created_at: number };
 export type RemoteJob = { id: number; experiment_id: number; device: string; device_id?: number; status: string; step: string | null; error: string | null; imported?: { runs: number } };
@@ -95,6 +96,11 @@ export type HwAnalysis = {
   projection?: { target: string; target_ram_gbps: number; memory?: string; bandwidth_share: number; tg: number | null; method: string };
 };
 export type ExpResults = {
+  research_metrics?: Record<string, ResearchMetric>;
+  research_job_id?: number;
+  research_provenance?: Record<string, unknown>;
+  research_artifacts?: ResearchMetric[];
+  method?: { id: number; name: string };
   load_seconds?: number;
   memory?: { gpu: Record<string, number>; ram: Record<string, number>; layers: { gpu: number; total: number } | null; vram_used_mb?: number; ram_needed_mb?: number };
   mmlu?: Mmlu; mmlu_progress?: { done: number; total: number; correct: number };
@@ -274,6 +280,8 @@ const send = (method: string, body?: unknown): RequestInit => ({
 });
 
 export const api = {
+  researchMethods: () => json<RegisteredMethod[]>("/api/research/methods"),
+  researchRegister: (jid: number, name: string) => json<RegisteredMethod>(`/api/research/jobs/${jid}/register`, send("POST", { name })),
   researchProjects: () => json<{ projects: ResearchProject[]; python: string }>("/api/research/projects"),
   researchCreate: (name: string, template: string) => json<{ id: number }>("/api/research/projects", send("POST", { name, template })),
   researchFiles: (pid: number) => json<string[]>(`/api/research/projects/${pid}/files`),
@@ -492,7 +500,8 @@ export type ValidationBatch = {
     stats: { n: number; median_pct: number | null; sd_pct: number | null; range_pct: number[] | null; ci95_pct: number[] | null; p: number | null };
     pairs: { pair: number; run_ids: number[]; states: string[]; reference: number | null; candidate: number | null; improvement_pct: number | null }[] };
 };
-export type ResearchMetric = { type: string; name?: string; value?: number; unit?: string; kind?: string; protocol?: string; task?: string; dataset_sha256?: string; scope?: string; samples?: number[] | null; spread?: { n: number; sd: number | null }; note?: string; path?: string; message?: string };
+export type ResearchMetric = { type: string; name?: string; value?: number; unit?: string; kind?: string; protocol?: string; task?: string; dataset_sha256?: string; scope?: string; better?: string | null; tokenizer_sha256?: string | null; samples?: number[] | null; spread?: { n: number; sd: number | null }; note?: string; path?: string; message?: string };
 export type ResearchProject = { id: number; name: string; path: string; created_at: number };
 export type ResearchJob = { id: number; project_id: number; parent_id: number | null; status: string; error: string | null; directory: string; log: string; events: ResearchMetric[]; spec: { argv: string[]; config: Record<string, unknown>; python: string; gpu: boolean; timeout_s: number }; provenance: Record<string, unknown> };
 export type ResearchComparison = { runs: { id: number | string; project_id: number | null; status: string }[]; metrics: { name: string; compatible: boolean; reasons: string[]; values: (ResearchMetric | null)[] }[]; note: string };
+export type RegisteredMethod = { id: number; name: string; source_job_id: number; definition: { spec: { config: Record<string, unknown>; gpu: boolean }; capabilities: ResearchMetric[]; note: string } };
