@@ -21,6 +21,12 @@ CREATE TABLE IF NOT EXISTS method_profile_jobs (
  run_id INTEGER PRIMARY KEY REFERENCES exp_runs(id) ON DELETE CASCADE,
  job_id INTEGER NOT NULL REFERENCES research_jobs(id)
 );
+CREATE TABLE IF NOT EXISTS method_promotions (
+ job_id INTEGER PRIMARY KEY REFERENCES research_jobs(id),
+ method_id INTEGER NOT NULL REFERENCES research_methods(id),
+ experiment_id INTEGER NOT NULL REFERENCES experiments(id) ON DELETE CASCADE,
+ run_id INTEGER NOT NULL REFERENCES exp_runs(id) ON DELETE CASCADE
+);
 """
 
 
@@ -87,6 +93,39 @@ def normalize(model, supplied):
             "device": "gpu" if definition["spec"]["gpu"] else "cpu", "cores": None, "ram_limit_mb": None, "preset": None}
 
 
+def promote(jid, name=None):
+    """Use a completed result as an experiment baseline; no duplicate measurement is launched."""
+    with db.connect() as c:
+        existing = c.execute("SELECT * FROM method_promotions WHERE job_id=?", (jid,)).fetchone()
+    if existing:
+        return dict(existing)
+    method = register(jid, name)
+    job = research_jobs.job(jid)
+    cfg = normalize(f"method:{method['id']}", {})
+    result = result_for_job(job, cfg, {"id": method["id"], "name": method["name"]})
+    result["promoted_from_job_id"] = jid
+    with db.connect() as c:
+        c.execute("BEGIN IMMEDIATE")
+        existing = c.execute("SELECT * FROM method_promotions WHERE job_id=?", (jid,)).fetchone()
+        if existing:
+            return dict(existing)
+        eid = c.execute("INSERT INTO experiments (created_at,name,model,seed) VALUES (?,?,?,?)", (time.time(), method["name"], cfg["model"], 0)).lastrowid
+        rid = c.execute("INSERT INTO exp_runs (experiment_id,created_at,status,label,config,results,log) VALUES (?,?,'done',?,?,?,?)",
+                        (eid, job["created_at"], f"Baseline · {method['name']}", json.dumps(cfg), json.dumps(result), job["log"])).lastrowid
+        c.execute("INSERT INTO method_profile_jobs (run_id,job_id) VALUES (?,?)", (rid, jid))
+        c.execute("INSERT INTO method_promotions (job_id,method_id,experiment_id,run_id) VALUES (?,?,?,?)", (jid, method["id"], eid, rid))
+    return {"job_id": jid, "method_id": method["id"], "experiment_id": eid, "run_id": rid}
+
+
+def result_for_job(job, cfg, method):
+    metrics = {e["name"]: e for e in job["events"] if e.get("type") == "metric" and isinstance(e.get("name"), str)
+               and isinstance(e.get("value"), (float, int)) and not isinstance(e["value"], bool) and math.isfinite(e["value"])
+               and not contract_errors(e, e)}
+    return {"research_metrics": metrics, "research_provenance": job["provenance"], "research_job_id": job["id"],
+            "research_artifacts": [e for e in job["events"] if e.get("type") == "artifact"], "method": method, "config": cfg,
+            "fidelity_note": "Registered evaluator: native phases are unavailable unless explicitly supplied by a compatible evaluator contract."}
+
+
 def queue_profile(exp_id, body, cfg):
     from . import profile
     exp = profile.get_experiment(exp_id)
@@ -129,15 +168,10 @@ async def run_profile(rec, llm):
         await research_jobs.execute(jid, llm)
     finally:
         job = research_jobs.job(jid)
-        metrics = {e["name"]: e for e in job["events"] if e.get("type") == "metric" and isinstance(e.get("name"), str)
-                   and isinstance(e.get("value"), (float, int)) and not isinstance(e["value"], bool) and math.isfinite(e["value"])
-                   and not contract_errors(e, e)}
-        result = {**rec["results"], "research_metrics": metrics, "research_provenance": job["provenance"],
-                  "research_job_id": jid, "research_artifacts": [e for e in job["events"] if e.get("type") == "artifact"],
-                  "config": rec["config"], "fidelity_note": "Registered evaluator: native llama-bench, MMLU and KLD phases are unavailable unless explicitly reported through a compatible evaluator contract."}
+        result = {**rec["results"], **result_for_job(job, rec["config"], rec["results"].get("method"))}
         error = job["error"]
         status = job["status"]
-        if status == "done" and not metrics:
+        if status == "done" and not result["research_metrics"]:
             status, error = "error", "Evaluator completed without valid metrics"
         profile._save(rid, status=status, results=result, error=error, phase=None, log=job["log"])
         profile._cancel.discard(rid)

@@ -71,14 +71,24 @@ through the artifact endpoint. Up to 10,000 report events are shown; save longer
 
 ### Register a method in Experiments
 
-After a successful job reports complete metric contracts, select it in Research projects, enter a method name, and
-click **Register for Experiments**. Registration records that tested job's source snapshot and execution settings.
+Research projects has separate **Prepare**, **Implementation**, **Run**, and **Results** steps. Guided mode shows common
+settings as fields; Researcher mode expands execution details and JSON. Both modes expose the same tools. Source drafts
+are kept in the current browser tab until saved or explicitly discarded. Select another run's **Branch settings** to
+reuse its configuration; jobs always retain their own source snapshots.
+
+After a successful job reports complete metric contracts, select it under **Results** and click **Use this result in
+Experiments**. This registers the tested implementation, creates an experiment, and carries the original measurement
+into its baseline without executing the program again. Repeating the action opens the same experiment. The original
+samples, logs, source hashes and artifacts remain linked. Under **Register separately (advanced)**, you can instead
+register the method alone and create an experiment later. Registration records that tested job's source snapshot and execution settings.
 Later edits to the working project do not change the registered version; run and register a new version deliberately.
 External checkpoint/data paths and Python environments remain external dependencies. Registration does not certify
 the evaluator's correctness or make unsupported native phases available.
 
-The method appears in **Experiments → New experiment**. Select it, create the experiment, and run the baseline.
-Use **Evaluate a registered method or conventional model** to branch another registered method, change its JSON
+Separately registered methods appear in **Experiments → New experiment**. Select one, create the experiment, and run
+the baseline. Experiments separates **Overview**, **Set up a change**, **Compare results**, **Repeat and validate**,
+and **Hardware**. **Full report** and **Canvas** keep the detailed research views available.
+Under **Set up a change**, use **Evaluate a registered method or conventional model** to branch another registered method, change its
 settings, or add an existing GGUF model. Existing native-model experiments also show this panel for adding a method.
 The canvas can branch registered methods as well. Native flags such as context size or KV precision are rejected
 for a registered evaluator; implement supported controls explicitly in its `method_config`.

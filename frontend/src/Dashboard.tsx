@@ -92,7 +92,7 @@ export default function Dashboard({ status, go }: { status: Status | null; go: (
       <div className="page-inner wide">
         <div className="dash-head">
           <div>
-            <h1 className="page-title">Overview</h1>
+            <h1 className="page-title">What would you like to do?</h1>
             <p className="page-sub">
               <span className={`state-dot ${state === "Ready" ? "ok" : ""}`} /> {state}
               {activeModel && <> · <b>{activeModel.name ?? activeModel.file}</b> <span className="muted">({activeModel.size_label ?? ""} · <Term k="quant">{activeModel.quant}</Term>)</span></>}
@@ -100,6 +100,12 @@ export default function Dashboard({ status, go }: { status: Status | null; go: (
           </div>
         </div>
 
+        <div className="flow-intents">
+          <button onClick={() => go("models")}><Brain /><b>Use a model</b><span>Choose a local model, check that it fits, and start chatting.</span><em>Choose a model →</em></button>
+          <button onClick={() => go("experiments")}><Gauge /><b>Improve a model</b><span>Measure a baseline, change one setting, and compare the evidence.</span><em>Open experiments →</em></button>
+          <button onClick={() => go("projects")}><FlaskConical /><b>Develop a method</b><span>Build your own evaluator or architecture, test it, and bring the result into Experiments.</span><em>Open research projects →</em></button>
+        </div>
+        <div className="group-label">Your device at a glance</div>
         <div className="hero-grid">
           <Hero icon={Gauge} color="#7c5cff" label="Writing speed" term="tps" value={speed != null ? speed.toFixed(0) : "–"} unit="tok/s"
             verdict={speed != null ? sv.label : "Send a chat message to measure"} tone={sv.tone}>

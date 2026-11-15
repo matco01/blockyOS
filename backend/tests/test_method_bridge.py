@@ -87,6 +87,36 @@ def test_custom_settings_do_not_silently_apply_native_flags(registered):
         methods.normalize(f"method:{method['id']}", {"ctx": 32768})
 
 
+def test_promote_reuses_tested_result_without_launching_another_job(registered):
+    _, jid, _ = registered
+    with db.connect() as c:
+        count = c.execute("SELECT COUNT(*) FROM research_jobs").fetchone()[0]
+    promoted = methods.promote(jid, "Connected workflow")
+    assert methods.promote(jid, "Repeated click") == promoted
+    exp = profile.get_experiment(promoted["experiment_id"])
+    assert len(exp["runs_list"]) == 1
+    baseline = exp["runs_list"][0]
+    assert baseline["id"] == promoted["run_id"] and baseline["status"] == "done"
+    assert baseline["results"]["research_job_id"] == jid
+    assert baseline["results"]["promoted_from_job_id"] == jid
+    assert baseline["results"]["research_provenance"] == research.job(jid)["provenance"]
+    assert "bits_per_byte" in baseline["results"]["research_metrics"]
+    assert "speed" not in baseline["results"]
+    with db.connect() as c:
+        assert c.execute("SELECT COUNT(*) FROM research_jobs").fetchone()[0] == count
+    # A promoted baseline remains a real starting point for new evaluation branches.
+    rid = profile.create_run(exp["id"], {"parent_id": baseline["id"], "config": {"method_config": {"smoothing": 2}}})
+    asyncio.run(profile.run(rid, None))
+    assert profile.get_experiment(exp["id"])["runs_list"][1]["status"] == "done"
+
+
+def test_unfinished_job_cannot_be_promoted(registered):
+    pid, _, _ = registered
+    jid = research.queue(pid, {})["id"]
+    with pytest.raises(ValueError, match="successfully completed"):
+        methods.promote(jid)
+
+
 def test_registration_rejects_unfinished_or_modified_source(registered):
     pid, jid, method = registered
     queued = research.queue(pid, {})["id"]

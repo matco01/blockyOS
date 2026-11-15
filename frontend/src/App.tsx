@@ -27,7 +27,7 @@ const PAGES = [
   { id: "agent", label: "Agent", icon: Bot },
   { id: "experiments", label: "Experiments", icon: FlaskConical },
   { id: "projects", label: "Research projects", icon: Microscope },
-  { id: "home", label: "Overview", icon: LayoutDashboard },
+  { id: "home", label: "Start here", icon: LayoutDashboard },
   { id: "internals", label: "Internals", icon: Microscope },
   { id: "notebooks", label: "Notebooks", icon: BookOpen },
   { id: "models", label: "Models", icon: Boxes },
@@ -42,8 +42,9 @@ const PAGES = [
 
 /** Sidebar groups: what you do with models, then the device itself. */
 const NAV_GROUPS: { label: string; ids: readonly Page[] }[] = [
-  { label: "Research", ids: ["agent", "experiments", "projects", "internals", "home", "notebooks"] },
-  { label: "Tools", ids: ["models", "arena", "tests", "bench"] },
+  { label: "Use a model", ids: ["home", "models"] },
+  { label: "Improve a model", ids: ["experiments", "tests", "bench", "arena"] },
+  { label: "Develop a method", ids: ["projects", "internals", "notebooks", "agent"] },
   { label: "Device", ids: ["memory", "system", "settings", "guide"] },
 ];
 
@@ -62,6 +63,7 @@ function Snippet({ text }: { text: string }) {
 function parseHash(): { page: Page; id: number | null } {
   const [, rawP, id] = window.location.hash.split("?")[0].split("/");
   const p = rawP ?? "";
+  if (!p) return { page: "home", id: null };
   if (PAGES.some((x) => x.id === p)) return { page: p as Page, id: null };
   return { page: "chat", id: p === "chat" && id ? Number(id) || null : null };
 }
@@ -120,7 +122,7 @@ export default function App() {
 
   // Keep the URL in sync, and follow it when the user presses back/forward.
   useEffect(() => {
-    const want = page === "chat" ? (activeId != null ? `#/chat/${activeId}` : "#/") : `#/${page}`;
+    const want = page === "chat" ? (activeId != null ? `#/chat/${activeId}` : "#/chat") : `#/${page}`;
     const current = window.location.hash.split("?")[0];
     if (current !== want && !(want === "#/" && current === "")) {
       // Pages with their own query (#/bench?compare=…, #/arena?match=…) manage it themselves.
@@ -188,6 +190,7 @@ export default function App() {
             </div>
           ))}
 
+          <details className="conversation-drawer" open={page === "chat" || undefined}><summary>Conversations</summary>
           <div className="section-label">{hits !== null ? "Search results" : "Chats"}</div>
           <div className="search">
             <Search />
@@ -235,13 +238,14 @@ export default function App() {
               ))
             )}
           </nav>
+          </details>
 
           <div className="side-foot">
-            <div className="mode-switch" title="Simple: plain language and the essentials. Pro: every number and setting.">
-              <span className="mode-label">Detail level</span>
+            <div className="mode-switch" title="Guided: steps and common settings. Researcher: execution details and advanced settings expanded.">
+              <span className="mode-label">Workspace</span>
               <div className="segmented">
-                <button className={mode === "simple" ? "on" : ""} onClick={() => setMode("simple")}>Simple</button>
-                <button className={mode === "pro" ? "on" : ""} onClick={() => setMode("pro")}>Pro</button>
+                <button className={mode === "simple" ? "on" : ""} onClick={() => setMode("simple")}>Guided</button>
+                <button className={mode === "pro" ? "on" : ""} onClick={() => setMode("pro")}>Researcher</button>
               </div>
             </div>
           </div>

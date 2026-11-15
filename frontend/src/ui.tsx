@@ -20,7 +20,15 @@ export function Tabs<T extends string>({ tabs, value, onChange }: {
   return (
     <div className="tabs" role="tablist">
       {tabs.map((t) => (
-        <button key={t.id} role="tab" aria-selected={value === t.id} className={value === t.id ? "on" : ""} onClick={() => onChange(t.id)}>
+        <button key={t.id} role="tab" tabIndex={value === t.id ? 0 : -1} aria-selected={value === t.id} className={value === t.id ? "on" : ""} onClick={() => onChange(t.id)}
+          onKeyDown={(event) => {
+            const index = tabs.findIndex((item) => item.id === t.id);
+            const next = event.key === "ArrowRight" ? (index + 1) % tabs.length : event.key === "ArrowLeft" ? (index - 1 + tabs.length) % tabs.length : event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : null;
+            if (next === null) return;
+            event.preventDefault();
+            onChange(tabs[next].id);
+            (event.currentTarget.parentElement?.children[next] as HTMLButtonElement | undefined)?.focus();
+          }}>
           {t.label}
           {t.badge != null && t.badge !== 0 && <span className="tab-badge">{t.badge}</span>}
         </button>

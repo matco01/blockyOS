@@ -107,7 +107,18 @@ app.add_middleware(LocalOnly)
 
 @app.get("/api/research/projects")
 def research_projects():
-    return {"projects": research_jobs.projects(), "python": __import__("sys").executable}
+    python = __import__("sys").executable
+    return {"projects": research_jobs.projects(), "python": python,
+            "environments": [{"label": label, "python": str(path)} for label, path in
+                             (("Standard Python (CPU projects)", Path(python)), ("ML environment (PyTorch / Transformers)", torchlab.PY)) if path.is_file()]}
+
+
+@app.post("/api/research/jobs/{jid}/experiment")
+def research_promote(jid: int, body: dict):
+    try:
+        return methods.promote(jid, body.get("name"))
+    except (ValueError, TypeError, OSError) as e:
+        raise HTTPException(400, str(e))
 
 
 @app.get("/api/research/methods")

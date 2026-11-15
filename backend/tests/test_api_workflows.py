@@ -123,3 +123,21 @@ def test_register_and_evaluate_method_via_experiment_http(api, tmp_path, monkeyp
     result = api.get(f"/api/experiments/{eid}").json()["runs_list"][0]
     assert result["status"] == "done"
     assert result["results"]["research_metrics"]["bits_per_byte"]["value"] > 0
+
+
+def test_research_result_continues_directly_in_experiments(api, tmp_path, monkeypatch):
+    monkeypatch.setattr(research_jobs, "ROOT", tmp_path / "promotions")
+    research_jobs.init()
+    environments = api.get("/api/research/projects").json()["environments"]
+    assert environments and all(e["python"] and e["label"] for e in environments)
+    pid = api.post("/api/research/projects", json={"name": "Connected", "template": "byte"}).json()["id"]
+    jid = api.post(f"/api/research/projects/{pid}/jobs", json={}).json()["id"]
+    assert api.post(f"/api/research/jobs/{jid}/experiment", json={}).status_code == 400
+    asyncio.run(research_jobs.execute(jid, None))
+    response = api.post(f"/api/research/jobs/{jid}/experiment", json={"name": "Tested method"})
+    assert response.status_code == 200
+    assert api.post(f"/api/research/jobs/{jid}/experiment", json={}).json() == response.json()
+    exp = api.get(f"/api/experiments/{response.json()['experiment_id']}").json()
+    assert exp["name"] == "Tested method" and len(exp["runs_list"]) == 1
+    assert exp["runs_list"][0]["results"]["research_job_id"] == jid
+    assert len(api.get(f"/api/research/projects/{pid}/jobs").json()) == 1

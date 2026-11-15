@@ -282,7 +282,8 @@ const send = (method: string, body?: unknown): RequestInit => ({
 export const api = {
   researchMethods: () => json<RegisteredMethod[]>("/api/research/methods"),
   researchRegister: (jid: number, name: string) => json<RegisteredMethod>(`/api/research/jobs/${jid}/register`, send("POST", { name })),
-  researchProjects: () => json<{ projects: ResearchProject[]; python: string }>("/api/research/projects"),
+  researchProjects: () => json<{ projects: ResearchProject[]; python: string; environments: { label: string; python: string }[] }>("/api/research/projects"),
+  researchPromote: (jid: number, name: string) => json<{ experiment_id: number; run_id: number }>(`/api/research/jobs/${jid}/experiment`, send("POST", { name })),
   researchCreate: (name: string, template: string) => json<{ id: number }>("/api/research/projects", send("POST", { name, template })),
   researchFiles: (pid: number) => json<string[]>(`/api/research/projects/${pid}/files`),
   researchRead: (pid: number, name: string) => json<{ content: string }>(`/api/research/projects/${pid}/file?name=${encodeURIComponent(name)}`),

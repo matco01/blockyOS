@@ -5,6 +5,7 @@ import { BLOCK_COLORS } from "./settings";
 import Anatomy from "./Anatomy";
 import QuantLab from "./QuantLab";
 import { Pro, Tabs, Term, useMode } from "./ui";
+import { modelTitle } from "./workflow";
 
 const GB = 2 ** 30;
 const fmtGB = (bytes: number) => `${(bytes / GB).toFixed(bytes >= 10 * GB ? 0 : 1)} GB`;
@@ -143,12 +144,15 @@ export default function ModelsPage({ status }: { status: Status | null }) {
         {/* Local models */}
         <div className="group-label">On this computer</div>
         <div className="group">
+          {!data && !error && <p className="row" role="status">Loading local models...</p>}
+          {!data && error && <button className="btn" onClick={() => { setError(null); load(); }}>Retry loading models</button>}
           {data?.models.length === 0 && <div className="row"><div className="row-main muted">No models yet. Open "Get more" to download one.</div></div>}
           {data?.models.map((m, i) => (
             <div className="row model-row" key={m.file}>
               <span className="model-tile" style={{ "--c": BLOCK_COLORS[i % BLOCK_COLORS.length] } as React.CSSProperties}>{m.size_label ?? "?"}</span>
               <div className="row-main">
-                <div className="model-name">{m.name ?? m.file} {m.experts ? <span className="badge"><Term k="moe">MoE</Term> {m.experts_used}/{m.experts}</span> : null}</div>
+                <div className="model-name">{modelTitle(m)} {m.experts ? <span className="badge"><Term k="moe">MoE</Term> {m.experts_used}/{m.experts}</span> : null}</div>
+                <div className="row-sub model-file" title={m.file}>{m.file}</div>
                 {mode === "pro" ? (
                   <div className="row-sub mono">
                     {[m.architecture, m.quant, fmtGB(m.size_bytes), m.layers && `${m.layers} layers`, m.context_length && `${fmtCtx(m.context_length)} trained ctx`, m.license].filter(Boolean).join(" · ")}

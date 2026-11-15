@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, Check, Cpu, Download, Server, FlaskConical, Gauge, Hammer, Loader2, MemoryStick, Play, Plus, Sparkles, Square, Trash2, Upload, Zap } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { api, Device, DevicePreset, RemoteJob, Engine, ExpConfig, Experiment, ExpRun, KernelProfile, ModelFile, Provenance, Status, TorchStatus } from "./api";
-import { LineChart, Term } from "./ui";
+import { LineChart, Term, Tabs, useMode } from "./ui";
+import { modelTitle } from "./workflow";
 import ResearchCanvas from "./ResearchCanvas";
 import MetricEvidence from "./MetricEvidence";
 import ValidationPanel from "./ValidationPanel";
@@ -59,7 +60,7 @@ function Running({ run, onStop }: { run: ExpRun; onStop: () => void }) {
   const mp = run.results.mmlu_progress, np = run.results.needle_progress;
   return (
     <div className="xrun">
-      <div className="xrun-head"><Loader2 className="spin" /> <b>Profiling “{runTitle(run)}”</b><span className="row-sub">4–8 minutes · chat is paused</span>
+      <div className="xrun-head"><Loader2 className="spin" /> <b>Profiling “{runTitle(run)}”</b><span className="row-sub">Chat is paused while the hardware is reserved</span>
         <button className="btn small ghost" onClick={onStop}><Square /> Stop</button></div>
       <div className="xsteps">
         {PHASES.map((p, i) => (
@@ -82,6 +83,7 @@ type SweepGrid = Partial<Record<keyof ExpConfig, unknown[]>>;
 
 function ChangePanel({ base: rawBase, models, onRun, onSweep, onModels }: { base: ExpConfig; models: ModelFile[]; onRun: (label: string, cfg: Partial<ExpConfig>) => void;
   onSweep: (grid: SweepGrid, repeats: number) => void; onModels: () => void }) {
+  const workspaceMode = useMode();
   // Runs made before engines existed have no engine field: they ran on stock.
   const base = useMemo(() => ({ ...rawBase, engine: rawBase.engine ?? "stock" }), [rawBase]);
   const [engineList, setEngineList] = useState<Engine[]>([]);
@@ -155,6 +157,11 @@ function ChangePanel({ base: rawBase, models, onRun, onSweep, onModels }: { base
           <div className="segmented wrap">{ckpts.length ? ckpts.map((c) => <Opt key={c.id} k="model" v={`hf:${c.id}`} label={`${c.repo} · ${(c.size_bytes / 2 ** 30).toFixed(1)} GB`} />)
             : <span className="row-sub" style={{ padding: "4px 10px" }}>No checkpoints yet</span>}</div></div>
       )}
+      <div className="xc-row"><div><b><Term k="kv">KV cache type</Term></b><span>-ctk / -ctv</span></div>
+        <div className="segmented">{cfg.engine === "vllm" && <Opt k="kv" v="auto" label="Engine default" />}<Opt k="kv" v="f16" label="f16" /><Opt k="kv" v="q8_0" label="q8_0" /><Opt k="kv" v="q4_0" label="q4_0" /></div></div>
+      <div className="xc-row"><div><b><Term k="context">Context size</Term></b><span>-c</span></div>
+        <div className="segmented">{CTX.map((c) => <Opt key={c} k="ctx" v={c} label={`${c / 1024}k`} />)}</div></div>
+      <details className="flow-advanced" open={workspaceMode === "pro" || mode === "sweep" || undefined}><summary>Device limits and advanced inference settings</summary>
       <div className="xc-row"><div><b>Target device</b><span>Simulate a cheaper device: CPU only, fewer cores, less RAM or VRAM. Capacity and cores are real limits; per-core speed and memory bandwidth aren't, so CPU presets add a projected decode speed for the target's memory.</span></div>
         <div className="segmented wrap"><Opt k="preset" v={null} label="This device" />{Object.entries(presets).map(([id, p]) => <Opt key={id} k="preset" v={id} label={p.label} />)}</div></div>
       <div className="xc-row"><div><b>Processor</b><span>CPU only runs with no GPU at all (-dev none); cores pins the run to the first N CPU threads</span></div>
@@ -164,20 +171,17 @@ function ChangePanel({ base: rawBase, models, onRun, onSweep, onModels }: { base
         </div></div>
       <div className="xc-row"><div><b>RAM limit</b><span>The run fails if the model's CPU-side memory plus a minimal system wouldn't fit</span></div>
         <div className="segmented">{RAM_SIM.map((v) => <Opt key={String(v)} k="ram_limit_mb" v={v} label={v ? `${v / 1024} GB` : "Full"} />)}</div></div>
-      <div className="xc-row"><div><b><Term k="kv">KV cache type</Term></b><span>-ctk / -ctv</span></div>
-        <div className="segmented">{cfg.engine === "vllm" && <Opt k="kv" v="auto" label="Engine default" />}<Opt k="kv" v="f16" label="f16" /><Opt k="kv" v="q8_0" label="q8_0" /><Opt k="kv" v="q4_0" label="q4_0" /></div></div>
-      <div className="xc-row"><div><b><Term k="context">Context size</Term></b><span>-c</span></div>
-        <div className="segmented">{CTX.map((c) => <Opt key={c} k="ctx" v={c} label={`${c / 1024}k`} />)}</div></div>
       <div className="xc-row"><div><b>VRAM limit</b><span>Simulates a smaller GPU (--fit-target)</span></div>
         <div className="segmented">{VRAM_SIM.map((v) => <Opt key={String(v)} k="vram_limit_mb" v={v} label={v ? `${v / 1024} GB` : "Full"} />)}</div></div>
       <div className="xc-row"><div><b><Term k="layers">GPU layers</Term></b><span>-ngl</span></div>
         <div className="segmented"><Opt k="ngl" v="auto" label="Auto" />{[24, 16, 8, 0].map((n) => <Opt key={n} k="ngl" v={n} label={String(n)} />)}</div></div>
       <div className="xc-row"><div><b><Term k="fa">Flash attention</Term></b><span>-fa</span></div>
         <div className="segmented"><Opt k="fa" v="auto" label="Auto" /><Opt k="fa" v="on" label="On" /><Opt k="fa" v="off" label="Off" /></div></div>
+      </details>
       {mode === "single" ? (
         <div className="xc-foot">
           <span className="row-sub">{changed.length === 0 ? "Pick one variable to change against the baseline."
-            : changed.length === 1 ? "One variable changed: differences can be attributed to it." : `${changed.length} variables changed at once: effects will be confounded.`}</span>
+            : changed.length === 1 ? "One variable changed. Repeat both setups to distinguish an effect from run-to-run noise." : `${changed.length} variables changed at once: effects will be confounded.`}</span>
           <div className="xc-btns">
             <button className="btn ghost" onClick={() => onRun("", base)}
               title="Runs this exact setup again: the difference between the two shows how much results drift between sessions on this machine.">Repeat this setup</button>
@@ -188,7 +192,7 @@ function ChangePanel({ base: rawBase, models, onRun, onSweep, onModels }: { base
         <div className="xc-foot">
           <span className="row-sub">
             {nRuns === 0 ? "Select values above. Settings you leave empty stay as in the baseline."
-              : <>{swept.map((k) => `${grid[k]!.length} ${k === "vram_limit_mb" ? "VRAM limits" : k === "model" ? "weight files" : k}`).join(" × ")}{repeats > 1 ? ` × ${repeats} repeats` : ""} = <b>{nRuns} runs</b>, about {Math.round(nRuns * 4.5)} min{nRuns > 32 ? " · limit is 32 per sweep" : ""}</>}
+              : <>{swept.map((k) => `${grid[k]!.length} ${k === "vram_limit_mb" ? "VRAM limits" : k === "model" ? "weight files" : k}`).join(" × ")}{repeats > 1 ? ` × ${repeats} repeats` : ""} = <b>{nRuns} runs</b>{nRuns > 32 ? " · limit is 32 per sweep" : ""}</>}
           </span>
           <div className="xc-btns">
             <label className="xrep">Repeats <select className="field select small-select" value={repeats} onChange={(e) => setRepeats(Number(e.target.value))}>{[1, 2, 3].map((n) => <option key={n}>{n}</option>)}</select></label>
@@ -711,7 +715,21 @@ function Telemetry({ run }: { run: ExpRun }) {
 
 /* ---------- Page ---------- */
 
+type ReportStage = "overview" | "setup" | "compare" | "validate" | "hardware" | "all";
+
 export default function ExperimentsPage({ status }: { status: Status | null }) {
+  const mode = useMode();
+  const pageRef = useRef<HTMLDivElement>(null);
+  const [stage, setStage] = useState<ReportStage>(() => {
+    const query = new URLSearchParams(window.location.hash.split("?")[1]);
+    const linked = query.get("stage") ?? (query.has("workshop") ? "setup" : query.has("roofline") ? "hardware" : null);
+    return ["overview", "setup", "compare", "validate", "hardware", "all"].includes(linked ?? "") ? linked as ReportStage : "overview";
+  });
+  const [listLoading, setListLoading] = useState(true), [choicesLoading, setChoicesLoading] = useState(true), [detailLoading, setDetailLoading] = useState(false);
+  useEffect(() => { pageRef.current?.scrollTo({ top: 0 }); }, [stage]);
+  const [listReady, setListReady] = useState(false), [pending, setPending] = useState(false);
+  const [choicesReady, setChoicesReady] = useState(false);
+  const request = useRef(0);
   const [methods, setMethods] = useState<RegisteredMethod[]>([]);
   const [list, setList] = useState<Experiment[]>([]);
   const [id, setId] = useState<number | null>(null);
@@ -721,22 +739,38 @@ export default function ExperimentsPage({ status }: { status: Status | null }) {
   const [creating, setCreating] = useState(false);
   const [focus, setFocus] = useState<number | null>(null);
   const [metric, setMetric] = useState("tg");
-  const [tab, setTabState] = useState<"report" | "canvas">(() => { if (window.location.hash.includes("view=canvas")) return "canvas"; try { return localStorage.getItem("blocky.exp.tab") === "canvas" ? "canvas" : "report"; } catch { return "report"; } });
+  const [tab, setTabState] = useState<"report" | "canvas">(() => { if (window.location.hash.includes("view=canvas")) return "canvas"; if (window.location.hash.includes("stage=")) return "report"; try { return localStorage.getItem("blocky.exp.tab") === "canvas" ? "canvas" : "report"; } catch { return "report"; } });
   const setTab = (t: "report" | "canvas") => { setTabState(t); try { localStorage.setItem("blocky.exp.tab", t); } catch { /* private mode */ } };
   const [err, setErr] = useState<string | null>(null);
 
   const loadList = useCallback(() => api.experiments().then((l) => {
-    setList(l);
-    const linked = Number(window.location.hash.match(/[?&]exp=(\d+)/)?.[1]);  // deep link: #/experiments?exp=7
-    setId((cur) => cur ?? (l.some((e) => e.id === linked) ? linked : l[0]?.id ?? null));
-  }).catch(() => {}), []);
-  useEffect(() => {
-    loadList();
-    api.researchMethods().then((m) => { setMethods(m); setNewModel((current) => current || (m[0] ? `method:${m[0].id}` : "")); }).catch(() => {});
-    api.models().then((d) => { setModels(d.models); setNewModel((current) => current || d.runtime.model || d.models[0]?.file || ""); }).catch(() => {});
-  }, [loadList]);
-  const load = useCallback(() => { if (id) api.experiment(id).then(setExp).catch(() => {}); }, [id]);
-  useEffect(() => { setExp(null); load(); }, [load]);
+    setList(l); setListReady(true);
+    const linked = Number(window.location.hash.match(/[?&]exp=(\d+)/)?.[1]);
+    setId((cur) => l.some((e) => e.id === cur) ? cur : l.some((e) => e.id === linked) ? linked : l[0]?.id ?? null);
+  }).catch((e) => setErr(e.message)).finally(() => setListLoading(false)), []);
+  const loadChoices = useCallback(async () => {
+    setChoicesLoading(true);
+    const results = await Promise.allSettled([api.researchMethods(), api.models()]);
+    setChoicesReady(results.every((result) => result.status === "fulfilled"));
+    if (results[0].status === "fulfilled") {
+      const m = results[0].value; setMethods(m);
+      setNewModel((current) => current || (m[0] ? `method:${m[0].id}` : ""));
+    } else setErr(String(results[0].reason));
+    if (results[1].status === "fulfilled") {
+      const d = results[1].value; setModels(d.models);
+      setNewModel((current) => current || (d.models.some((m) => m.file === d.runtime.model) ? d.runtime.model ?? "" : d.models[0]?.file || ""));
+    } else setErr(String(results[1].reason));
+    setChoicesLoading(false);
+  }, []);
+  useEffect(() => { loadList(); loadChoices(); }, [loadList, loadChoices]);
+  const load = useCallback(async () => {
+    if (!id) return;
+    const seq = ++request.current;
+    try { const next = await api.experiment(id); if (seq === request.current) setExp(next); }
+    catch (e) { if (seq === request.current) setErr((e as Error).message); }
+    finally { if (seq === request.current) setDetailLoading(false); }
+  }, [id]);
+  useEffect(() => { setExp(null); setDetailLoading(!!id); load(); return () => { request.current++; }; }, [load]);
 
   const runs = exp?.runs_list ?? [];
   const running = runs.find((r) => r.status === "running") ?? runs.find((r) => r.status === "queued");
@@ -750,22 +784,23 @@ export default function ExperimentsPage({ status }: { status: Status | null }) {
   const shown = done.find((r) => r.id === focus) ?? done[done.length - 1];
 
   const create = async () => {
-    setErr(null);
+    if (!newModel || pending) return;
+    setErr(null); setPending(true);
     try {
       const m = models.find((x) => x.file === newModel);
-      const { id: nid } = await api.experimentCreate(`${methods.find((m) => `method:${m.id}` === newModel)?.name ?? m?.name ?? newModel}`, newModel);
-      setCreating(false); setId(nid); loadList();
-    } catch (e) { setErr((e as Error).message); }
+      const { id: nid } = await api.experimentCreate(`${methods.find((m) => `method:${m.id}` === newModel)?.name ?? (m ? modelTitle(m) : newModel)}`, newModel);
+      setCreating(false); setId(nid); setStage("overview"); setTab("report"); loadList();
+    } catch (e) { setErr((e as Error).message); } finally { setPending(false); }
   };
   const runProfile = async (label: string, cfg: Partial<ExpConfig>) => {
-    if (!exp) return;
-    setErr(null);
-    try { await api.experimentRun(exp.id, label, cfg); load(); window.scrollTo({ top: 0 }); } catch (e) { setErr((e as Error).message); }
+    if (!exp || pending) return;
+    setErr(null); setPending(true);
+    try { await api.experimentRun(exp.id, label, cfg, baseline?.id); load(); setStage("compare"); window.scrollTo({ top: 0 }); } catch (e) { setErr((e as Error).message); } finally { setPending(false); }
   };
   const runSweep = async (grid: SweepGrid, repeats: number) => {
-    if (!exp) return;
-    setErr(null);
-    try { await api.experimentSweep(exp.id, grid as Record<string, unknown[]>, repeats); load(); window.scrollTo({ top: 0 }); } catch (e) { setErr((e as Error).message); }
+    if (!exp || pending) return;
+    setErr(null); setPending(true);
+    try { await api.experimentSweep(exp.id, grid as Record<string, unknown[]>, repeats); load(); setStage("compare"); window.scrollTo({ top: 0 }); } catch (e) { setErr((e as Error).message); } finally { setPending(false); }
   };
   const reloadModels = () => api.models().then((d) => setModels(d.models)).catch(() => {});
   // The canvas reuses the same change panel, but branches from whichever card you picked.
@@ -778,17 +813,18 @@ export default function ExperimentsPage({ status }: { status: Status | null }) {
   const queued = runs.filter((r) => r.status === "queued");
 
   return (
-    <div className="page">
+    <div className="page" ref={pageRef}>
       <div className={`page-inner wide ${tab === "canvas" ? "xfull" : ""}`}>
         <h1 className="page-title">Experiments</h1>
         <p className="page-sub">Start from a baseline, branch a change, and compare models or registered research methods. Inspect measurement contracts and uncertainty before drawing conclusions.</p>
 
         <div className="xbar">
-          <select className="field select" value={id ?? ""} onChange={(e) => { setId(Number(e.target.value)); setFocus(null); }} disabled={list.length === 0}>
-            {list.length === 0 && <option>No experiments yet</option>}
-            {list.map((e) => <option key={e.id} value={e.id}>{e.name} · {e.runs} run{e.runs === 1 ? "" : "s"}</option>)}
+          <select className="field select" value={id ?? ""} aria-label="Experiment" onChange={(e) => { setId(Number(e.target.value)); setFocus(null); }} disabled={list.length === 0}>
+            {list.length === 0 && <option>{listLoading ? "Loading experiments..." : listReady ? "No experiments yet" : "Experiments unavailable"}</option>}
+            {list.map((e) => <option key={e.id} value={e.id}>{e.name} · {e.id === exp?.id ? runs.length : e.runs} run{(e.id === exp?.id ? runs.length : e.runs) === 1 ? "" : "s"}</option>)}
           </select>
           <button className="btn small ghost" onClick={() => setCreating(!creating)}><Plus /> New experiment</button>
+          <details className="flow-study-tools" open={mode === "pro" || undefined}><summary>Study tools and export</summary><div className="flow-toolbar">
           {exp && <>
             <a className="btn small ghost" href={`/api/experiments/${exp.id}/export.csv`}><Download /> CSV</a>
             <a className="btn small ghost" href={`/api/experiments/${exp.id}/export.json`} title="Everything, including hardware: import it on another Blocky device to compare"><Download /> JSON</a>
@@ -796,77 +832,89 @@ export default function ExperimentsPage({ status }: { status: Status | null }) {
           </>}
           <ImportRuns exp={exp} onDone={(nid) => { loadList(); if (nid !== exp?.id) setId(nid); else load(); }} />
           {exp && <RemoteRuns exp={exp} onImported={load} />}
+          </div></details>
         </div>
 
-        {(creating || list.length === 0) && (
+        {!listLoading && listReady && (creating || list.length === 0) && (
           <div className="group pad xnew">
             <b>Which model do you want to study?</b>
-            <div className="row-sub">An experiment follows one model: a baseline profile first, then variations of its setup.</div>
+            <div className="row-sub">Choose a local model or registered method. Measure a baseline, evaluate changes, then validate the comparison.</div>
             <div className="xnew-row">
-              <select className="field select" value={newModel} onChange={(e) => setNewModel(e.target.value)}>
+              <select aria-label="Starting model or method" className="field select" disabled={choicesLoading} value={newModel} onChange={(e) => setNewModel(e.target.value)}>
+                {!newModel && <option value="">{choicesLoading ? "Loading models and methods..." : "Choose a model or method"}</option>}
                 {methods.map((m) => <option key={`method:${m.id}`} value={`method:${m.id}`}>{m.name} · registered method</option>)}
-                {models.map((m) => <option key={m.file} value={m.file}>{m.name ?? m.file} · {m.quant}</option>)}
+                {models.map((m) => <option key={m.file} value={m.file}>{modelTitle(m)} · {m.quant}</option>)}
               </select>
-              <button className="btn" onClick={create}><FlaskConical /> Start experiment</button>
+              <button className="btn" disabled={pending || choicesLoading || !newModel} onClick={create}><FlaskConical /> Start experiment</button>
             </div>
+            {!choicesLoading && choicesReady && models.length === 0 && methods.length === 0 && <p>No models or registered methods are available. <a href="#/models">Add a model</a> or <a href="#/projects">develop and test a method</a> first.</p>}
           </div>
         )}
-        {err && <div className="error" style={{ marginTop: 12 }}><AlertCircle /> {err}</div>}
+        {listLoading && <p role="status">Loading experiments...</p>}
+        {detailLoading && <p role="status">Loading experiment...</p>}
+        {err && <div className="error" role="alert" style={{ marginTop: 12 }}><AlertCircle /> {err} <button className="btn small ghost" onClick={() => { setErr(null); loadList(); loadChoices(); load(); }}>Retry loading</button></div>}
 
         {exp && L && (
           <>
-            <div className="xhwline"><Cpu size={14} />
+            <details className="flow-device" open={mode === "pro" || undefined}><summary>Device and measured limits</summary><div className="xhwline"><Cpu size={14} />
               <span>{L.gpu?.replace("NVIDIA GeForce ", "") ?? "No GPU"}</span>
               <span>VRAM {(L.vram_mb / 1024).toFixed(0)} GB · {L.gpu_bandwidth_gbps ?? "?"} GB/s</span>
               <span>{L.gpu_tflops ?? "?"} TFLOPS <span className="muted">({L.gpu_tflops_kind ?? "unknown"})</span></span>
               <span>RAM {(L.ram_mb / 1024).toFixed(0)} GB · {L.ram_bandwidth_gbps ?? "?"} GB/s measured</span>
               <span>{L.cpu}</span>
-            </div>
+            </div></details>
 
             {running && <Running run={running} onStop={() => api.experimentCancel(running.id).then(load)} />}
             {queued.filter((r) => r.id !== running?.id).length > 0 && (
               <div className="xqueue">
                 <b>{queued.filter((r) => r.id !== running?.id).length} more in the queue</b>
                 <span className="row-sub">{queued.filter((r) => r.id !== running?.id).map((r) => runTitle(r)).join(" · ")}</span>
-                <span className="row-sub">· done in about {Math.round(queued.length * 4.5)} min</span>
+                <span className="row-sub">Runs execute one at a time.</span>
                 <button className="btn small ghost" onClick={() => api.experimentCancelQueue(exp.id).then(load)}>Cancel queue</button>
               </div>
             )}
 
-            {exp.model.startsWith("method:") ? <p className="row-sub">Registered methods use their own evaluator contracts. Native profile phases are unavailable unless a compatible evaluator explicitly supplies them.</p> : <TestProtocol exp={exp} onSaved={load} />}
+            {exp.model.startsWith("method:") ? <details className="flow-advanced" open={mode === "pro" || undefined}><summary>Evaluator measurement contract</summary><p className="row-sub">Registered methods use their own evaluator contracts. Native profile phases are unavailable unless a compatible evaluator explicitly supplies them.</p></details> : <details className="flow-advanced" open={mode === "pro" || undefined}><summary>Measurement protocol and test settings</summary><TestProtocol exp={exp} onSaved={load} /></details>}
             <div className="xviewbar">
               <div className="segmented">
                 <button className={tab === "report" ? "on" : ""} onClick={() => setTab("report")}>Report</button>
                 <button className={tab === "canvas" ? "on" : ""} onClick={() => setTab("canvas")}>Canvas</button>
               </div>
-              <span className="row-sub">{tab === "report" ? "Every number, in order: baseline → change → results → hardware." : "The map of this experiment: what was tried, what it led to. Drag, zoom, annotate."}</span>
+              <span className="row-sub">{tab === "report" ? "Follow the steps below, or open the full report for every detail." : "The map of this experiment: what was tried, what it led to. Drag, zoom, annotate."}</span>
             </div>
 
             {tab === "canvas" ? <ResearchCanvas key={exp.id} exp={exp} runs={runs} branchPanel={branchPanel} onChanged={load}
               onRepeat={(r) => api.experimentRun(exp.id, "", r.config, r.parent_id ?? null).then(load).catch((e) => setErr((e as Error).message))}
               onDelete={(r) => api.experimentDeleteRun(r.id).then(load)} onCancel={(r) => api.experimentCancel(r.id).then(load)} /> : <>
-            <div className="group-label">1 · Baseline{baseline ? `: ${shortModel(baseline)}` : ""}</div>
+            <Tabs value={baseline ? stage : "overview"} onChange={setStage} tabs={[{id:"overview",label:"Overview"}, ...(baseline ? [{id:"setup" as const,label:"Set up a change"},{id:"compare" as const,label:"Compare results",badge:done.length},{id:"validate" as const,label:"Repeat and validate"},{id:"hardware" as const,label:"Hardware"},{id:"all" as const,label:"Full report"}] : [])]} />
+            {baseline && stage === "overview" && <div className="group pad flow-next"><h2>{done.length > 1 ? "Review your comparison" : "Baseline ready. Choose what to change."}</h2><p>{done.length} completed run{done.length === 1 ? "" : "s"}. Compare compatible measurements and repeat both setups before drawing conclusions.</p><div className="flow-toolbar"><button className="btn" onClick={() => setStage(done.length > 1 ? "compare" : "setup")}>{done.length > 1 ? "Compare results" : "Set up a change"}</button><button className="btn ghost" onClick={() => setStage("validate")}>Repeat and validate</button></div></div>}
+            <section hidden={!!baseline && stage !== "overview" && stage !== "all"}>
+            <div className="group-label">1 · Baseline{baseline ? `: ${baseline.results.method?.name ?? shortModel(baseline)}` : ""}</div>
             {baseline ? (
               <div className="group pad">
-                <div className="xcap"><b>{baseline.config.model.replace(".gguf", "")}</b><span className="row-sub">ctx {baseline.config.ctx} · KV {baseline.config.kv} · ngl {String(baseline.config.ngl)} · fa {baseline.config.fa}</span></div>
+                <div className="xcap"><b>{baseline.results.method?.name ?? baseline.config.model.replace(".gguf", "")}</b><span className="row-sub" hidden={baseline.config.engine === "research"}>ctx {baseline.config.ctx} · KV {baseline.config.kv} · ngl {String(baseline.config.ngl)} · fa {baseline.config.fa}</span></div>
                 <Profile run={baseline} />
               </div>
             ) : !running && (
               <div className="group pad xcta">
                 <div><b>Measure the starting point</b>
                   <span className="row-sub">{exp.model.startsWith("method:") ? "Run the registered evaluator with its saved source and settings. Its supported metrics, logs and artifacts become the baseline; unsupported native phases stay unavailable." : "Load the model, evaluate quality, measure llama-bench speed and perplexity, and save reference logits and telemetry."}</span></div>
-                <button className="btn" onClick={() => runProfile("Baseline", {})}><Play /> {status?.busy ? "Queue baseline" : "Run baseline"}</button>
+                <button className="btn" disabled={pending} onClick={() => runProfile("Baseline", {})}><Play /> {status?.busy ? "Queue baseline" : "Run baseline"}</button>
               </div>
             )}
 
+            </section>
+            {runs.filter((r) => !["done", "running", "queued"].includes(r.status)).map((r) => <div key={r.id} className="xfailed" role="alert"><AlertCircle size={14} />{r.label}: {r.status}{r.error ? ` - ${r.error}` : ""}<button className="icon-btn danger" aria-label={`Delete failed run ${r.id}`} onClick={() => api.experimentDeleteRun(r.id).then(load)}><Trash2 /></button></div>)}
             {baseline && (
               <>
+                <section hidden={stage !== "setup" && stage !== "all"}>
                 <div className="group-label">2 · Change one variable</div>
                 {baseline.config.engine !== "research" && <div className="group pad"><ChangePanel base={baseline.config} models={models} onRun={runProfile} onSweep={runSweep} onModels={reloadModels} /></div>}
-                {methods.length > 0 && <div className="group pad"><MethodChangePanel key={`${exp.id}-${baseline.id}`} methods={methods} models={models} parent={baseline} onRun={(label, cfg) => { api.experimentRun(exp.id, label, cfg, baseline.id).then(load).catch((e) => setErr((e as Error).message)); }} /></div>}
+                {methods.length > 0 && <div className="group pad"><MethodChangePanel key={`${exp.id}-${baseline.id}`} methods={methods} models={models} parent={baseline} onRun={runProfile} /></div>}
 
+                </section>
+                <section hidden={stage !== "compare" && stage !== "all"}>
                 <div className="group-label">3 · Results</div>
-                <ValidationPanel key={exp.id} exp={exp} runs={runs} onChanged={load} />
                 <div className="group pad">
                   <Board runs={done} metric={metric} setMetric={setMetric} />
                   <div className="row-sub xnote">Speeds are medians; ± is descriptive spread (1.4826 × median absolute deviation), not a standard error. Differences are colored only when a statistical test supports them: paired McNemar for MMLU-Pro, or an approximate normal test using explicitly reported lm-eval standard errors, with multiple-comparison correction (Holm by default). Grey means significance is unavailable or not established; it does not prove equivalence. Different protocols and KL reference baselines are not compared. Protocol 3 serving throughput and energy include the full request, including prefill.</div>
@@ -874,17 +922,20 @@ export default function ExperimentsPage({ status }: { status: Status | null }) {
                   <NeedleGrid runs={done} />
                   <RulerTable runs={done} />
                   <Repro runs={done} />
-                  {runs.filter((r) => !["done", "running", "queued"].includes(r.status)).map((r) => (
-                    <div key={r.id} className="xfailed"><AlertCircle size={14} /> “{r.label}” {r.status}{r.error ? `: ${r.error}` : ""}
-                      <button className="icon-btn danger" onClick={() => api.experimentDeleteRun(r.id).then(load)}><Trash2 /></button></div>
-                  ))}
+
                 </div>
 
+                </section>
+                <section hidden={stage !== "validate" && stage !== "all"}>
+                <ValidationPanel key={exp.id} exp={exp} runs={runs} onChanged={load} />
                 {done.length > 0 && <details className="group pad xadv">
                   <summary><b>How many runs or questions do I need?</b> <span className="row-sub">sample sizes for the differences you want to detect, from this experiment's measured noise</span></summary>
                   <Planner runs={done} />
                 </details>}
 
+                </section>
+                <section hidden={stage !== "hardware" && stage !== "all"}>
+                {done.every((r) => r.config.engine === "research") && <p className="row-sub">Registered evaluators supply their own metrics. Native hardware breakdowns are unavailable unless explicitly measured; inspect metric evidence in Compare results for evaluator artifacts.</p>}
                 <div className="group-label">4 · What limits each run</div>
                 <div className="group pad"><LimitTable runs={done} /></div>
 
@@ -906,6 +957,7 @@ export default function ExperimentsPage({ status }: { status: Status | null }) {
                   {shown?.results.energy && !shown.results.energy.primary && <div className="row-sub xnote">Power: {shown.results.energy.note ?? "no reading for this run."}</div>}
                   {shown?.results.energy?.primary && <div className="row-sub xnote">Energy measured on: {shown.results.energy.primary_label}, over {shown.results.energy.seconds} s of generation ({shown.results.energy.tokens} tokens) after {">"}6 s idle with the model loaded.</div>}
                 </div>
+                </section>
               </>
             )}
             </>}

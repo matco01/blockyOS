@@ -28,9 +28,9 @@ const TOC = [
 
 const STEPS: { n: number; icon: LucideIcon; title: string; text: string; where: string; hash: string }[] = [
   { n: 1, icon: FlaskConical, title: "Run a baseline", text: "Pick a model and profile it once. This is the reference everything else is compared to.", where: "Experiments → New experiment → Run baseline", hash: "#/experiments" },
-  { n: 2, icon: Target, title: "Read the profile", text: "Speed, quality, long-context recall, memory, drift, and what limits it on this hardware.", where: "Experiments → Report", hash: "#/experiments" },
+  { n: 2, icon: Target, title: "Read the profile", text: "Speed, quality, long-context recall, memory, drift, and what limits it on this hardware.", where: "Experiments → Overview / Compare results", hash: "#/experiments" },
   { n: 3, icon: GitBranch, title: "Change one thing", text: "Branch from any run: another quantization, KV cache, context, engine, or a whole different model. Or queue a sweep.", where: "Change panel, or + on a canvas card", hash: "#/experiments" },
-  { n: 4, icon: Repeat, title: "Compare", text: "Every metric side by side, with noise shown. Only real differences turn green or red.", where: "Results table · Canvas compare", hash: "#/experiments" },
+  { n: 4, icon: Repeat, title: "Compare and validate", text: "Inspect compatible metrics side by side, then alternate repeats of both setups. Insufficient evidence remains inconclusive.", where: "Compare results / Repeat and validate / Canvas compare", hash: "#/experiments" },
   { n: 5, icon: Gauge, title: "Find the bottleneck", text: "Memory speed, system RAM or software overhead: measured against the hardware's physical limits.", where: "What limits each run · Roofline", hash: "#/experiments" },
   { n: 6, icon: Hammer, title: "Go deeper", text: "Build your own weights, scan which layers matter, try a new engine, fine-tune, look inside. Then loop back to 3.", where: "Workshop · Engines · Internals", hash: "#/internals" },
 ];
@@ -111,7 +111,7 @@ const FEATURES: { group: string; intro: string; items: Feature[] }[] = [
         can: ["Thinking on/off and a thinking budget", "Inspector: sampling settings, live speed, context meter", "Confidence view: per-word probability and the alternatives", "Search old chats, export as Markdown"] },
       { icon: Brain, title: "Memory", hash: "#/memory", what: "Facts Blocky remembers about you across chats.", can: ["See, edit and delete memories", "Memories are added after each reply"] },
       { icon: Activity, title: "System", hash: "#/system", what: "Live CPU, GPU, RAM, VRAM and the model server's log.", can: ["Spot memory pressure or errors", "Filter the server log"] },
-      { icon: SettingsIcon, title: "Settings", hash: "#/settings", what: "Look and feel, energy prices and meters, AI assistants.", can: ["Light / dark theme, accent color", "Simple / Pro detail level (bottom-left switch)", "Wall-power meter and prices for energy and cost", "How to connect an AI assistant (MCP)"] },
+      { icon: SettingsIcon, title: "Settings", hash: "#/settings", what: "Look and feel, energy prices and meters, AI assistants.", can: ["Light / dark theme, accent color", "Guided / Researcher workspace (bottom-left switch); all tools remain accessible", "Wall-power meter and prices for energy and cost", "How to connect an AI assistant (MCP)"] },
     ],
   },
 ];
@@ -232,7 +232,7 @@ export default function GuidePage() {
                 <li><b>Open Blocky</b> in a browser on the device: <code>http://localhost:8000</code>. It starts automatically with the device.</li>
                 <li><b>Chat</b>: <em>New chat</em> at the top left. Turn thinking on for harder questions.</li>
                 <li><b>Pick or get a model</b> in <a onClick={() => go("#/models")}>Models</a>: switch what's loaded, or download from Hugging Face with a fit estimate.</li>
-                <li><b>Choose your detail level</b>: the Simple / Pro switch at the bottom left. Underlined terms explain themselves on hover.</li>
+                <li><b>Choose your detail level</b>: Guided / Researcher at the bottom left. Guided offers steps and common settings; Researcher expands advanced details. Both keep the same tools. Underlined terms explain themselves on hover.</li>
                 <li><b>Run your first experiment</b>: <a onClick={() => go("#/experiments")}>Experiments</a> → New experiment → Run baseline. About 5 minutes; chat pauses meanwhile.</li>
               </ol>
             </Section>
