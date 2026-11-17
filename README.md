@@ -1,82 +1,264 @@
 # blockyOS
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24324900.svg)](https://doi.org/10.5281/zenodo.24324900)
+[![CI](https://github.com/matco01/blockyOS/actions/workflows/ci.yml/badge.svg)](https://github.com/matco01/blockyOS/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/blockyos-client?label=blockyos-client)](https://pypi.org/project/blockyos-client/)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-A local AI appliance: Ubuntu Server + llama.cpp + a web UI. Turn it on, open the page, chat. Nothing leaves the device.
+**A self-hosted laboratory for measuring how language models actually run on the hardware in front of you.**
 
-**New machine?** See [docs/SETUP.md](docs/SETUP.md) for the full from-scratch setup (WSL or a dedicated box), plus what isn't in git and how to back it up.
+blockyOS turns a machine running Ubuntu Server into a dedicated, private AI appliance. Switch it on, open its web page,
+and you have a local chat assistant and a full research lab. The lab measures every trade-off of local inference with
+a fixed, versioned protocol, using statistics that hold up in a paper:
+- quantization,
+- inference engine and engine version,
+- context size and KV-cache precision,
+- one GPU, several GPUs or several machines,
+- fine-tuning and pretraining.
 
-**For research:** every number is measured as specified in [docs/PROTOCOL.md](docs/PROTOCOL.md); see
-[docs/VALIDATION.md](docs/VALIDATION.md) for instrument checks and repeated validation. Cite it with
-[CITATION.cff](CITATION.cff) (DOI [10.5281/zenodo.24324900](https://doi.org/10.5281/zenodo.24324900)) and include the version and the protocol string from your runs' provenance.
-Licensed under [Apache-2.0](LICENSE). Changes: [CHANGELOG.md](CHANGELOG.md). Contributing: [CONTRIBUTING.md](CONTRIBUTING.md).
+Nothing leaves the device unless you explicitly connect something that sends it out.
 
-## Layout
+---
 
-| Path | What it is |
+## Why it exists
+
+Most numbers about local LLM inference come from a single benchmark run on an undocumented machine. Typically there
+are a few prompts for "quality", speed without any measure of spread, and no record of the engine build. Such results
+can't be compared or reproduced.
+
+blockyOS is built around experiments instead. You pick one model, change one setting at a time, and every
+configuration is profiled the same way:
+
+| Measured | How |
 |---|---|
-| `backend/app/` | FastAPI app: chat streaming, conversation storage (SQLite), system stats |
-| `frontend/src/` | React UI (built into `frontend/dist`, served by the backend) |
-| `scripts/start-llm.sh` | Starts llama-server with settings picked from the detected GPU/RAM |
-| `scripts/systemd/` | Services that start everything at boot |
-| `scripts/install.sh` | One installer for both dev (WSL) and the real device |
+| **Accuracy** | MMLU-Pro on a fixed set of 560 questions; paired McNemar test against the baseline, with a Newcombe interval and Holm correction |
+| **Fidelity** | Perplexity, and KL divergence against the baseline's own logits on held-out text |
+| **Long context** | Needle-in-a-haystack retrieval, from 2k tokens up to the full context, at 5 depths |
+| **Speed** | llama-bench prefill and decode (repeated; median and robust spread), plus an engine-neutral serving test |
+| **Energy** | Idle power and power under load, from a wall-power smart plug or GPU/CPU sensors; energy per token |
+| **Hardware** | Memory layout, a roofline analysis against spec-sheet peaks, clocks, VRAM headroom |
 
-On the machine: models in `/opt/blocky/models`, data in `/opt/blocky/data`, settings in `/etc/blocky/blocky.env`.
+Every run records its **provenance**:
+- the protocol version and the engine commit,
+- SHA-256 hashes of the model and datasets,
+- driver and CUDA versions,
+- the exact commands.
 
-## Lab features
+Comparisons between runs measured under different conditions are **refused, not shown**.
 
-Custom architectures, training loops and evaluators can run in **Research projects**, alongside the built-in lab.
-See [Research projects](docs/RESEARCH_PROJECTS.md) for the reporting SDK, source snapshots and comparisons across methods.
+## Who it's for
 
-| Page | What it does |
-|---|---|
-| **Experiments** (the research hub) | One model, one variable at a time. Each run profiles a full config: memory layout from llama.cpp's load log, MMLU-Pro (fixed 560 questions, 5-shot top-k option-letter scoring, Wilson CI, paired McNemar test vs baseline), llama-bench decode/prefill at 0 and 4k context (5 reps, median, robust spread, non-finite/non-positive samples rejected), perplexity + KL divergence vs the baseline's logits on WikiText-2, GPU/CPU telemetry. Hardware analysis: roofline vs spec-sheet peaks, estimated weight-read time (not a measured time split), possible bottlenecks, clocks, VRAM headroom. Provenance per run (llama.cpp commit, model/dataset SHA-256, driver/CUDA, exact commands). Run queue + sweeps (full grids, repeats), repeat-baseline session noise, CSV/JSON export |
-| **Experiments → Engines** | Build any llama.cpp repo + branch/tag/commit (your fork, a PR, upstream master) for this GPU and use the engine as an experiment variable, A/B against stock with identical measurements. vLLM, SGLang and TensorRT-LLM as frameworks for Hugging Face checkpoints (`scripts/setup-vllm.sh`, `setup-sglang.sh`, `setup-trtllm.sh`); an engine-neutral serving-speed test makes frameworks comparable. Several GPUs: GPU count as a variable, llama.cpp layer vs row (tensor-parallel) split, vLLM/SGLang tensor-parallel size; the roofline adds bandwidth only for tensor-parallel setups. Optional per-operation GPU kernel profile (Nsight Systems) |
-| **Experiments → tests** | Every run also does a needle-in-a-haystack long-context test (2k…ctx × 5 depths); per experiment, add lm-evaluation-harness tasks (e.g. gsm8k, ifeval) run against each run's own server |
-| **Weights → Layer sensitivity** | Quantize (or remove) one layer at a time and measure KL divergence vs the source, with a control noise floor; one click turns "protect the most sensitive layers" into a workshop recipe |
-| **Internals** (PyTorch) | Hugging Face checkpoints; activations explorer (per-layer residual norms, layer deltas, logit lens, attention entropy), layer knockout, GPU time per layer (attention vs feed-forward, prefill and decode); LoRA / QLoRA fine-tuning → merge → GGUF (with recipe), then profile it in Experiments. Needs `scripts/setup-ml.sh` |
-| **Notebooks** | JupyterLab on the box (127.0.0.1:8888, token) and the `blocky` Python client (`client/blocky.py`): queue runs and sweeps, build weights/engines, get every result as a pandas table, send experiments to MLflow or Weights & Biases (local/offline by default). Needs `sudo scripts/setup-notebooks.sh` |
-| **Energy & cost** | Every run measures idle power (model loaded) and power during ~15 s of sustained generation: energy per token (gross and above idle), tokens per Wh. Sources: a wall-power smart plug (Shelly, Tasmota or any JSON URL, set in Settings), else GPU (nvidia-smi) and CPU package (RAPL) sensors. With prices set: electricity per 1M tokens and decode speed per device price |
-| **Cheap-device simulation** | Target-device presets (single-board computer, mini PC, GPU-less laptop, 4/6 GB GPUs) or custom: CPU only (`-dev none`), cores pinned with `taskset`, RAM/VRAM capacity limits (runs that wouldn't fit fail), plus a projected decode speed at the target's spec-sheet memory bandwidth. Engines can be built for CUDA, Vulkan (AMD/Intel/integrated GPUs) or CPU only |
-| **Internals → Technique playground** | Prototype a quantization idea in Python before writing a kernel. Reference methods: GPTQ and AWQ-style (calibrated on WikiText-2 *train*), RTN (2–8 bit, sym/asym, group size), NF4, ternary; or your own `quantize(w, name[, h])` with the layer's input statistics; plus simulated KV-cache bits. Runs one decoder layer at a time from the checkpoint files (sequential, as in the GPTQ paper), so 7–14B models fit an 8 GB GPU. Optional llama.cpp Q4_0 grid (exported GGUFs then match the simulation: measured KLD within a few percent). Scored against the unmodified model: KL divergence (± SE, p99), same top token, perplexity, per-layer weight and output error, bits per weight. **Export & profile** builds a real GGUF with the method (near-exact on the Q4_0 grid) and profiles it against the original checkpoint in Experiments |
-| **Remote devices** | One Blocky profiles setups on other Blocky devices (Experiments → Run on another device) and imports the results next to local runs, each with its own hardware snapshot. Every new installation binds to localhost. Direct network access requires enabling remote access in Settings and explicitly configuring the listener (see docs/SETUP.md); other devices then need its token (`Authorization: Bearer`, or `?key=` once in a browser). Over untrusted networks use an SSH tunnel |
-| **Agent** | A research agent inside the UI: describe a task and it works through it with every lab tool plus Python in its own workspace (you approve each code run), showing every step. Runs on the device's own model (private) or on Claude with your Anthropic API key (set in Settings; messages and tool results then go to Anthropic) |
-| **AI assistants (MCP)** | Blocky is an MCP server at `http://localhost:8000/mcp`: connect Claude Code (`claude mcp add --transport http blocky http://localhost:8000/mcp`), Claude Desktop, editors or other MCP clients and let the assistant read results, queue runs/sweeps, build weight variants, scan layers and build engines. No delete tools; the assistant's keys stay in your client. Best of all, run a coding agent on the device in the `research/` workspace: it gets Blocky's MCP tools (`.mcp.json`), research instructions (`CLAUDE.md`/`AGENTS.md`), a shell, Python and PyTorch. Coding agents changing Blocky itself: see the root `AGENTS.md` |
-| **Several machines** | One model across machines: llama.cpp RPC workers (another Blocky lends its GPU from Settings; localhost-only unless you expose it), vLLM pipeline stages over a Ray cluster, and multi-machine training through torchrun. Runs record which machines took part; single-machine hardware limits are not applied to them |
-| **Internals → Full training** | Fine-tune every weight or pretrain from scratch (the checkpoint's architecture and tokenizer, optionally fewer layers) on a Hugging Face dataset or a local file. Held-out loss and perplexity before, during and after; one GPU, FSDP across GPUs, or several machines; estimated model-FLOPs utilization. The result is a new checkpoint for Experiments (and optionally a GGUF) with a recipe |
-| **Experiments → Instrument checks** | Is the measurement pipeline behaving correctly on this machine? A rerun of the baseline must give KL divergence ≈ 0, the same greedy answers and similar speed; fewer bits per weight must not give a lower KLD; speed must stay under the memory-bandwidth limit; results must match reference values you record from a cited source. See [docs/VALIDATION.md](docs/VALIDATION.md) |
-| **Statistics** | MMLU-Pro differences come with a paired 95% interval (Newcombe) next to the McNemar p-value; perplexity/KLD sample size is configurable (32–256 × 512 tokens); Repeat & validate alternates AB/BA order; a planner turns this experiment's measured noise into the runs or questions needed |
-| **Tests** | `backend/tests` (pytest, Python 3.12+) and `frontend/src/*.test.ts` (vitest); GitHub Actions runs them on every push |
-| **Experiments → Canvas** | Infinite pan/zoom map of an experiment: baseline → changed setting → runs, draggable cards, sticky notes, head-to-head compare of any two runs; layout stored on the box |
-| **Experiments → Weights workshop** | Build weight variants from a high-precision source with llama.cpp's tools: base quantization type, importance matrix (llama-imatrix on WikiText-2 *train*, separate from the eval text), per-tensor precision overrides, output/embedding types, layer pruning. Each variant gets a `.recipe.json` that ends up in the run's provenance |
-| **Models** | Metadata read from each GGUF header (arch, params, quant, layers, experts, trained ctx); fit estimate for this machine; switch model / context / KV cache type / GPU layers / threads (restarts the model server, rolls back on failure); Hugging Face browser + downloads |
-| **Benchmarks** | `llama-bench` presets or custom sweeps (pp / tg / depth / repetitions / KV / flash-attn / ngl / threads / MoE offload); GPU power sampled every 0.5 s → tokens per joule; peak VRAM; hardware fingerprint saved per run; compare up to 4 runs (shareable `#/bench?compare=3,4`); CSV/JSON export |
-| **Chat Inspector** | Sampling (temperature, top-p/k, min-p, penalties, max tokens, seed), presets, custom system prompt; per-answer TTFT, prompt/gen speed, cached tokens, context used |
-| **System** | Live CPU/GPU/RAM/VRAM/power plus the model server log with filter |
-| **Quality tests** | Fresh questions generated at run time (can't be memorized), Blocky's quick checks, established benchmarks (GSM8K, ARC, MMLU-Pro, MATH-500, AIME, HumanEval(+), MBPP+, CRUXEval, LiveCodeBench) with "public since" contamination warnings, a memorization check (famous vs fresh), custom Hugging Face imports, and an OpenAI-compatible `/v1` endpoint for outside harnesses |
-| **Models → Inside the model** | The real network structure read from the GGUF tensor table: every layer's attention / linear-attention / feed-forward / expert parts, sized by memory |
-| **Models → Compression lab** | Compare quantizations of one model (perplexity, KL divergence, same-top-token %, speed, size) with llama-perplexity; make new quantizations locally with llama-quantize |
-| **Speed tests → Many users / Draft speed-up** | Parallel throughput with llama-batched-bench; speculative decoding with a small same-family draft model |
-| **Chat → Inspector → Show confidence** | Per-word probability heatmap with the alternatives the model almost picked |
+- **Researchers** comparing quantization methods, engines or kernels, who need results they can defend and others can
+  reproduce.
+- **Engineers** choosing the right model and configuration for specific hardware, from a single-board computer to a
+  multi-GPU server.
+- **Anyone** who wants a private, local AI assistant on their own machine.
 
-Auto-start on Windows: copy `scripts/windows/blocky-autostart.vbs` into your Startup folder (Win+R → `shell:startup`).
+---
 
-The web app restarts `blocky-llm` through a narrow sudoers rule (`/etc/sudoers.d/blocky-services`); runtime choices are saved to `/opt/blocky/data/llm.env`.
+## Research-grade by design
 
-## Everyday commands (on Windows, PowerShell)
+- **Specified protocol.** Every number is produced as written in [docs/PROTOCOL.md](docs/PROTOCOL.md): commands,
+  data, sample sizes, statistics, comparability rules and known limitations.
+- **Instrument checks.** blockyOS tests itself on your machine:
+  - a rerun of the baseline must give near-zero KL divergence and the same answers;
+  - fewer bits per weight must not score better;
+  - speed must stay under the memory-bandwidth limit.
 
-```powershell
-wsl -d blocky                      # open a Linux terminal (keeps the AI running while open)
-# then open http://localhost:8000
+  See [docs/VALIDATION.md](docs/VALIDATION.md).
+- **Statistics.**
+  - Paired tests and paired confidence intervals.
+  - Equivalence testing (TOST) against a margin chosen in advance.
+  - Counterbalanced repeated pairs (AB/BA) to confirm speed differences.
+  - A planner that turns the measured noise into the number of runs needed.
+- **Preregistration.** Hypotheses and analysis plans can be recorded before any data exist. They can't be edited
+  afterwards, and runs are labelled confirmatory or exploratory.
+- **Noise controls.** Optional GPU clock locking and a cool-down between runs, both recorded in provenance.
+- **Reproducibility bundles.** Each experiment exports as one zip with a `reproduce.py` script. The bundle contains:
+  - provenance and commands,
+  - raw tool output,
+  - the instrument-check report.
 
-wsl -d blocky -- sudo systemctl restart blocky-web   # after backend code changes
-wsl -d blocky -- sudo systemctl restart blocky-llm   # after changing model/settings
-wsl -d blocky -- journalctl -u blocky-llm -f         # watch the model server log
+  `reproduce.py` re-runs every configuration on another blockyOS machine and compares the results.
+
+---
+
+## What you can do
+
+### Measure
+- **Experiments**: the research hub. It runs a queue and full parameter sweeps, measures session noise with repeated
+  baselines, and exports CSV/JSON. The **Canvas** view is a pan/zoom map of an experiment.
+- **Benchmarks**: llama-bench presets and custom sweeps, with power sampling and tokens per joule.
+- **Quality tests**:
+  - questions generated fresh at run time, which can't have been memorized;
+  - established benchmarks (GSM8K, ARC, MMLU-Pro, MATH-500, HumanEval+, LiveCodeBench and others), with contamination
+    warnings;
+  - lm-evaluation-harness tasks;
+  - an OpenAI-compatible `/v1` endpoint for outside tools.
+- **Cheap-device simulation**: profile a configuration as if it ran on a weaker device by limiting cores, RAM and VRAM
+  and going CPU-only. A projected speed is calculated from the target's memory bandwidth.
+
+### Change
+- **Engines**: build any llama.cpp fork, branch, tag or commit for this GPU (CUDA, Vulkan or CPU) and A/B it against
+  stock. vLLM, SGLang and TensorRT-LLM run Hugging Face checkpoints.
+- **Weights workshop**: build quantized variants with llama.cpp's tools. Options include:
+  - an importance matrix,
+  - per-tensor precision,
+  - layer pruning.
+
+  Each variant's recipe ends up in the run's provenance.
+- **Layer sensitivity**: quantize or remove one layer at a time and measure the damage against a control noise floor.
+- **Technique playground**: prototype a quantization method in Python before writing a kernel, either with reference
+  methods (GPTQ, AWQ, RTN, NF4, ternary) or your own function. Then export a real GGUF and profile it.
+
+### Train and inspect
+- **PyTorch internals**:
+  - an activations explorer and logit lens,
+  - attention entropy,
+  - layer knockout,
+  - GPU time per layer.
+- **Training**:
+  - LoRA and QLoRA;
+  - full fine-tuning;
+  - pretraining from scratch;
+  - FSDP across several GPUs, or several machines.
+
+  Results become new checkpoints that go straight back into Experiments.
+
+### Scale out
+- **Several GPUs**: GPU count is a variable, with layer or row split in llama.cpp and tensor parallelism in
+  vLLM/SGLang.
+- **Several machines**:
+  - llama.cpp RPC workers;
+  - vLLM pipeline stages over Ray;
+  - multi-machine training with torchrun.
+- **Remote devices**: one blockyOS machine profiles configurations on others and imports the results.
+
+### Automate
+- **Python client**: `pip install blockyos-client`. Queue runs and sweeps, then get every result as a pandas table, or
+  send it to MLflow or Weights & Biases.
+- **JupyterLab** on the device.
+- **MCP server** at `http://localhost:8000/mcp`. Claude Code, Claude Desktop and other assistants can read results
+  and queue experiments under the same rules. There are no delete tools.
+- **Research agent** in the UI. It works through a task with every lab tool, and you approve each code run. It runs on
+  the local model, or on Claude with your own API key.
+
+### Everyday use
+- **Chat** with sampling controls, per-answer speed and timing, and a per-word confidence heatmap.
+- **Models**: a Hugging Face browser and downloads, GGUF metadata, a fit estimate for this machine, and one-click
+  model and context switching.
+- **System**: live CPU, GPU, RAM, VRAM and power, plus the model-server log.
+
+---
+
+## How it works
+
+```
+Ubuntu Server 24.04  (dedicated machine, or WSL2 for development)
+│
+├── blocky-web   (systemd)  FastAPI backend + React UI on :8000, SQLite storage, MCP server
+│   ├── experiment runs     llama-bench, llama-perplexity, engine servers
+│   │                       (llama.cpp / vLLM / SGLang / TensorRT-LLM), started per run
+│   └── PyTorch lab         separate environment for internals and training
+├── blocky-llm   (systemd)  llama-server for chat, restarted on model switch
+│
+└── /opt/blocky/models   /opt/blocky/data   /etc/blocky/blocky.env
 ```
 
-UI development with live reload: `cd frontend; npm run dev` → http://localhost:5173.
-After UI changes, `npm run build` so the backend serves the new version.
+The installer sets up the whole machine:
+- a dedicated service account,
+- llama.cpp, built for your GPU,
+- services that start at boot,
+- narrow root permissions (restart the model server; optionally lock GPU clocks) and nothing more.
 
-## Removing everything (dev PC)
+By default the web interface listens only on the machine itself. Network access must be switched on explicitly and
+then needs a token. See [docs/SETUP.md](docs/SETUP.md#remote-access).
 
-`wsl --unregister blocky` deletes the Linux install in `D:\wsl\ubuntu`. Windows is untouched.
+---
+
+## Getting started
+
+**Requirements:** Ubuntu 24.04 (dedicated machine or WSL2), Python 3.12+, and Node.js to build the UI. An NVIDIA GPU
+is optional: CPU-only, AMD and Intel machines work through CPU or Vulkan builds.
+
+**Dedicated machine**
+```bash
+git clone https://github.com/matco01/blockyOS && cd blockyOS
+sudo ./scripts/install.sh
+cd frontend && npm install && npm run build
+```
+Then open `http://localhost:8000` on the machine, go to **Models**, and download a model.
+
+**Windows PC (development, through WSL2):** see [docs/SETUP.md](docs/SETUP.md#a-on-a-windows-pc-development-via-wsl2).
+It covers:
+- creating the WSL instance,
+- installing the CUDA toolkit,
+- auto-start,
+- what isn't in git and how to back it up.
+
+**Optional extras** have their own setup scripts in `scripts/`:
+- the PyTorch lab and lm-evaluation-harness: `setup-ml.sh`;
+- JupyterLab: `setup-notebooks.sh`;
+- vLLM, SGLang and TensorRT-LLM: `setup-vllm.sh`, `setup-sglang.sh` and `setup-trtllm.sh`.
+
+### Everyday commands (Windows, PowerShell)
+
+```powershell
+wsl -d blocky                                        # open a Linux terminal (keeps blockyOS running while open)
+wsl -d blocky -- sudo systemctl restart blocky-web   # after backend code changes
+wsl -d blocky -- sudo systemctl restart blocky-llm   # after changing model or settings
+wsl -d blocky -- journalctl -u blocky-llm -f         # follow the model-server log
+```
+
+On a dedicated machine, drop the `wsl -d blocky --` prefix.
+
+---
+
+## Project status
+
+blockyOS is **0.2.0, early research software**. Here is what has been verified so far:
+- **Automated tests** cover the statistics, the API and complete experiments run against a simulated engine:
+  - 205 backend tests;
+  - 26 frontend tests;
+  - CI on Python 3.12 and 3.13.
+- **Not yet published:** a validation study on real GPUs, which compares blockyOS against published reference values
+  and against itself across repeated sessions. Until it exists, run the instrument checks on your own machine before
+  relying on results. The procedure is in [docs/VALIDATION.md](docs/VALIDATION.md).
+
+Measurement-protocol versions are listed in the [CHANGELOG](CHANGELOG.md). Results are only comparable within one
+protocol version.
+
+---
+
+## Repository layout
+
+| Path | Contents |
+|---|---|
+| `backend/app/` | FastAPI backend: experiments, statistics, engines, training, MCP server |
+| `backend/tests/` | pytest suite, including end-to-end runs against a fake llama.cpp |
+| `frontend/src/` | React + TypeScript UI (built into `frontend/dist` and served by the backend) |
+| `client/` | `blockyos-client` Python package |
+| `scripts/` | Installer, optional setup scripts, systemd services, Windows auto-start |
+| `research/` | Workspace for your own research projects and coding agents ([guide](docs/RESEARCH_PROJECTS.md)) |
+| `docs/` | Setup, measurement protocol, validation, research projects |
+| `paper/` | Software paper draft |
+
+---
+
+## Citing
+
+If you use blockyOS in research, cite it with the DOI
+[10.5281/zenodo.24324900](https://doi.org/10.5281/zenodo.24324900), or use **"Cite this repository"** on GitHub,
+which reads [CITATION.cff](CITATION.cff). Include the version and the protocol string from your runs' provenance.
+
+## Contributing and license
+
+Contributions are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md) and the [code of conduct](CODE_OF_CONDUCT.md).
+Coding agents working on blockyOS itself should read [AGENTS.md](AGENTS.md).
+
+Licensed under [Apache-2.0](LICENSE). Third-party components keep their own licenses; see [NOTICE](NOTICE).
+
+## Removing it
+
+- **WSL:** `wsl --unregister blocky` deletes the Linux instance and everything in it. Windows itself is untouched.
+- **Dedicated machine:** blockyOS is meant to own the machine; reinstalling Ubuntu Server is the clean way to remove it.
