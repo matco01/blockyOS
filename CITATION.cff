@@ -7,6 +7,14 @@ authors:
 version: 0.2.0
 date-released: 2026-11-17
 license: Apache-2.0
+doi: 10.5281/zenodo.24324900
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.24324900
+    description: All versions (resolves to the latest)
+  - type: doi
+    value: 10.5281/zenodo.24324901
+    description: Version 0.2.0
 repository-code: "https://github.com/matco01/blockyOS"
 abstract: >-
   blockyOS is a self-hosted research environment for local language-model inference. It profiles complete
