@@ -39,7 +39,7 @@ MAX_STEPS = 40
 MAX_RESULT = 30_000
 NEEDS_APPROVAL = {"run_python", "build_engine"}
 
-_pending: dict[str, asyncio.Future] = {}     # tool call id -> the person's decision
+_pending: dict[str, tuple[int, str, asyncio.Future]] = {}  # tool call id -> (session, tool name, the person's decision)
 _always: dict[int, set[str]] = {}            # session -> tools approved for the rest of the chat
 _stop: set[int] = set()
 _busy: set[int] = set()
@@ -127,20 +127,25 @@ def _save(sid: int, **f) -> None:
         c.execute(f"UPDATE agent_sessions SET {', '.join(f'{k} = ?' for k in f)}, updated_at = ? WHERE id = ?", (*vals, time.time(), sid))
 
 
-def decide(tool_id: str, allow: bool, always: bool, sid: int, name: str) -> bool:
-    fut = _pending.get(tool_id)
-    if not fut or fut.done():
+def decide(tool_id: str, allow: bool, always: bool, sid: int, name: str = "") -> bool:
+    """Answer one pending approval. The session and tool name come from the pending call itself, never from the
+    request, so approving one call can't whitelist a different tool or answer another chat's question."""
+    pending = _pending.get(tool_id)
+    if not pending:
+        return False
+    owner, tool, fut = pending
+    if owner != sid or fut.done():
         return False
     if allow and always:
-        _always.setdefault(sid, set()).add(name)
+        _always.setdefault(sid, set()).add(tool)
     fut.set_result(allow)
     return True
 
 
 def stop(sid: int) -> None:
     _stop.add(sid)
-    for f in list(_pending.values()):
-        if not f.done():
+    for owner, _, f in list(_pending.values()):
+        if owner == sid and not f.done():
             f.set_result(False)
 
 
@@ -248,7 +253,7 @@ async def _tool_step(sid: int, display: list, tid: str, name: str, args: dict):
     if risky and name not in _always.get(sid, set()):
         item["status"] = "approval"
         fut = asyncio.get_running_loop().create_future()
-        _pending[tid] = fut
+        _pending[tid] = (sid, name, fut)
         _save(sid, display=display)  # a page opened later still shows the question
         yield {"type": "approval", "id": tid, "name": name, "input": args}
         try:

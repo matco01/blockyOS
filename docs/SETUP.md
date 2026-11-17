@@ -2,6 +2,9 @@
 
 Everything needed to rebuild a working Blocky from this repository.
 
+**Requirements:** Linux (Ubuntu 24.04 recommended, a dedicated box or WSL2), **Python 3.12 or newer** (Ubuntu 24.04's
+`python3`), Node.js for building the UI. The backend and the installer refuse older Python versions with a clear message.
+
 ## A. On a Windows PC (development, via WSL2)
 
 Nothing here touches Windows itself: Blocky lives in its own Linux, stored wherever you choose.
@@ -46,6 +49,10 @@ WSL stops Linux when no terminal is attached. Keep `wsl -d blocky` open while us
   `sudo bash scripts/setup-notebooks.sh`
 - **vLLM** as a second framework in Experiments (NVIDIA RTX 20-series or newer): `bash scripts/setup-vllm.sh`
   (as the `blocky` user; its own environment in `/opt/blocky/vllm-venv`)
+- **SGLang** as a third framework for Hugging Face checkpoints: `bash scripts/setup-sglang.sh`
+  (as the `blocky` user; its own environment in `/opt/blocky/sglang-venv`). Check SGLang's documentation for supported GPUs.
+- **More than one GPU:** nothing to install. Experiments then offer a GPU count and, for llama.cpp, the split mode
+  (layer = pipeline, row = tensor parallel). vLLM and SGLang use the GPU count as their tensor-parallel size.
 - **GPU kernel profiles** use NVIDIA Nsight Systems (`nsys`, part of the CUDA toolkit). Kernel tracing works on a regular
   Linux install, not inside WSL.
 - **Custom engines** (llama.cpp builds) and **weight variants** need nothing extra: they're built from the UI into

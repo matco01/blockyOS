@@ -61,3 +61,16 @@ def test_device_registry(fresh_db):
             remote.add_device({"url": bad})
     remote.delete_device(dev)
     assert remote.list_devices() == []
+
+
+def test_host_and_origin_helpers():
+    assert remote.host_name("localhost:8000") == "localhost"
+    assert remote.host_name("[::1]:8000") == "::1"
+    assert remote.host_name("127.0.0.1") == "127.0.0.1"
+    assert remote.effective_client("127.0.0.1", "localhost:8000") == "127.0.0.1"
+    assert remote.effective_client("127.0.0.1", "evil.example") == "rebound"
+    assert remote.effective_client("192.168.1.20", "192.168.1.40:8000") == "192.168.1.20"
+    assert remote.same_origin("", "localhost:8000")
+    assert remote.same_origin("http://localhost:8000", "localhost:8000")
+    assert not remote.same_origin("http://localhost:5173", "localhost:8000")
+    assert not remote.same_origin("null", "localhost:8000")

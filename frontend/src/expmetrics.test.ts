@@ -38,6 +38,11 @@ describe("delta: only differences bigger than the noise are colored", () => {
     const child = run(6, { mmlu: { acc: 0.59 } }, { parent_id: 5, stats: { baseline_id: 1, vs_parent: { mmlu_p: 0.9 } } });
     expect(delta(m("mmlu"), { base: parent, run: child })?.tone).toBe("same");
   });
+  it("MMLU-Pro shows the paired interval of the difference next to the p-value", () => {
+    const base = run(1, { mmlu: { acc: 0.6 } });
+    const r = run(2, { mmlu: { acc: 0.57 } }, { stats: { mmlu_p: 0.01, baseline_id: 1, mmlu_diff: { diff: -0.03, ci95: [-0.052, -0.008], n: 560, method: "Newcombe" } } });
+    expect(delta(m("mmlu"), { base, run: r })?.title).toContain("difference -3.0 points, 95% CI -5.2 to -0.8");
+  });
   it("token-level metrics are not comparable across tokenizers", () => {
     const d = delta(m("ppl"), { base: run(1, { ppl: 6.7 }), run: run(2, { ppl: 13.9, token_note: "different tokenizer" }, { config: { ...run(2, {}).config, model: "Qwen3-4B-Q4_K_M.gguf" } }) });
     expect(d?.text).toBe("not comparable");

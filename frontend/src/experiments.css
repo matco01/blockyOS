@@ -566,3 +566,6 @@ table.data.gd-table td:first-child { white-space: nowrap; }
 .rp-code { width: 100%; min-height: 320px; margin: 12px 0; font-family: var(--mono); font-size: 12px; tab-size: 4; }
 .rp-config { display: block; width: 100%; min-height: 85px; font-family: var(--mono); }
 .rp-output { max-height: 400px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surface-2); padding: 12px; font-size: 12px; }
+
+.xinst { list-style: none; padding: 0; margin: 8px 0 0; display: grid; gap: 10px; }
+.xinst > li .row-sub { margin-top: 2px; }

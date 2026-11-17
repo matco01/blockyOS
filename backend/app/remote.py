@@ -35,8 +35,21 @@ _URL = re.compile(r"^https?://[A-Za-z0-9.\-\[\]:]+(:\d+)?/?$")
 
 
 def init() -> None:
+    from . import jobstore
     with db.connect() as c:
         c.executescript(SCHEMA)
+    jobstore.persist("remote", jobs, int)
+    # The other device kept profiling while this backend was down: pick the job up again and keep following it.
+    for job in jobs.values():
+        rexp = (job.get("remote") or {}).get("experiment_id")
+        if job.get("interrupted_status") == "running" and rexp:
+            try:
+                dev = _device(job["device_id"])
+            except ValueError:
+                continue
+            job.update(status="running", error=None, step="reconnecting after a restart")
+            job.pop("interrupted_status", None)
+            asyncio.get_running_loop().create_task(_follow(job["id"], dev, rexp))
 
 
 # ---------- This device: accepting remote control ----------
@@ -49,6 +62,42 @@ def set_access(enabled: bool) -> str:
     token = secrets.token_urlsafe(24) if enabled else ""
     db.update_settings({"remote_token": token})
     return token
+
+
+LOOPBACK_NAMES = {"localhost", "127.0.0.1", "::1"}
+
+
+def host_name(host_header: str) -> str:
+    """'localhost:8000' -> 'localhost', '[::1]:8000' -> '::1' (lowercase, no port)."""
+    h = (host_header or "").strip().lower()
+    if h.startswith("["):
+        return h[1:h.index("]")] if "]" in h else h[1:]
+    return h.rsplit(":", 1)[0] if h.count(":") == 1 else h
+
+
+def effective_client(client_host: str, host_header: str) -> str:
+    """A loopback connection only counts as this device when it also names this device in Host.
+
+    DNS rebinding: a web page on attacker.example can make the browser resolve its own name to 127.0.0.1. The request
+    then arrives from loopback but carries Host: attacker.example. Treating it as a remote client means it needs the
+    remote-access token, which the page doesn't have. SSH tunnels and the Vite dev proxy send Host: localhost[:port].
+    """
+    if client_host in LOOPBACK_NAMES and host_name(host_header) not in LOOPBACK_NAMES:
+        return "rebound"
+    return client_host
+
+
+def same_origin(origin: str, host_header: str) -> bool:
+    """A browser request sent from another site carries that site's Origin. No Origin (curl, MCP clients, the Python
+    client, same-origin GET) is fine; a different or opaque ('null') origin is not."""
+    if not origin:
+        return True
+    from urllib.parse import urlsplit
+    try:
+        o = urlsplit(origin)
+    except ValueError:
+        return False
+    return bool(o.netloc) and o.netloc.lower() == (host_header or "").strip().lower()
 
 
 def allowed(client_host: str, auth_header: str, cookie: str) -> bool:
@@ -163,6 +212,18 @@ async def _run(job_id: int, dev: dict, exp: dict) -> None:
                     raise RuntimeError(f"{dev['name']} rejected a setup: {r.json().get('detail', r.text)[:200]}")
                 root = root or r.json()["id"]
             job["status"] = "running"
+    except Exception as e:  # noqa: BLE001
+        job["status"], job["error"] = "error", str(e)[:400]
+        _cancel.discard(job_id)
+        return
+    await _follow(job_id, dev, rexp)
+
+
+async def _follow(job_id: int, dev: dict, rexp: int) -> None:
+    """Wait for the device to finish the runs, then import them into the local experiment."""
+    job = jobs[job_id]
+    try:
+        async with _client(dev) as c:
             while True:
                 if job_id in _cancel:
                     await c.post(f"/api/experiments/{rexp}/cancel-queue")

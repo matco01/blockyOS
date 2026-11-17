@@ -129,6 +129,15 @@ def get_experiment(experiment_id: int) -> str:
                        "runs": [_compact_run(r) for r in e["runs_list"]]}, default=str)
 
 
+@server.tool(description="Instrument checks for an experiment: is the measurement pipeline behaving correctly on this machine? Baseline rerun vs "
+                         "itself (KLD ≈ 0, same answers, speed drift), fewer bits never better KLD, speed under the bandwidth limit, and matches with "
+                         "cited reference values. Each check is pass / warn / fail / not_run (with the runs to add). Check this before trusting comparisons.")
+def get_instrument_check(experiment_id: int) -> str:
+    from . import instrument
+    e = profile.get_experiment(experiment_id)
+    return json.dumps(instrument.check(e) if e else {"error": "Experiment not found"})
+
+
 @server.tool(description="Create an experiment for a model (a GGUF file name, or 'hf:<checkpoint>' for vLLM). Then queue a baseline with queue_run (no parent).")
 def create_experiment(model: str, name: str = "") -> str:
     try:
@@ -175,13 +184,15 @@ def cancel_run(run_id: int) -> str:
 @server.tool(description="Set the tests every run of an experiment gets (replaces the previous choice). mmlu_questions: 560 (default), 1400 or 3500 "
                          "(larger detects smaller accuracy differences; nested, so paired tests vs older runs still work). ruler_samples: 0 (off), or "
                          "samples per task and length for the RULER-style long-context suite (4 quick, 8 standard, 20 precise). lm-evaluation-harness "
-                         "tasks (generative, e.g. 'gsm8k,ifeval') with a per-task limit, and/or a GPU kernel profile.")
+                         "tasks (generative, e.g. 'gsm8k,ifeval') with a per-task limit, and/or a GPU kernel profile. ppl_chunks: perplexity/KLD "
+                         "sample, 32 (default), 64, 128 or 256 chunks of 512 tokens; set it before the baseline (KLD needs the same text for every run).")
 def set_experiment_tests(experiment_id: int, mmlu_questions: int = 560, ruler_samples: int = 0, lm_eval_tasks: str = "", lm_eval_limit: int = 100,
-                         kernel_profile: bool = False) -> str:
+                         kernel_profile: bool = False, ppl_chunks: int = 32) -> str:
     try:
         return json.dumps(profile.set_protocol(experiment_id, {"lm_eval": {"tasks": lm_eval_tasks, "limit": lm_eval_limit} if lm_eval_tasks else None,
                                                                "kernels": kernel_profile, "mmlu_per_category": max(1, mmlu_questions // 14),
-                                                               "ruler": {"samples": ruler_samples} if ruler_samples else None}))
+                                                               "ruler": {"samples": ruler_samples} if ruler_samples else None,
+                                                               "ppl_chunks": ppl_chunks}))
     except ValueError as err:
         return json.dumps({"error": str(err)})
 

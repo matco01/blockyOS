@@ -73,3 +73,69 @@ def test_parse_bench_reads_llama_bench_jsonl():
     assert r["pp"] == 1720 and r["tg"] == 62.2 and r["tg_d4096"] == 59.9
     assert r["tg_dropped"] == 1 and "pp_dropped" not in r
     assert r["pp_samples"] == [1700, 1750, 1720, 1730, 1690]
+
+
+def test_paired_diff_ci_basic_properties():
+    a = "1" * 300 + "0" * 260
+    assert profile.paired_diff_ci(a, a)["diff"] == 0
+    lo, hi = profile.paired_diff_ci(a, a)["ci95"]
+    assert lo < 0 < hi and hi - lo < 0.02           # no flips: a narrow interval around zero
+    b = "0" * 20 + "1" * 280 + "0" * 260            # 20 answers lost
+    r = profile.paired_diff_ci(a, b)
+    assert abs(r["diff"] - (-20 / 560)) < 1e-4
+    assert r["ci95"][0] < r["diff"] < r["ci95"][1] < 0
+    # Swapping the runs mirrors the interval.
+    m = profile.paired_diff_ci(b, a)
+    assert abs(m["ci95"][0] + r["ci95"][1]) < 1e-4 and abs(m["ci95"][1] + r["ci95"][0]) < 1e-4
+    assert profile.paired_diff_ci(a, b[:-1]) is None
+
+
+def test_paired_diff_ci_covers_the_true_difference_about_95_percent_of_the_time():
+    import random
+    rng = random.Random(7)
+    n, p_a, flip_lose, flip_gain = 560, 0.55, 0.06, 0.04   # 6% of questions lost, 4% gained: true difference -2 points
+    hits = trials = 0
+    for _ in range(1500):
+        a, b = [], []
+        for _ in range(n):
+            x = rng.random() < p_a
+            if x:
+                y = rng.random() >= flip_lose / p_a
+            else:
+                y = rng.random() < flip_gain / (1 - p_a)
+            a.append("1" if x else "0"); b.append("1" if y else "0")
+        true = flip_gain - flip_lose
+        lo, hi = profile.paired_diff_ci("".join(a), "".join(b))["ci95"]
+        hits += lo <= true <= hi
+        trials += 1
+    assert 0.93 <= hits / trials <= 0.975
+
+
+def test_experiment_records_perplexity_sample_size(fresh_db, make_gguf):
+    make_gguf("chunks.gguf")
+    eid = profile.create_experiment("chunks", "chunks.gguf")
+    assert profile.set_protocol(eid, {"ppl_chunks": 128}) == {"ppl_chunks": 128}
+    assert profile.ppl_chunks(profile.get_experiment(eid)) == 128
+    assert profile.set_protocol(eid, {"ppl_chunks": 32}) == {}
+    import pytest
+    with pytest.raises(ValueError):
+        profile.set_protocol(eid, {"ppl_chunks": 100})
+
+
+def test_kld_reference_must_use_the_same_text(tmp_path):
+    import json
+    import pytest
+    ref = tmp_path / "base.kld"
+    ref.write_bytes(b"x")
+    ref.with_suffix(".json").write_text(json.dumps({"run_id": 1, "protocol": profile.PROTOCOL}))   # older reference: default size
+    profile._check_kld_reference(ref, {"id": 1}, profile.PPL_CHUNKS)
+    with pytest.raises(RuntimeError, match="chunks"):
+        profile._check_kld_reference(ref, {"id": 1}, 128)
+
+
+def test_compare_flags_different_perplexity_samples():
+    def run(rid, chunks):
+        prov = {"protocol": profile.PROTOCOL, "extra_tests": {"ppl_chunks": chunks} if chunks else {}}
+        return {"id": rid, "config": {}, "results": {"provenance": prov}}
+    assert "perplexity/KLD sample size" not in profile.compare(run(1, None), run(2, 32))["env_mismatch"]
+    assert "perplexity/KLD sample size" in profile.compare(run(1, None), run(2, 128))["env_mismatch"]

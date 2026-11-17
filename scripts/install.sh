@@ -44,6 +44,10 @@ if [[ ! -x "$PREFIX/llama.cpp/bin/llama-server" ]]; then
 fi
 
 echo "==> Python environment"
+python3 -c 'import sys; sys.exit(sys.version_info < (3, 12))' || {
+  echo "Blocky needs Python 3.12 or newer (found $(python3 --version 2>&1)). Use Ubuntu 24.04 or install a newer python3." >&2
+  exit 1
+}
 [[ -d "$PREFIX/venv" ]] || python3 -m venv "$PREFIX/venv"
 "$PREFIX/venv/bin/pip" install -q -r "$REPO_DIR/backend/requirements.txt"
 

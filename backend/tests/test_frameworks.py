@@ -95,3 +95,44 @@ def test_parse_nsys_kernel_summary():
     assert r["categories"][0]["share"] == pytest.approx(0.7) and r["categories"][0]["calls"] == 320
     assert r["top"][0]["name"].startswith("void mul_mat_vec_q") and "(const void*)" not in r["top"][0]["name"]   # signature trimmed
     assert kernels.parse_kern_sum("") == {"total_ms": 0.0, "categories": [], "top": []}
+
+
+def test_sglang_is_a_checkpoint_framework(make_gguf, checkpoint, monkeypatch):
+    monkeypatch.setattr(profile.engines, "sglang_installed", lambda: True)
+    make_gguf("G-Q4_K_M.gguf")
+    exp = {"model": "G-Q4_K_M.gguf"}
+    cfg = profile.normalize_config(exp, {"model": checkpoint, "engine": "sglang"})
+    assert cfg["engine"] == "sglang" and cfg["kv"] == "auto"
+    with pytest.raises(ValueError, match="SGLang runs original"):
+        profile.normalize_config(exp, {"engine": "sglang"})
+    with pytest.raises(ValueError, match="SGLang does not apply"):
+        profile.normalize_config(exp, {"model": checkpoint, "engine": "sglang", "kv": "q8_0"})
+    monkeypatch.setattr(profile.engines, "sglang_installed", lambda: False)
+    with pytest.raises(ValueError, match="setup-sglang"):
+        profile.normalize_config(exp, {"model": checkpoint, "engine": "sglang"})
+
+
+def test_multi_gpu_settings(make_gguf, monkeypatch):
+    make_gguf("G-Q4_K_M.gguf")
+    exp = {"model": "G-Q4_K_M.gguf"}
+    monkeypatch.setattr(profile.lab, "hardware", lambda: {"gpus": [{"name": "A"}, {"name": "A"}]})
+    base = profile.normalize_config(exp, {})
+    assert "gpus" not in base and "split_mode" not in base          # unset settings aren't stored: older configs stay equal
+    cfg = profile.normalize_config(exp, {"gpus": 2, "split_mode": "row"})
+    assert cfg["gpus"] == 2 and cfg["split_mode"] == "row"
+    assert profile._placement_args(cfg, 8000)[-2:] == ["-sm", "row"]
+    assert profile._pin(["llama-server"], cfg) == ["env", "CUDA_VISIBLE_DEVICES=0,1", "llama-server"]
+    assert profile.describe_change(base, cfg) == "2 GPUs · split row"
+    for bad in ({"gpus": 3}, {"gpus": 0}, {"split_mode": "diagonal"}, {"gpus": 1, "device": "cpu"}):
+        with pytest.raises(ValueError):
+            profile.normalize_config(exp, bad)
+
+
+def test_bandwidth_roof_adds_up_only_for_tensor_parallel():
+    lim = {"gpu_count": 2, "gpu_bandwidth_gbps": 300}
+    assert profile.parallel_gpus({"split_mode": "row"}, lim) == 2
+    assert profile.parallel_gpus({"split_mode": "layer"}, lim) == 1        # pipeline: one GPU at a time per sequence
+    assert profile.parallel_gpus({}, lim) == 1                               # llama.cpp default is layer split
+    assert profile.parallel_gpus({"engine": "vllm", "gpus": 2}, lim) == 2
+    assert profile.parallel_gpus({"engine": "vllm"}, lim) == 1
+    assert profile.parallel_gpus({"device": "cpu", "split_mode": "row"}, lim) == 1

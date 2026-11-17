@@ -32,7 +32,7 @@ def test_sessions(adb):
 
 
 def test_settings_endpoint_hides_the_key(adb):
-    from app import main
+    from app.routes import settings as main
     db.update_settings({"anthropic_api_key": "sk-ant-secret"})
     s = main.get_settings()
     assert "anthropic_api_key" not in s and s["anthropic_api_key_set"] is True
@@ -54,4 +54,25 @@ def test_approval_and_always(adb):
         agent._always.setdefault(sid, set()).add("run_python")
         gen2 = agent._tool_step(sid, display, "t2", "get_jobs", {})
         assert (await gen2.__anext__())["type"] == "tool_call"   # safe tools never ask
+    asyncio.run(flow())
+
+
+def test_approval_is_bound_to_its_own_chat_and_tool(adb):
+    async def flow():
+        a, b = agent.create_session("local"), agent.create_session("local")
+        agent._always.pop(a, None); agent._always.pop(b, None)  # session ids restart with each fresh test database
+        gen_a = agent._tool_step(a, [], "ta", "run_python", {"code": "print(1)"})
+        gen_b = agent._tool_step(b, [], "tb", "build_engine", {"repo": "https://example.org/x"})
+        await gen_a.__anext__(); await gen_b.__anext__()
+        assert not agent.decide("ta", True, True, b, "run_python")       # another chat can't answer it
+        agent.stop(b)                                                      # stopping chat b leaves chat a's question open
+        assert not agent._pending["ta"][2].done()
+        assert agent.decide("ta", False, True, a, "get_jobs")              # the claimed name is ignored
+        assert "get_jobs" not in agent._always.get(a, set())
+        [e async for e in gen_a]; [e async for e in gen_b]
+        gen_c = agent._tool_step(a, [], "tc", "run_python", {"code": "print(1)"})
+        await gen_c.__anext__()
+        agent.decide("tc", True, True, a, "something_else")
+        assert agent._always[a] == {"run_python"}
+        await gen_c.aclose()
     asyncio.run(flow())

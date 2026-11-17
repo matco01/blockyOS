@@ -1,12 +1,12 @@
-"""Persisted alternating A/B repeats. Conclusions concern one preselected metric only."""
+"""Persisted counterbalanced A/B repeats (AB, BA, AB, ...). Conclusions concern one preselected metric only."""
 import json
 import math
 import statistics
 import time
 
-from . import db
+from . import db, engines
 
-METHOD = "paired-median-sign/1"
+METHOD = "paired-median-sign/2"  # /2: pairs alternate AB and BA order, so a steady drift (warm-up, heat) cancels out
 METRICS = {
     "tg": ("Decode speed", "tok/s", ("speed", "tg"), 1),
     "pp": ("Prefill speed", "tok/s", ("speed", "pp"), 1),
@@ -59,8 +59,8 @@ def create(exp_id: int, body: dict) -> dict:
     baseline = next(r for r in exp["runs_list"] if r["status"] == "done")
     if get(baseline["results"], ("provenance", "protocol")) != profile.PROTOCOL:
         raise ValueError("Create a baseline with the current measurement protocol before validating")
-    if metric in ("tg", "pp") and any(c.get("engine") == "vllm" for c in configs):
-        raise ValueError("Use serving output throughput when comparing vLLM")
+    if metric in ("tg", "pp") and any(engines.is_checkpoint_framework(c.get("engine")) for c in configs):
+        raise ValueError("Use serving output throughput when comparing vLLM or SGLang")
     plan = {"method": METHOD, "protocol": profile.PROTOCOL, "tests": exp.get("protocol") or {},
             "pairs": pair_count, "metric": metric, "min_effect_pct": threshold,
             "sources": [{"id": r["id"], "label": r["label"], "config": cfg} for r, cfg in zip(sources, configs)], "run_ids": []}
@@ -69,11 +69,13 @@ def create(exp_id: int, body: dict) -> dict:
         vid = c.execute("INSERT INTO validations (experiment_id, created_at, plan) VALUES (?, ?, ?)",
                         (exp_id, time.time(), json.dumps(plan))).lastrowid
         for pair in range(pair_count):
-            ids = []
-            for arm, (source, cfg) in enumerate(zip(sources, configs)):
+            ids = [0, 0]
+            # Counterbalanced: even pairs run A then B, odd pairs B then A (runs execute in insertion order).
+            for arm in ((0, 1) if pair % 2 == 0 else (1, 0)):
+                source, cfg = sources[arm], configs[arm]
                 mark = {"id": vid, "pair": pair + 1, "arm": "reference" if arm == 0 else "candidate"}
                 label = f"Validate #{vid} · pair {pair + 1} · {'A' if arm == 0 else 'B'}"
-                ids.append(c.execute("INSERT INTO exp_runs (experiment_id, created_at, status, label, config, results, parent_id, validation, protocol_snapshot) "
+                ids[arm] = (c.execute("INSERT INTO exp_runs (experiment_id, created_at, status, label, config, results, parent_id, validation, protocol_snapshot) "
                                      "VALUES (?, ?, 'queued', ?, ?, '{}', ?, ?, ?)",
                                      (exp_id, time.time(), label, json.dumps(cfg), source["id"], json.dumps(mark),
                                       json.dumps({"version": profile.PROTOCOL, "tests": plan["tests"]}))).lastrowid)
@@ -171,7 +173,10 @@ def summarize(plan: dict, runs: list[dict]) -> dict:
             conclusion = "reference_better"
     return {"metric_label": title, "unit": unit, "pairs": pairs, "stats": stats, "conclusion": conclusion,
             "problems": sorted(set(problems)), "complete": complete,
-            "note": "Only the preselected metric is tested. Repeated pairs assume stable conditions; fixed A/B order cannot rule out order effects. This does not establish overall model quality or equivalence."}
+            "note": "Only the preselected metric is tested. Repeated pairs assume stable conditions. "
+                    + ("Pairs alternate AB/BA order, which cancels a steady drift but not every order effect. " if plan.get("method") == METHOD
+                       else "This batch used a fixed A/B order, which cannot rule out order effects. ")
+                    + "This does not establish overall model quality or equivalence."}
 
 
 def list_batches(exp_id: int, runs: list[dict]) -> list[dict]:

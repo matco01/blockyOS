@@ -53,15 +53,26 @@ def init() -> None:
 
 
 VLLM_VENV = config.DATA_DIR.parent / "vllm-venv"
+SGLANG_VENV = config.DATA_DIR.parent / "sglang-venv"
+# Frameworks that serve Hugging Face checkpoints through an OpenAI-compatible API (measured with the same client code).
+CHECKPOINT_FRAMEWORKS = {"vllm": "vLLM", "sglang": "SGLang"}
 
 
 def vllm_installed() -> bool:
     return (VLLM_VENV / "bin" / "vllm").is_file()
 
 
+def sglang_installed() -> bool:
+    return (SGLANG_VENV / "bin" / "python").is_file() and any(SGLANG_VENV.glob("lib/python3*/site-packages/sglang/__init__.py"))
+
+
 def kind(engine: str | None) -> str:
-    """'llamacpp' for stock and built llama.cpp engines, 'vllm' for the vLLM framework."""
-    return "vllm" if engine == "vllm" else "llamacpp"
+    """'llamacpp' for stock and built llama.cpp engines; 'vllm' or 'sglang' for those frameworks."""
+    return engine if engine in CHECKPOINT_FRAMEWORKS else "llamacpp"
+
+
+def is_checkpoint_framework(engine: str | None) -> bool:
+    return kind(engine) in CHECKPOINT_FRAMEWORKS
 
 
 _vllm_version: str | None = None
@@ -78,6 +89,24 @@ def vllm_version() -> str | None:
     return _vllm_version or None
 
 
+_sglang_version: str | None = None
+
+
+def sglang_version() -> str | None:
+    global _sglang_version
+    if _sglang_version is None and sglang_installed():
+        try:
+            _sglang_version = subprocess.run([str(SGLANG_VENV / "bin" / "python"), "-c", "import sglang; print(sglang.__version__)"],
+                                             capture_output=True, text=True, timeout=120).stdout.strip() or ""
+        except (OSError, subprocess.SubprocessError):
+            _sglang_version = ""
+    return _sglang_version or None
+
+
+def framework_version(engine: str | None) -> str | None:
+    return {"vllm": vllm_version, "sglang": sglang_version}.get(kind(engine), lambda: None)()
+
+
 def bin_dir(engine: str | None) -> Path:
     """Where an engine's binaries live. 'stock' (or nothing) = the build Blocky installed."""
     if not engine or engine == "stock":
@@ -86,6 +115,10 @@ def bin_dir(engine: str | None) -> Path:
         if not vllm_installed():
             raise ValueError("vLLM isn't installed (scripts/setup-vllm.sh)")
         return VLLM_VENV / "bin"
+    if engine == "sglang":
+        if not sglang_installed():
+            raise ValueError("SGLang isn't installed (scripts/setup-sglang.sh)")
+        return SGLANG_VENV / "bin"
     if not re.fullmatch(r"[a-z0-9-]{1,40}", engine):
         raise ValueError("Unknown engine")
     d = ROOT / engine / "bin"
@@ -108,6 +141,9 @@ def list_engines() -> list[dict]:
     out = [stock] + [{**r, "kind": "llamacpp"} for r in rows]
     if vllm_installed():
         out.append({"id": "vllm", "name": "vLLM", "kind": "vllm", "repo": "https://github.com/vllm-project/vllm", "ref": vllm_version() or "installed",
+                    "commit_sha": None, "status": "ready", "built_at": None})
+    if sglang_installed():
+        out.append({"id": "sglang", "name": "SGLang", "kind": "sglang", "repo": "https://github.com/sgl-project/sglang", "ref": sglang_version() or "installed",
                     "commit_sha": None, "status": "ready", "built_at": None})
     return out
 
@@ -177,7 +213,7 @@ def add(body: dict) -> str:
     with db.connect() as c:
         existing = {r["id"] for r in c.execute("SELECT id FROM engines")}
     base, n = engine_id, 2
-    while engine_id in existing or engine_id == "stock":
+    while engine_id in existing or engine_id == "stock" or engine_id in CHECKPOINT_FRAMEWORKS:
         engine_id, n = f"{base}-{n}", n + 1
     args = ["-DCMAKE_BUILD_TYPE=Release", "-DLLAMA_CURL=OFF"] + backend_args(str(body.get("backend") or "auto"))
     with db.connect() as c:

@@ -18,7 +18,7 @@ def http_client():
         patch.setattr(profile, "worker", idle_worker)
         patch.setattr(research_jobs, "worker", idle_worker)
         patch.setattr(profile, "limits", lambda: {"gpu": None, "vram_mb": 0})
-        with TestClient(main.app, client=("127.0.0.1", 12345)) as client:
+        with TestClient(main.app, client=("127.0.0.1", 12345), base_url="http://localhost:8000") as client:
             yield client
 
 
@@ -87,6 +87,23 @@ def test_remote_client_is_denied_without_token(fresh_db):
     assert client.get("/api/settings").status_code == 403
 
 
+def test_dns_rebinding_is_treated_as_remote(api, fresh_db):
+    # A page on attacker.example re-resolved to 127.0.0.1: loopback connection, foreign Host header.
+    assert api.get("/api/settings", headers={"Host": "attacker.example:8000"}).status_code == 403
+    assert api.get("/api/settings", headers={"Host": "127.0.0.1:8000"}).status_code == 200
+    assert api.get("/api/settings", headers={"Host": "[::1]:8000"}).status_code == 200
+
+
+def test_cross_site_writes_are_refused(api, fresh_db):
+    evil = {"Origin": "https://evil.example"}
+    assert api.post("/api/memories", json={"content": "x"}, headers=evil).status_code == 403
+    assert api.post("/api/experiments/import", content=b"{}", headers={**evil, "Content-Type": "text/plain"}).status_code == 403
+    assert api.post("/api/memories", json={"content": "x"}, headers={"Origin": "null"}).status_code == 403
+    assert api.get("/api/settings", headers=evil).status_code == 200  # reads: the browser's same-origin policy hides the answer
+    assert api.post("/api/memories", json={"content": "same origin"}, headers={"Origin": "http://localhost:8000"}).status_code == 200
+    assert api.post("/api/memories", json={"content": "no origin (curl, client)"}).status_code == 200
+
+
 def test_research_http_project_and_job(api, tmp_path, monkeypatch):
     monkeypatch.setattr(research_jobs, "ROOT", tmp_path / "research")
     research_jobs.init()
@@ -141,3 +158,8 @@ def test_research_result_continues_directly_in_experiments(api, tmp_path, monkey
     assert exp["name"] == "Tested method" and len(exp["runs_list"]) == 1
     assert exp["runs_list"][0]["results"]["research_job_id"] == jid
     assert len(api.get(f"/api/research/projects/{pid}/jobs").json()) == 1
+
+
+def test_python_client_download(api):
+    r = api.get("/api/client.py")
+    assert r.status_code == 200 and b"def " in r.content

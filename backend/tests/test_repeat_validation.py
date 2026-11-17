@@ -25,8 +25,9 @@ def test_batch_is_alternating_and_frozen(setups):
     exp = profile.get_experiment(eid)
     queued = exp["runs_list"][2:]
     assert len(queued) == 12
-    assert [r["parent_id"] for r in queued] == [a, b] * 6
-    assert [r["validation"]["arm"] for r in queued] == ["reference", "candidate"] * 6
+    assert [r["parent_id"] for r in sorted(queued, key=lambda r: r["id"])] == [a, b, b, a] * 3
+    # Counterbalanced: AB, BA, AB, ... in execution (id) order; run_ids stays [reference, candidate] per pair.
+    assert [r["validation"]["arm"] for r in sorted(queued, key=lambda r: r["id"])] == ["reference", "candidate", "candidate", "reference"] * 3
     assert all(r["protocol_snapshot"] == {"version": profile.PROTOCOL, "tests": protocol} for r in queued)
     profile.set_protocol(eid, {})
     assert profile.get_experiment(eid)["runs_list"][2]["protocol_snapshot"]["tests"] == protocol

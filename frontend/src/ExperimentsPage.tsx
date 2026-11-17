@@ -7,6 +7,7 @@ import { modelTitle } from "./workflow";
 import ResearchCanvas from "./ResearchCanvas";
 import MetricEvidence from "./MetricEvidence";
 import ValidationPanel from "./ValidationPanel";
+import InstrumentPanel from "./InstrumentPanel";
 import MethodChangePanel from "./MethodChangePanel";
 import type { RegisteredMethod } from "./api";
 import { evidence } from "./evidence";
@@ -25,6 +26,9 @@ const PHASES = [
 ];
 
 /* ---------- Pieces ---------- */
+
+/** Frameworks that serve Hugging Face checkpoints (not GGUF files). */
+const isCkpt = (e?: string | null) => e === "vllm" || e === "sglang";
 
 function Tile({ icon: Icon, color, label, value, unit, sub }: { icon: LucideIcon; color: string; label: React.ReactNode; value: string; unit?: string; sub?: string }) {
   return (
@@ -92,8 +96,9 @@ function ChangePanel({ base: rawBase, models, onRun, onSweep, onModels }: { base
   const [ckpts, setCkpts] = useState<TorchStatus["checkpoints"]>([]);
   const [presets, setPresets] = useState<Record<string, DevicePreset>>({});
   const [cpuThreads, setCpuThreads] = useState(0);
+  const [gpuCount, setGpuCount] = useState(0);
   useEffect(() => { loadEngines(); api.torchStatus().then((s) => setCkpts(s.checkpoints)).catch(() => {});
-    api.devicePresets().then((p) => { setPresets(p.presets); setCpuThreads(p.cpu_threads); }).catch(() => {}); }, []);
+    api.devicePresets().then((p) => { setPresets(p.presets); setCpuThreads(p.cpu_threads); setGpuCount(p.gpu_count ?? 0); }).catch(() => {}); }, []);
   const [mode, setMode] = useState<"single" | "sweep">("single");
   const [shop, setShop] = useState(() => window.location.hash.includes("workshop=1"));
   const [cfg, setCfg] = useState<ExpConfig>(base);
@@ -110,11 +115,11 @@ function ChangePanel({ base: rawBase, models, onRun, onSweep, onModels }: { base
     let next = { ...c, ...patch };
     if ("preset" in patch) next = patch.preset ? { ...next, ...presets[patch.preset]?.config } : { ...next, device: "gpu", cores: null, threads: null, ram_limit_mb: null, vram_limit_mb: null };
     else if (DEVICE_KEYS.some((k) => k in patch)) next.preset = null;  // customizing the device: no longer the preset
-    // Engines run different formats: vLLM takes checkpoints, llama.cpp takes GGUF. Keep the pair valid.
-    if (patch.engine === "vllm" && !next.model.startsWith("hf:") && ckpts[0]) next.model = `hf:${ckpts[0].id}`;
-    if (patch.engine === "vllm") next = { ...next, kv: "auto", ngl: "auto", fa: "auto", threads: null, ram_limit_mb: null, device: "gpu", preset: null };
-    if (patch.engine && patch.engine !== "vllm" && next.kv === "auto") next.kv = "q8_0";
-    if (patch.engine && patch.engine !== "vllm" && next.model.startsWith("hf:")) next.model = base.model.startsWith("hf:") ? (family[0]?.file ?? models[0]?.file ?? next.model) : base.model;
+    // Engines run different formats: vLLM and SGLang take checkpoints, llama.cpp takes GGUF. Keep the pair valid.
+    if (isCkpt(patch.engine) && !next.model.startsWith("hf:") && ckpts[0]) next.model = `hf:${ckpts[0].id}`;
+    if (isCkpt(patch.engine)) next = { ...next, kv: "auto", ngl: "auto", fa: "auto", threads: null, ram_limit_mb: null, device: "gpu", preset: null, split_mode: null };
+    if (patch.engine && !isCkpt(patch.engine) && next.kv === "auto") next.kv = "q8_0";
+    if (patch.engine && !isCkpt(patch.engine) && next.model.startsWith("hf:")) next.model = base.model.startsWith("hf:") ? (family[0]?.file ?? models[0]?.file ?? next.model) : base.model;
     return next;
   });
   const inGrid = (k: keyof ExpConfig, v: unknown) => (grid[k] ?? []).some((x) => String(x ?? "") === String(v ?? ""));
@@ -124,7 +129,7 @@ function ChangePanel({ base: rawBase, models, onRun, onSweep, onModels }: { base
     return { ...g, [k]: next };
   });
   const Opt = ({ k, v, label }: { k: keyof ExpConfig; v: unknown; label: string }) => mode === "single"
-    ? <button disabled={cfg.engine === "vllm" && ((["kv", "ngl", "fa"].includes(k) && v !== "auto") || (k === "ram_limit_mb" && v != null) || (k === "device" && v === "cpu") || (k === "preset" && !!v))} className={String(cfg[k] ?? "") === String(v ?? "") ? "on" : ""} onClick={() => set({ [k]: v } as Partial<ExpConfig>)}>{label}</button>
+    ? <button disabled={isCkpt(cfg.engine) && ((["kv", "ngl", "fa"].includes(k) && v !== "auto") || (k === "ram_limit_mb" && v != null) || (k === "device" && v === "cpu") || (k === "preset" && !!v) || (k === "split_mode" && v != null))} className={String(cfg[k] ?? "") === String(v ?? "") ? "on" : ""} onClick={() => set({ [k]: v } as Partial<ExpConfig>)}>{label}</button>
     : <button className={inGrid(k, v) ? "on multi" : ""} onClick={() => toggle(k, v)}>{label}</button>;
   const swept = (Object.keys(grid) as (keyof ExpConfig)[]).filter((k) => (grid[k] ?? []).length > 0);
   const nRuns = swept.length ? swept.reduce((n, k) => n * (grid[k]!.length), 1) * repeats : 0;
@@ -152,13 +157,13 @@ function ChangePanel({ base: rawBase, models, onRun, onSweep, onModels }: { base
           <button className={`btn small ${eng ? "" : "ghost"}`} onClick={() => setEng(!eng)}><Cpu /> {eng ? "Close" : "Add engine"}</button>
         </div></div>
       {eng && <div className="xc-shop"><EnginesPanel onChange={loadEngines} /></div>}
-      {(mode === "sweep" ? (grid.engine ?? []).includes("vllm") : cfg.engine === "vllm") && (
-        <div className="xc-row"><div><b>Checkpoint (vLLM)</b><span>vLLM runs original Hugging Face weights (16-bit). Download more in Internals → Checkpoints.</span></div>
+      {(mode === "sweep" ? (grid.engine ?? []).some((e) => isCkpt(e as string)) : isCkpt(cfg.engine)) && (
+        <div className="xc-row"><div><b>Checkpoint (vLLM / SGLang)</b><span>vLLM and SGLang run original Hugging Face weights (16-bit). Download more in Internals → Checkpoints.</span></div>
           <div className="segmented wrap">{ckpts.length ? ckpts.map((c) => <Opt key={c.id} k="model" v={`hf:${c.id}`} label={`${c.repo} · ${(c.size_bytes / 2 ** 30).toFixed(1)} GB`} />)
             : <span className="row-sub" style={{ padding: "4px 10px" }}>No checkpoints yet</span>}</div></div>
       )}
       <div className="xc-row"><div><b><Term k="kv">KV cache type</Term></b><span>-ctk / -ctv</span></div>
-        <div className="segmented">{cfg.engine === "vllm" && <Opt k="kv" v="auto" label="Engine default" />}<Opt k="kv" v="f16" label="f16" /><Opt k="kv" v="q8_0" label="q8_0" /><Opt k="kv" v="q4_0" label="q4_0" /></div></div>
+        <div className="segmented">{isCkpt(cfg.engine) && <Opt k="kv" v="auto" label="Engine default" />}<Opt k="kv" v="f16" label="f16" /><Opt k="kv" v="q8_0" label="q8_0" /><Opt k="kv" v="q4_0" label="q4_0" /></div></div>
       <div className="xc-row"><div><b><Term k="context">Context size</Term></b><span>-c</span></div>
         <div className="segmented">{CTX.map((c) => <Opt key={c} k="ctx" v={c} label={`${c / 1024}k`} />)}</div></div>
       <details className="flow-advanced" open={workspaceMode === "pro" || mode === "sweep" || undefined}><summary>Device limits and advanced inference settings</summary>
@@ -177,6 +182,12 @@ function ChangePanel({ base: rawBase, models, onRun, onSweep, onModels }: { base
         <div className="segmented"><Opt k="ngl" v="auto" label="Auto" />{[24, 16, 8, 0].map((n) => <Opt key={n} k="ngl" v={n} label={String(n)} />)}</div></div>
       <div className="xc-row"><div><b><Term k="fa">Flash attention</Term></b><span>-fa</span></div>
         <div className="segmented"><Opt k="fa" v="auto" label="Auto" /><Opt k="fa" v="on" label="On" /><Opt k="fa" v="off" label="Off" /></div></div>
+      {gpuCount > 1 && <>
+        <div className="xc-row"><div><b>GPUs</b><span>Use the first N GPUs (CUDA_VISIBLE_DEVICES). vLLM and SGLang use them as tensor-parallel size; llama.cpp spreads the model by the split mode below</span></div>
+          <div className="segmented"><Opt k="gpus" v={null} label="All" />{Array.from({ length: gpuCount }, (_, i) => i + 1).map((n) => <Opt key={n} k="gpus" v={n} label={String(n)} />)}</div></div>
+        <div className="xc-row"><div><b>Multi-GPU split</b><span>llama.cpp -sm: layer (pipeline; one GPU works at a time per sequence), row (tensor parallel; every GPU works on every layer), none (one GPU)</span></div>
+          <div className="segmented"><Opt k="split_mode" v={null} label="Auto" /><Opt k="split_mode" v="layer" label="Layer" /><Opt k="split_mode" v="row" label="Row" /><Opt k="split_mode" v="none" label="None" /></div></div>
+      </>}
       </details>
       {mode === "single" ? (
         <div className="xc-foot">
@@ -423,17 +434,18 @@ function TestProtocol({ exp, onSaved }: { exp: Experiment; onSaved: () => void }
   const [kern, setKern] = useState(!!exp.protocol?.kernels);
   const [mmluN, setMmluN] = useState(exp.protocol?.mmlu_per_category ?? 40);
   const [ruler, setRuler] = useState(exp.protocol?.ruler?.samples ?? 0);
+  const [chunks, setChunks] = useState(exp.protocol?.ppl_chunks ?? 32);
   const [err, setErr] = useState<string | null>(null);
   useEffect(() => { setTasks(exp.protocol?.lm_eval?.tasks ?? ""); setLimit(exp.protocol?.lm_eval?.limit ?? 100); setKern(!!exp.protocol?.kernels);
-    setMmluN(exp.protocol?.mmlu_per_category ?? 40); setRuler(exp.protocol?.ruler?.samples ?? 0); }, [exp.id]); // eslint-disable-line react-hooks/exhaustive-deps
+    setMmluN(exp.protocol?.mmlu_per_category ?? 40); setRuler(exp.protocol?.ruler?.samples ?? 0); setChunks(exp.protocol?.ppl_chunks ?? 32); }, [exp.id]); // eslint-disable-line react-hooks/exhaustive-deps
   const save = async () => {
     setErr(null);
-    try { await api.experimentProtocol(exp.id, tasks.trim() ? { tasks, limit } : null, kern, mmluN, ruler ? { samples: ruler } : null); setOpen(false); onSaved(); } catch (e) { setErr((e as Error).message); }
+    try { await api.experimentProtocol(exp.id, tasks.trim() ? { tasks, limit } : null, kern, mmluN, ruler ? { samples: ruler } : null, chunks); setOpen(false); onSaved(); } catch (e) { setErr((e as Error).message); }
   };
-  const extra = cur || exp.protocol?.kernels || exp.protocol?.ruler || (exp.protocol?.mmlu_per_category ?? 40) !== 40;
+  const extra = cur || exp.protocol?.kernels || exp.protocol?.ruler || (exp.protocol?.mmlu_per_category ?? 40) !== 40 || (exp.protocol?.ppl_chunks ?? 32) !== 32;
   return (
     <div className="tp">
-      <span className="row-sub"><b>Every run measures:</b> memory · <b>MMLU-Pro ({(14 * (exp.protocol?.mmlu_per_category ?? 40)).toLocaleString()})</b> · long context (2k…ctx) · serving speed · llama-bench speed · perplexity & KLD · energy · telemetry
+      <span className="row-sub"><b>Every run measures:</b> memory · <b>MMLU-Pro ({(14 * (exp.protocol?.mmlu_per_category ?? 40)).toLocaleString()})</b> · long context (2k…ctx) · serving speed · llama-bench speed · perplexity & KLD ({(exp.protocol?.ppl_chunks ?? 32) * 512 >= 1000 ? `${Math.round((exp.protocol?.ppl_chunks ?? 32) * 0.512)}k` : (exp.protocol?.ppl_chunks ?? 32) * 512} tokens) · energy · telemetry
         {exp.protocol?.ruler ? <> · <b>long-context suite</b> ({exp.protocol.ruler.samples}/cell)</> : ""}{cur ? <> · <b>lm-eval: {cur.tasks}</b> (limit {cur.limit})</> : ""}{exp.protocol?.kernels ? <> · <b>GPU kernel profile</b></> : ""}</span>
       <button className="btn small ghost" onClick={() => setOpen(!open)}>{open ? "Close" : "Add tests"}</button>
       {open && (
@@ -443,6 +455,9 @@ function TestProtocol({ exp, onSaved }: { exp: Experiment; onSaved: () => void }
             <label><span>MMLU-Pro size</span><select className="field select" value={mmluN} onChange={(e) => setMmluN(Number(e.target.value))}>
               <option value={40}>560 questions (default)</option><option value={100}>1,400 questions</option><option value={250}>3,500 questions</option></select>
               <em>More questions detect smaller accuracy differences (see “How many runs or questions do I need?” in the results). Larger sets contain the default 560, so paired tests still work against older runs.</em></label>
+            <label><span>Perplexity / KL divergence sample</span><select className="field select" value={chunks} onChange={(e) => setChunks(Number(e.target.value))}>
+              <option value={32}>32 × 512 tokens (default)</option><option value={64}>64 × 512 tokens</option><option value={128}>128 × 512 tokens</option><option value={256}>256 × 512 tokens</option></select>
+              <em>More text narrows the KL divergence and perplexity error bars, and catches rare large deviations (99th-percentile KLD). Set this before the baseline: every run must be scored on the same text, so changing it later needs a new experiment.</em></label>
             <label><span>Long-context suite (RULER-style)</span><select className="field select" value={ruler} onChange={(e) => setRuler(Number(e.target.value))}>
               <option value={0}>Off</option><option value={4}>4 samples per task and length (quick)</option><option value={8}>8 samples (standard)</option><option value={20}>20 samples (precise)</option></select>
               <em>Four synthetic tasks harder than one needle: multi-key retrieval with distractors, all values of a key, variable tracking, common words. Lengths 4k up to the run's context. Long contexts make it slow.</em></label>
@@ -452,7 +467,7 @@ function TestProtocol({ exp, onSaved }: { exp: Experiment; onSaved: () => void }
             <label className="ws-check"><input type="checkbox" checked={kern} onChange={(e) => setKern(e.target.checked)} />
               <span><b>GPU kernel profile</b><em>Traces every GPU kernel with NVIDIA Nsight Systems during short prefill and decode runs, and groups the time by operation (matrix multiply, attention, normalization…). llama.cpp runs only; needs a system where CUDA kernel tracing works (regular Linux; not WSL).</em></span></label>
           </div>
-          <div className="xc-btns"><button className="btn small" onClick={save}>Save</button>{extra && <button className="btn small ghost" onClick={() => { setTasks(""); setKern(false); setMmluN(40); setRuler(0); api.experimentProtocol(exp.id, null, false).then(onSaved); setOpen(false); }}>Back to the standard tests</button>}</div>
+          <div className="xc-btns"><button className="btn small" onClick={save}>Save</button>{extra && <button className="btn small ghost" onClick={() => { setTasks(""); setKern(false); setMmluN(40); setRuler(0); setChunks(32); api.experimentProtocol(exp.id, null, false).then(onSaved); setOpen(false); }}>Back to the standard tests</button>}</div>
           {err && <div className="error"><AlertCircle /> {err}</div>}
         </div>
       )}
@@ -928,6 +943,7 @@ export default function ExperimentsPage({ status }: { status: Status | null }) {
                 </section>
                 <section hidden={stage !== "validate" && stage !== "all"}>
                 <ValidationPanel key={exp.id} exp={exp} runs={runs} onChanged={load} />
+                {done.length > 0 && <InstrumentPanel expId={exp.id} runsKey={done.map((r) => r.id).join(",")} />}
                 {done.length > 0 && <details className="group pad xadv">
                   <summary><b>How many runs or questions do I need?</b> <span className="row-sub">sample sizes for the differences you want to detect, from this experiment's measured noise</span></summary>
                   <Planner runs={done} />

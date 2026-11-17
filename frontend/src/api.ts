@@ -75,7 +75,8 @@ export type ToolRun = {
 
 export type ExpConfig = { model: string; ctx: number; kv: string; ngl: string | number; vram_limit_mb: number | null; fa: string; threads: number | null; engine?: string;
   method_config?: Record<string, unknown>;
-  device?: "gpu" | "cpu"; cores?: number | null; ram_limit_mb?: number | null; preset?: string | null };
+  device?: "gpu" | "cpu"; cores?: number | null; ram_limit_mb?: number | null; preset?: string | null;
+  gpus?: number | null; split_mode?: "layer" | "row" | "none" | null };
 export type Device = { id: number; name: string; url: string; token: boolean; created_at: number };
 export type RemoteJob = { id: number; experiment_id: number; device: string; device_id?: number; status: string; step: string | null; error: string | null; imported?: { runs: number } };
 export type DevicePreset = { label: string; config: Partial<ExpConfig>; ram_bandwidth_gbps?: number; memory?: string };
@@ -148,8 +149,14 @@ export type KernelProfile = { total_ms: number; categories: { category: string; 
 export type ExpRun ={ id: number; experiment_id: number; created_at: number; status: string; label: string; config: ExpConfig; results: ExpResults;
   log?: string | null;
   phase: string | null; error: string | null; parent_id?: number | null;
-  stats?: { mmlu_p?: number | null; mmlu_flips?: { lost: number; gained: number }; env_mismatch?: string[]; hw_diff?: string[]; baseline_id?: number;
-    vs_parent?: { mmlu_p?: number | null; mmlu_flips?: { lost: number; gained: number }; env_mismatch?: string[] } } };
+  stats?: { mmlu_p?: number | null; mmlu_diff?: PairedDiff | null; mmlu_flips?: { lost: number; gained: number }; env_mismatch?: string[]; hw_diff?: string[]; baseline_id?: number;
+    vs_parent?: { mmlu_p?: number | null; mmlu_diff?: PairedDiff | null; mmlu_flips?: { lost: number; gained: number }; env_mismatch?: string[] } } };
+export type InstrumentCheck = { id: string; title: string; status: "pass" | "warn" | "fail" | "not_run"; detail: string; todo?: string; hint?: string;
+  runs?: number[]; value?: number | null; inversions?: [string, string][];
+  matches?: { run: number; metric: string; measured: number; reference: number; tolerance: number; source: string; ok: boolean }[] };
+export type InstrumentReport = { version: string; checks: InstrumentCheck[]; counts?: Record<"pass" | "warn" | "fail" | "not_run", number>; note: string };
+/** Accuracy difference (run minus comparison run, as a fraction) with a paired 95% interval. */
+export type PairedDiff = { diff: number; ci95: [number, number]; n: number; method: string };
 export type TorchStatus = { installed: boolean; converter: boolean; torch?: string; cuda?: boolean; transformers?: string; peft?: string;
   checkpoints: { id: string; repo: string; architecture: string; layers: number | null; size_bytes: number }[] };
 export type TorchJob = { id: number; created_at: number; kind: string; status: string; step: string | null; error: string | null;
@@ -158,7 +165,7 @@ export type LayerMeasure ={ layer: number; kld: number | null; kld_p99: number |
 export type LayerScan = { id: number; created_at: number; model: string; mode: "quantize" | "prune"; qtype: string | null; status: string; step: string | null; error: string | null;
   results: { layers?: LayerMeasure[]; n_layers?: number; source_type?: string; control?: { kld: number | null; same_top: number | null }; reference?: { ppl: number | null };
     most_sensitive?: number[]; least_sensitive?: number[] } };
-export type Engine = { id: string; name: string; kind?: "llamacpp" | "vllm"; repo: string; ref: string; commit_sha: string | null; status: string; step?: string | null;
+export type Engine = { id: string; name: string; kind?: "llamacpp" | "vllm" | "sglang"; repo: string; ref: string; commit_sha: string | null; status: string; step?: string | null;
   error?: string | null; built_at: number | null; created_at?: number };
 export type WeightFile ={ file: string; quant: string | null; bits: number; size_bytes: number; layers: number | null; recipe: Record<string, unknown> | null };
 export type TensorGroup = { pattern: string; count: number; bytes: number; types: string[]; part: string };
@@ -171,7 +178,7 @@ export type CanvasState = { pos: Record<string, { x: number; y: number }>; notes
 export type Experiment = {
   validations?: ValidationBatch[];
   id: number; created_at: number; name: string; model: string; seed: number; runs?: number; canvas?: CanvasState | null;
-  protocol?: { lm_eval?: { tasks: string; limit: number }; kernels?: boolean; mmlu_per_category?: number; ruler?: { samples: number } } | null;
+  protocol?: { lm_eval?: { tasks: string; limit: number }; kernels?: boolean; mmlu_per_category?: number; ruler?: { samples: number }; ppl_chunks?: number } | null;
   runs_list?: ExpRun[]; limits?: { gpu: string | null; gpu_bandwidth_gbps: number | null; gpu_tflops: number | null; gpu_tflops_kind: string | null; sm_clock_max: number | null;
     vram_mb: number; power_limit_w: number | null; ram_bandwidth_gbps: number | null; ram_mb: number; cpu: string; cpu_power_source: string | null };
 };
@@ -344,6 +351,7 @@ export const api = {
   experiments: () => json<Experiment[]>("/api/experiments"),
   experiment: (id: number) => json<Experiment>(`/api/experiments/${id}`),
   experimentEvidence: (id: number) => json<{ outputs: Record<string, { text: string; truncated: boolean }>; note: string }>(`/api/experiments/runs/${id}/evidence`),
+  instrumentCheck: (id: number) => json<InstrumentReport>(`/api/experiments/${id}/instrument-check`),
   experimentValidate: (id: number, body: { reference_id: number; candidate_id: number; pairs: number; metric: string; min_effect_pct: number }) => json<{ id: number; run_ids: number[] }>(`/api/experiments/${id}/validate`, send("POST", body)),
   validationCancel: (id: number, vid: number) => json(`/api/experiments/${id}/validations/${vid}/cancel`, send("POST", {})),
   experimentCreate: (name: string, model: string) => json<{ id: number }>("/api/experiments", send("POST", { name, model })),
@@ -384,7 +392,7 @@ export const api = {
   agentDelete: (id: number) => json(`/api/agent/sessions/${id}`, send("DELETE")),
   agentApprove: (sid: number, id: string, name: string, allow: boolean, always: boolean) => json(`/api/agent/sessions/${sid}/approve`, send("POST", { id, name, allow, always })),
   agentStop: (sid: number) => json(`/api/agent/sessions/${sid}/stop`, send("POST")),
-  devicePresets: () => json<{ presets: Record<string, DevicePreset>; cpu_threads: number }>("/api/device-presets"),
+  devicePresets: () => json<{ presets: Record<string, DevicePreset>; cpu_threads: number; gpu_count?: number }>("/api/device-presets"),
   engineAdd: (repo: string, ref: string, name: string, backend = "auto") => json<{ id: string }>("/api/engines", send("POST", { repo, ref, name, backend })),
   engineLog: (id: string) => json<{ log: string }>(`/api/engines/${id}/log`),
   engineCancel: (id: string) => json(`/api/engines/${id}/cancel`, send("POST", {})),
@@ -400,8 +408,8 @@ export const api = {
     if (!r.ok) throw new Error(d.detail || `Import failed (${r.status})`);
     return d as { experiment_id: number; runs: number; from: { device: string | null; gpu: string } };
   },
-  experimentProtocol: (id: number, lm_eval: { tasks: string; limit: number } | null, kernels = false, mmlu_per_category = 40, ruler: { samples: number } | null = null) =>
-    json(`/api/experiments/${id}/protocol`, send("PUT", { lm_eval, kernels, mmlu_per_category, ruler })),
+  experimentProtocol: (id: number, lm_eval: { tasks: string; limit: number } | null, kernels = false, mmlu_per_category = 40, ruler: { samples: number } | null = null, ppl_chunks = 32) =>
+    json(`/api/experiments/${id}/protocol`, send("PUT", { lm_eval, kernels, mmlu_per_category, ruler, ppl_chunks })),
   experimentCanvas: (id: number, canvas: CanvasState) => json(`/api/experiments/${id}/canvas`, send("PUT", canvas)),
   experimentCancelQueue: (id: number) => json(`/api/experiments/${id}/cancel-queue`, send("POST", {})),
   experimentCancel: (runId: number) => json(`/api/experiments/runs/${runId}/cancel`, send("POST", {})),

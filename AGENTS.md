@@ -10,7 +10,10 @@ editing code. This file is for changing Blocky itself.
 
 | Path | What |
 |---|---|
-| `backend/app/main.py` | FastAPI app: every REST endpoint, lifespan (DB init, profile queue worker, MCP session manager) |
+| `backend/app/main.py` | FastAPI app wiring: lifespan (DB init, workers, MCP session manager), access control (loopback, Host, Origin), router order |
+| `backend/app/routes/` | REST endpoints, one module per area (`experiments.py`, `chat.py`, `torch.py`, …); `common.py` holds shared helpers and app state |
+| `backend/app/jobstore.py` | Saves in-memory background jobs (downloads, weight builds, quantizations, remote-device jobs) so they survive restarts |
+| `backend/app/instrument.py` | Instrument checks: properties a correct measurement pipeline must show (baseline vs itself, quant order, bandwidth, cited values) |
 | `backend/app/profile.py` | Experiments: run tree, config validation, the measurement protocol, statistics, analysis, import/export |
 | `backend/app/mcp_server.py` | MCP tools for AI assistants (thin wrappers over the modules below) |
 | `backend/app/engines.py`, `weights.py`, `scans.py`, `torchlab.py`, `kernels.py`, `quantlab.py` | Engine builds, weight workshop, layer scans, PyTorch jobs, nsys kernel profiles, quantization helpers |
@@ -18,9 +21,11 @@ editing code. This file is for changing Blocky itself.
 | `backend/tests/` | pytest suite (no GPU or models needed) |
 | `frontend/src/` | React + TypeScript UI (Vite). `ExperimentsPage.tsx`, `ResearchCanvas.tsx`, `expmetrics.ts`, `GuidePage.tsx` |
 | `client/blocky.py` | Python client used in notebooks |
-| `scripts/` | Install and setup scripts (`install.sh`, `setup-ml.sh`, `setup-vllm.sh`, `setup-notebooks.sh`) |
+| `scripts/` | Install and setup scripts (`install.sh`, `setup-ml.sh`, `setup-vllm.sh`, `setup-sglang.sh`, `setup-notebooks.sh`) |
 
 ## Checks before you finish
+
+The backend needs Python 3.12 or newer.
 
 ```bash
 # backend (from backend/)
@@ -40,7 +45,14 @@ CI runs the same on every push (`.github/workflows/ci.yml`).
 - **Generic product text.** The UI and docs are for every user and every device: never hard-code facts about one
   machine (a specific GPU, driver version or operating system quirk).
 - **Local only by default.** Services bind to localhost. Don't add anything that sends data off the device or opens a
-  port to the network without an explicit user setting.
+  port to the network without an explicit user setting. Requests count as local only when they come from loopback *and*
+  name this device in `Host` (DNS rebinding); writes from another site's `Origin` are refused (CSRF). Keep both checks.
+- **New endpoints go in `backend/app/routes/<area>.py`.** Use `routes.common.state` for the llama-server client and
+  background tasks, not `app.state`. A new area needs its router added to `ROUTERS` in `main.py`; order only matters where
+  two paths could match the same URL.
+- **Settings that change how a run is measured** (sample sizes, test sets) go into the run's provenance and into
+  `compare()`'s mismatch list, so runs measured differently are never compared silently. New config keys are stored only
+  when set, so older runs' configs stay equal to new ones (repeat detection depends on it).
 - **No destructive actions from tools.** The MCP server and background jobs don't delete user data; deleting stays a
   user action in the UI.
 - Keep it simple: plain modules and functions, SQLite via `db.connect()`, no new frameworks without a clear need.

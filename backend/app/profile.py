@@ -175,7 +175,7 @@ def limits() -> dict:
     tf = _lookup(GPU_TFLOPS, g["name"] if g else None)
     return {"gpu": g["name"] if g else None, "gpu_bandwidth_gbps": gpu_bandwidth(g["name"] if g else None),
             "gpu_tflops": tf[0] if tf else None, "gpu_tflops_kind": tf[1] if tf else None, "sm_clock_max": sm_clock_max(),
-            "vram_mb": g["vram_mb"] if g else 0, "power_limit_w": g.get("power_limit_w") if g else None,
+            "vram_mb": g["vram_mb"] if g else 0, "power_limit_w": g.get("power_limit_w") if g else None, "gpu_count": len(hw["gpus"]),
             "ram_bandwidth_gbps": ram_bandwidth(), "ram_mb": hw["ram_mb"], "cpu": hw["cpu"], "cpu_threads": hw["cpu_threads"],
             "power_source": "nvidia-smi" if g else None, "cpu_power_source": "RAPL" if _rapl_file() else None}
 
@@ -283,7 +283,7 @@ def cancel_queue(exp_id: int) -> int:
     return len(ids)
 
 
-SWEEP_KEYS = ("model", "engine", "kv", "ctx", "vram_limit_mb", "ngl", "fa", "threads", "device", "cores", "ram_limit_mb", "preset")
+SWEEP_KEYS = ("model", "engine", "kv", "ctx", "vram_limit_mb", "ngl", "fa", "threads", "device", "cores", "ram_limit_mb", "preset", "gpus", "split_mode")
 MAX_SWEEP = 32
 
 
@@ -421,21 +421,23 @@ def normalize_config(exp: dict, cfg: dict) -> dict:
     hf = out["model"].startswith(HF_PREFIX)
     if hf and engines.kind(out["engine"]) == "llamacpp" and not (cfg or {}).get("engine"):
         out["engine"] = "vllm"  # a checkpoint with no engine chosen: the framework that runs checkpoints
-    if engines.kind(out["engine"]) == "vllm" and not hf:
-        raise ValueError("vLLM runs original Hugging Face checkpoints, not GGUF files: pick a checkpoint (Internals → Checkpoints)")
-    if engines.kind(out["engine"]) == "llamacpp" and hf:
-        raise ValueError("llama.cpp runs GGUF files: pick a GGUF model, or choose vLLM as the engine for a checkpoint")
-    if engines.kind(out["engine"]) == "vllm":
+    ckpt = engines.is_checkpoint_framework(out["engine"])
+    fw = engines.CHECKPOINT_FRAMEWORKS.get(engines.kind(out["engine"]))
+    if ckpt and not hf:
+        raise ValueError(f"{fw} runs original Hugging Face checkpoints, not GGUF files: pick a checkpoint (Internals → Checkpoints)")
+    if not ckpt and hf:
+        raise ValueError("llama.cpp runs GGUF files: pick a GGUF model, or choose vLLM or SGLang as the engine for a checkpoint")
+    if ckpt:
         requested = cfg or {}
         unsupported = [k for k in ("kv", "ngl", "fa") if requested.get(k) not in (None, "", "auto")]
-        unsupported += [k for k in ("threads", "ram_limit_mb") if out.get(k)]
+        unsupported += [k for k in ("threads", "ram_limit_mb", "split_mode") if out.get(k) not in (None, "", "auto")]
         if unsupported:
-            raise ValueError(f"vLLM does not apply these settings in Blocky: {', '.join(unsupported)}. Use engine defaults (auto) or llama.cpp")
+            raise ValueError(f"{fw} does not apply these settings in Blocky: {', '.join(unsupported)}. Use engine defaults (auto) or llama.cpp")
         out["kv"] = "auto"
     if not (model_path(out["model"]) / "config.json" if hf else model_path(out["model"])).is_file():
         raise ValueError("Model not found")
     out["ctx"] = max(1024, min(262144, int(out["ctx"])))
-    if out["kv"] not in lab.KV_TYPES and not (out["engine"] == "vllm" and out["kv"] == "auto"):
+    if out["kv"] not in lab.KV_TYPES and not (ckpt and out["kv"] == "auto"):
         raise ValueError("KV cache must be f16, q8_0 or q4_0")
     if str(out["ngl"]) != "auto":
         out["ngl"] = max(0, min(999, int(out["ngl"])))
@@ -447,8 +449,22 @@ def normalize_config(exp: dict, cfg: dict) -> dict:
         out["threads"] = max(1, min(256, int(out["threads"])))
     if out["device"] not in ("gpu", "cpu"):
         raise ValueError("Device must be gpu or cpu")
-    if out["device"] == "cpu" and engines.kind(out["engine"]) == "vllm":
-        raise ValueError("CPU-only runs use llama.cpp; vLLM here needs a GPU")
+    if out["device"] == "cpu" and ckpt:
+        raise ValueError(f"CPU-only runs use llama.cpp; {fw} here needs a GPU")
+    # Multiple GPUs. Only stored when set, so configs of runs made before these settings existed stay identical.
+    if out.get("gpus") in (None, "", "auto"):
+        out.pop("gpus", None)
+    else:
+        gpu_count = len(lab.hardware().get("gpus") or [])
+        out["gpus"] = int(out["gpus"])
+        if out["device"] == "cpu":
+            raise ValueError("CPU-only runs don't use GPUs")
+        if not 1 <= out["gpus"] <= max(1, gpu_count):
+            raise ValueError(f"This device has {gpu_count} GPU(s): use 1-{max(1, gpu_count)}")
+    if out.get("split_mode") in (None, "", "auto"):
+        out.pop("split_mode", None)
+    elif out["split_mode"] not in ("layer", "row", "none"):
+        raise ValueError("Split mode must be auto, layer (pipeline: layers spread over GPUs), row (tensor parallel) or none (one GPU)")
     if out["cores"]:
         out["cores"] = int(out["cores"])
         if not 1 <= out["cores"] <= (os.cpu_count() or 1):
@@ -521,6 +537,10 @@ def describe_change(base: dict, cfg: dict) -> str:
         parts.append(f"flash-attn {cfg['fa']}")
     if (cfg.get("engine") or "stock") != (base.get("engine") or "stock"):
         parts.append(f"engine {cfg.get('engine') or 'stock'}")
+    if cfg.get("gpus") != base.get("gpus"):
+        parts.append(f"{cfg['gpus']} GPU{'s' if cfg['gpus'] > 1 else ''}" if cfg.get("gpus") else "all GPUs")
+    if cfg.get("split_mode") != base.get("split_mode"):
+        parts.append(f"split {cfg.get('split_mode') or 'auto'}")
     new_preset = cfg.get("preset") and cfg.get("preset") != base.get("preset")
     if cfg.get("threads") != base.get("threads") and not new_preset:
         parts.append(f"{cfg['threads'] or 'auto'} threads")
@@ -552,12 +572,33 @@ def _placement_args(cfg: dict, vram_total: float, bench: bool = False) -> list[s
         args += ["-fitt", "512"] if bench else ["--fit", "on"]
     if threads:
         args += ["-t", str(threads)]
+    if cfg.get("split_mode"):
+        args += ["-sm", cfg["split_mode"]]
     return args
 
 
 def _pin(cmd: list[str], cfg: dict) -> list[str]:
-    """Restrict a command to the first N CPU cores (simulating a smaller CPU)."""
-    return ["taskset", "-c", f"0-{cfg['cores'] - 1}", *cmd] if cfg.get("cores") else cmd
+    """Restrict a command to the first N CPU cores (simulating a smaller CPU) and to the first N GPUs."""
+    if cfg.get("cores"):
+        cmd = ["taskset", "-c", f"0-{cfg['cores'] - 1}", *cmd]
+    if cfg.get("gpus"):
+        cmd = ["env", f"CUDA_VISIBLE_DEVICES={','.join(str(i) for i in range(cfg['gpus']))}", *cmd]
+    return cmd
+
+
+def gpus_used(cfg: dict, lim: dict) -> int:
+    return 0 if cfg.get("device") == "cpu" else (cfg.get("gpus") or lim.get("gpu_count") or 1)
+
+
+def parallel_gpus(cfg: dict, lim: dict) -> int:
+    """GPUs that work on one token at the same time. Tensor parallelism (llama.cpp row split, vLLM/SGLang tensor-parallel)
+    splits every layer, so their bandwidth adds up; layer (pipeline) split runs the GPUs one after another for one sequence."""
+    n = gpus_used(cfg, lim)
+    if n <= 1:
+        return 1
+    if engines.is_checkpoint_framework(cfg.get("engine")):
+        return n if cfg.get("gpus") else 1  # vLLM/SGLang use tensor parallelism only when asked for more than one GPU
+    return n if cfg.get("split_mode") == "row" else 1
 
 
 def _cpu_clock_temp() -> dict:
@@ -786,6 +827,14 @@ ML_VENV = config.DATA_DIR.parent / "ml-venv"
 _TASKS = re.compile(r"^[a-z0-9_.-]+(,[a-z0-9_.-]+)*$")
 
 
+PPL_CHUNKS = 32                     # default: 32 × 512 tokens of WikiText-2 test (the protocol string's "c512 x32")
+PPL_CHUNK_OPTIONS = (32, 64, 128, 256)
+
+
+def ppl_chunks(exp: dict) -> int:
+    return int((exp.get("protocol") or {}).get("ppl_chunks") or PPL_CHUNKS)
+
+
 def set_protocol(exp_id: int, body: dict) -> dict:
     """Extra tests every run of this experiment gets. Today: lm-evaluation-harness tasks (generative, via chat)."""
     lm = body.get("lm_eval") or {}
@@ -802,6 +851,11 @@ def set_protocol(exp_id: int, body: dict) -> dict:
         proto["mmlu_per_category"] = n
     if body.get("ruler"):
         proto["ruler"] = {"samples": max(2, min(50, int((body["ruler"] or {}).get("samples") or 8)))}
+    if int(body.get("ppl_chunks") or PPL_CHUNKS) != PPL_CHUNKS:
+        n = int(body["ppl_chunks"])
+        if n not in PPL_CHUNK_OPTIONS:
+            raise ValueError(f"Perplexity/KLD sample: {', '.join(str(x) for x in PPL_CHUNK_OPTIONS)} chunks of 512 tokens")
+        proto["ppl_chunks"] = n
     if body.get("kernels"):
         proto["kernels"] = True  # GPU kernel profile with Nsight Systems (llama.cpp runs)
     with db.connect() as c:
@@ -1003,6 +1057,29 @@ def mcnemar_p(a: str, b: str) -> float | None:
     return min(1.0, 2 * p)
 
 
+def paired_diff_ci(a: str, b: str, z: float = 1.96) -> dict | None:
+    """Accuracy difference B - A on the same questions, with Newcombe's hybrid score interval for paired proportions
+    (Newcombe 1998, method 10: Wilson intervals of both accuracies combined with the observed correlation).
+    Better coverage than the Wald interval when few answers flip, which is the usual case here."""
+    if not a or len(a) != len(b):
+        return None
+    n = len(a)
+    e = sum(1 for x, y in zip(a, b) if x == "1" and y == "1")
+    f = sum(1 for x, y in zip(a, b) if x == "1" and y == "0")
+    g = sum(1 for x, y in zip(a, b) if x == "0" and y == "1")
+    h = n - e - f - g
+    p1, p2 = (e + f) / n, (e + g) / n
+    l1, u1 = wilson(e + f, n, z)
+    l2, u2 = wilson(e + g, n, z)
+    den = (e + f) * (g + h) * (e + g) * (f + h)
+    phi = (e * h - f * g) / den ** 0.5 if den else 0.0
+    d = p2 - p1
+    lo = d - max(0.0, (p2 - l2) ** 2 - 2 * phi * (p2 - l2) * (u1 - p1) + (u1 - p1) ** 2) ** 0.5
+    hi = d + max(0.0, (u2 - p2) ** 2 - 2 * phi * (u2 - p2) * (p1 - l1) + (p1 - l1) ** 2) ** 0.5
+    return {"diff": round(d, 5), "ci95": [round(max(-1.0, lo), 5), round(min(1.0, hi), 5)], "n": n,
+            "method": "Newcombe hybrid score (paired)"}
+
+
 # ---------- Provenance: everything needed to reproduce (or question) a run ----------
 
 PROTOCOL = "blocky-profile/3 (MMLU-Pro option logprobs · llama-bench p512 n128 d0,4096 r5 · PPL/KLD WikiText-2 c512 x32 · serving/energy: actual usage, full request interval)"
@@ -1055,8 +1132,8 @@ def provenance(cfg: dict) -> dict:
     hw = lab.hardware()
     g = hw["gpus"][0] if hw["gpus"] else {}
     eb = engines.bin_dir(cfg.get("engine"))
-    vllm = engines.kind(cfg.get("engine")) == "vllm"
-    ver = "" if vllm else _sh(str(eb / "llama-server"), "--version", libdir=eb)
+    ckpt = engines.is_checkpoint_framework(cfg.get("engine"))
+    ver = "" if ckpt else _sh(str(eb / "llama-server"), "--version", libdir=eb)
     m = re.search(r"version:\s*(\S+)\s*\((?:build\s*\d+,\s*commit\s*)?([0-9a-f]{6,})\)", ver)
     mp = model_path(cfg["model"])
     if cfg["model"].startswith(HF_PREFIX):
@@ -1076,8 +1153,10 @@ def provenance(cfg: dict) -> dict:
     return {
         "protocol": PROTOCOL,
         "engine": next((e for e in engines.list_engines() if e["id"] == (cfg.get("engine") or "stock")), {"id": cfg.get("engine")}),
-        "framework": "vllm" if vllm else "llama.cpp",
-        "llama_cpp": ({"version": engines.vllm_version(), "commit": None, "built_with": "vLLM"} if vllm else
+        "framework": engines.kind(cfg.get("engine")) if ckpt else "llama.cpp",
+        "gpus_all": [x.get("name") for x in hw["gpus"]],
+        "llama_cpp": ({"version": engines.framework_version(cfg.get("engine")), "commit": None,
+                       "built_with": engines.CHECKPOINT_FRAMEWORKS[engines.kind(cfg.get("engine"))]} if ckpt else
                       {"version": m.group(1) if m else None, "commit": m.group(2) if m else None,
                        "built_with": next((l.strip() for l in ver.splitlines() if l.startswith("built with")), None)}),
         "model": model_info,
@@ -1201,13 +1280,16 @@ class _SkipRest(Exception):
     """Jump to the final analysis step (used when an engine can't run the remaining phases)."""
 
 
-def _check_kld_reference(path: Path, baseline: dict | None) -> None:
+def _check_kld_reference(path: Path, baseline: dict | None, chunks: int = PPL_CHUNKS) -> None:
     try:
         ref = json.loads(path.with_suffix(".json").read_text())
     except (OSError, ValueError):
         ref = {}
     if not path.is_file() or not baseline or ref.get("run_id") != baseline["id"] or ref.get("protocol") != PROTOCOL:
         raise RuntimeError("Baseline logits are missing or belong to a different run/protocol. Create a new experiment and profile its baseline before comparing KL divergence")
+    if int(ref.get("chunks") or PPL_CHUNKS) != chunks:
+        raise RuntimeError(f"The baseline's logits cover {ref.get('chunks') or PPL_CHUNKS} perplexity chunks but this experiment now uses {chunks}. "
+                           "Create a new experiment (or set the sample size back) so every run is scored on the same text")
 
 
 async def _stop_server(proc: asyncio.subprocess.Process | None) -> None:
@@ -1280,6 +1362,7 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
             res["provenance"]["extra_tests"] = {"needle": f"WikiText-2 haystacks {NEEDLE_LENGTHS[0]}..ctx tokens × depths {NEEDLE_DEPTHS}, seed {NEEDLE_SEED}",
                                                 "lm_eval": (exp.get("protocol") or {}).get("lm_eval"),
                                                 "mmlu_questions": 14 * ((exp.get("protocol") or {}).get("mmlu_per_category") or MMLU_PER_CATEGORY),
+                                                "ppl_chunks": ppl_chunks(exp),
                                                 "ruler": (exp.get("protocol") or {}).get("ruler")}
             cmds: dict[str, str] = {}
             res["commands"] = cmds
@@ -1290,21 +1373,30 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
             # 1) Load: start a server with exactly this configuration, time it, read the memory layout.
             phase("loading")
             ebin = engines.bin_dir(cfg.get("engine"))
-            vllm = engines.kind(cfg.get("engine")) == "vllm"
-            api = "openai" if vllm else "llamacpp"
+            ckpt = engines.is_checkpoint_framework(cfg.get("engine"))
+            fw = engines.kind(cfg.get("engine"))
+            api = "openai" if ckpt else "llamacpp"
             logfile = exp_dir / f"run{run_id}-server.log"
-            if vllm:
-                # vLLM pre-allocates a fraction of the whole GPU: give it what's actually free (other programs may hold
-                # some), or the simulated VRAM limit.
+            if ckpt:
+                # vLLM and SGLang pre-allocate a fraction of each GPU: give them what's actually free (other programs may
+                # hold some), or the simulated VRAM limit.
                 await asyncio.sleep(1.5)
                 used = (sampler.samples[-1].get("vram_mb") if sampler.samples else 0) or 0
                 budget = min(vram_total - used - 300, cfg.get("vram_limit_mb") or vram_total)
                 if not vram_total or budget <= 0:
-                    raise RuntimeError("Cannot determine a positive GPU memory budget for vLLM")
+                    raise RuntimeError(f"Cannot determine a positive GPU memory budget for {engines.CHECKPOINT_FRAMEWORKS[fw]}")
                 util = min(0.92, budget / vram_total)
-                cmd = [str(ebin / "vllm"), "serve", str(model_path(cfg["model"])), "--host", "127.0.0.1", "--port", str(PORT),
-                       "--served-model-name", "blocky", "--max-model-len", str(cfg["ctx"]), "--gpu-memory-utilization", f"{util:.6f}",
-                       "--max-num-seqs", "4", "--default-chat-template-kwargs", '{"enable_thinking": false}']
+                tp = str(cfg.get("gpus") or 1)
+                if fw == "vllm":
+                    cmd = [str(ebin / "vllm"), "serve", str(model_path(cfg["model"])), "--host", "127.0.0.1", "--port", str(PORT),
+                           "--served-model-name", "blocky", "--max-model-len", str(cfg["ctx"]), "--gpu-memory-utilization", f"{util:.6f}",
+                           "--max-num-seqs", "4", "--tensor-parallel-size", tp, "--default-chat-template-kwargs", '{"enable_thinking": false}']
+                else:
+                    # SGLang has no server-wide chat-template override: models with a thinking mode use their template's default.
+                    cmd = [str(ebin / "python"), "-m", "sglang.launch_server", "--model-path", str(model_path(cfg["model"])),
+                           "--host", "127.0.0.1", "--port", str(PORT), "--served-model-name", "blocky", "--context-length", str(cfg["ctx"]),
+                           "--mem-fraction-static", f"{util:.6f}", "--max-running-requests", "4", "--tp-size", tp]
+                    res["framework_note"] = "SGLang serves with the model's default chat template (no server-wide setting turns thinking off)"
                 env = dict(os.environ)
             else:
                 cmd = [str(ebin / "llama-server"), "-m", str(model_path(cfg["model"])), "--host", "127.0.0.1",
@@ -1318,9 +1410,9 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
             cmds["load_and_quality"] = _cmdline(cmd)
             t0 = time.monotonic()
             with open(logfile, "w") as lf:
-                proc = await asyncio.create_subprocess_exec(*cmd, stdout=lf, stderr=asyncio.subprocess.STDOUT, env=env, start_new_session=vllm)
+                proc = await asyncio.create_subprocess_exec(*cmd, stdout=lf, stderr=asyncio.subprocess.STDOUT, env=env, start_new_session=ckpt)
             async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{PORT}", timeout=httpx.Timeout(10, read=600)) as client:
-                ready = asyncio.create_task(lab.wait_ready(client, timeout=1500 if vllm else 300))
+                ready = asyncio.create_task(lab.wait_ready(client, timeout=1500 if ckpt else 300))
                 died = asyncio.create_task(proc.wait())
                 done, _ = await asyncio.wait({ready, died}, return_when=asyncio.FIRST_COMPLETED)
                 for t in (ready, died):
@@ -1330,11 +1422,11 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
                     tail = logfile.read_text(errors="replace").splitlines()[-3:]
                     raise RuntimeError("The model didn't load with this setup (likely out of memory): " + " | ".join(tail)[-300:])
                 res["load_seconds"] = round(time.monotonic() - t0, 1)
-                res["memory"] = ({"gpu": {}, "ram": {}, "layers": None, "note": "vLLM pre-allocates GPU memory; see VRAM used"}
-                                 if vllm else _parse_load_log(logfile.read_text(errors="replace")))
+                res["memory"] = ({"gpu": {}, "ram": {}, "layers": None, "note": f"{engines.CHECKPOINT_FRAMEWORKS[fw]} pre-allocates GPU memory; see VRAM used"}
+                                 if ckpt else _parse_load_log(logfile.read_text(errors="replace")))
                 await asyncio.sleep(1.5)
                 res["memory"]["vram_used_mb"] = (sampler.samples[-1].get("vram_mb") if sampler.samples else None)
-                if cfg.get("ram_limit_mb") and not vllm:
+                if cfg.get("ram_limit_mb") and not ckpt:
                     need = sum((res["memory"].get("ram") or {}).values()) + OS_RESERVE_MB
                     res["memory"]["ram_needed_mb"] = round(need)
                     if need > cfg["ram_limit_mb"]:
@@ -1394,9 +1486,10 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
             proc = None
             await asyncio.sleep(1)
 
-            if vllm:
+            if ckpt:
                 # llama-bench, Nsight kernel profiles and the llama-perplexity fidelity tests are llama.cpp tools.
-                res["fidelity_note"] = "Perplexity and KL divergence come from llama.cpp's tools, so they aren't measured for vLLM runs; compare with the serving speed, MMLU-Pro, long-context and lm-eval results."
+                res["fidelity_note"] = (f"Perplexity and KL divergence come from llama.cpp's tools, so they aren't measured for "
+                                        f"{engines.CHECKPOINT_FRAMEWORKS[fw]} runs; compare with the serving speed, MMLU-Pro, long-context and lm-eval results.")
                 raise _SkipRest
 
             # 3) Speed: llama-bench with the same setup.
@@ -1413,7 +1506,7 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
             phase("fidelity")
             text = await quantlab.ensure_text()
             pcmd = [str(ebin / "llama-perplexity"), "-m", str(lab.MODELS_DIR / cfg["model"]), "-f", str(text), "-c", "512",
-                    "--chunks", "32", "-ctk", cfg["kv"], "-ctv", cfg["kv"], "-fa", cfg["fa"]] + _placement_args(cfg, vram_total)
+                    "--chunks", str(ppl_chunks(exp)), "-ctk", cfg["kv"], "-ctv", cfg["kv"], "-fa", cfg["fa"]] + _placement_args(cfg, vram_total)
             pcmd = _pin(pcmd, cfg)
             base_run = next((r for r in exp["runs_list"] if r["status"] == "done" and r["id"] != run_id and not r["config"]["model"].startswith(methods.PREFIX)), None)
             same_tok = is_baseline or not base_run or (
@@ -1434,11 +1527,11 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
                 res["ppl_sd"] = quantlab._num(r"Final estimate: PPL = [\d.]+\s*\+/-\s*([\d.]+)", out)
                 if res["ppl"] is None or not base_kld.is_file():
                     raise RuntimeError("The evaluator did not produce baseline perplexity and logits")
-                base_kld.with_suffix(".json").write_text(json.dumps({"run_id": run_id, "protocol": PROTOCOL}))
+                base_kld.with_suffix(".json").write_text(json.dumps({"run_id": run_id, "protocol": PROTOCOL, "chunks": ppl_chunks(exp)}))
                 res["kld"], res["same_top"] = 0.0, 100.0
                 res["kld_reference"] = True
             else:
-                _check_kld_reference(base_kld, base_run)
+                _check_kld_reference(base_kld, base_run, ppl_chunks(exp))
                 cmds["fidelity"] = _cmdline(pcmd + ["--kl-divergence-base", str(base_kld), "--kl-divergence"])
                 out = await quantlab._proc(pcmd + ["--kl-divergence-base", str(base_kld), "--kl-divergence"], log, run_id)
                 res["ppl"] = quantlab._num(r"Mean PPL\(Q\)\s*:\s*([\d.]+)", out)
@@ -1517,6 +1610,9 @@ def analyze(res: dict, cfg: dict, lim: dict) -> dict:
     tel = (res.get("telemetry") or {}).get("speed") or (res.get("telemetry") or {}).get("serving") or {}
     tg, pp = speed.get("tg"), speed.get("pp")
     bw, ram_bw, peak_tf = lim.get("gpu_bandwidth_gbps"), lim.get("ram_bandwidth_gbps"), lim.get("gpu_tflops")
+    par = parallel_gpus(cfg, lim)
+    if par > 1:  # identical GPUs assumed (spec of the first one); tensor-parallel GPUs read their weight shards at the same time
+        bw, peak_tf = (bw * par if bw else bw), (peak_tf * par if peak_tf else peak_tf)
 
     gb = w["bytes"] / 1e9
     # Which weights live where, from the load log: host "model" buffers minus the embedding table (always on CPU, only looked up).
@@ -1528,7 +1624,7 @@ def analyze(res: dict, cfg: dict, lim: dict) -> dict:
     out: dict = {"weights_gb_per_token": round(gb, 3), "weights_on_gpu_gb": round(gpu_gb, 3), "weights_on_cpu_gb": round(cpu_gb, 3),
                  "params_active_b": round(w["params"] / 1e9, 3) if w["params"] else None,
                  "peaks": {"vram_gbps": bw, "ram_gbps": ram_bw, "tflops": peak_tf, "tflops_kind": lim.get("gpu_tflops_kind"),
-                           "sm_clock_mhz": lim.get("sm_clock_max")}}
+                           "sm_clock_mhz": lim.get("sm_clock_max"), "gpus": gpus_used(cfg, lim), "parallel_gpus": par}}
 
     if tg:
         t_gpu = gpu_gb / bw * 1000 if bw else (0.0 if not gpu_gb else None)
@@ -1620,8 +1716,12 @@ def compare(base: dict | None, run: dict) -> dict:
         for name, path in (("MMLU-Pro seed", ("data", "mmlu_seed")), ("MMLU-Pro question count", ("extra_tests", "mmlu_questions"))):
             if _get(pa, path) != _get(pb, path):
                 out["env_mismatch"].append(name)
+        # Runs from before the setting existed used the default sample.
+        if (_get(pa, ("extra_tests", "ppl_chunks")) or PPL_CHUNKS) != (_get(pb, ("extra_tests", "ppl_chunks")) or PPL_CHUNKS):
+            out["env_mismatch"].append("perplexity/KLD sample size")
     if a.get("answers") and b.get("answers") and not out.get("env_mismatch"):
         out["mmlu_p"] = mcnemar_p(a["answers"], b["answers"])
+        out["mmlu_diff"] = paired_diff_ci(a["answers"], b["answers"])
         out["mmlu_flips"] = {"lost": sum(1 for x, y in zip(a["answers"], b["answers"]) if x == "1" and y == "0"),
                              "gained": sum(1 for x, y in zip(a["answers"], b["answers"]) if x == "0" and y == "1")}
     return out
@@ -1654,7 +1754,7 @@ def enrich(exp: dict) -> dict:
             parent = by_id.get(r.get("parent_id"))
             if parent and base and parent["id"] != base["id"] and parent["status"] == "done":
                 vp = compare(parent, r)
-                r["stats"]["vs_parent"] = {k: vp[k] for k in ("mmlu_p", "mmlu_flips", "env_mismatch") if k in vp}
+                r["stats"]["vs_parent"] = {k: vp[k] for k in ("mmlu_p", "mmlu_diff", "mmlu_flips", "env_mismatch") if k in vp}
     # Many runs vs one baseline: Holm-adjusted p-values (family-wise error rate) next to the raw ones.
     tested = [r for r in exp["runs_list"] if (r.get("stats") or {}).get("mmlu_p") is not None]
     for r, p in zip(tested, holm([r["stats"]["mmlu_p"] for r in tested])):

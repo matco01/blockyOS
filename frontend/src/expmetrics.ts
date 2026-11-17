@@ -11,6 +11,7 @@ export type Metric = {
   sd?: (r: ExpResults) => number | null | undefined;        // descriptive spread shown next to the value
   se?: (r: ExpResults) => number | null | undefined;        // standard error, only when the source explicitly reports one
   p?: (c: Ctx) => number | null | undefined;                 // custom test: p-value for this pair (e.g. paired McNemar)
+  ci?: (c: Ctx) => { diff: number; ci95: [number, number] } | null | undefined; // 95% interval of the difference, in metric units
   fmt?: (v: number) => string; note?: string;
   minRel?: number;                                           // legacy display metadata; never a significance test
 };
@@ -34,7 +35,12 @@ export const METRICS: Metric[] = [
       // Paired test against whichever run we're comparing with: the baseline, or this run's parent in the tree.
       const s = c.run.stats;
       return c.base.id === s?.baseline_id ? s?.mmlu_p : c.base.id === c.run.parent_id ? s?.vs_parent?.mmlu_p : null;
-    }, note: "paired McNemar test" },
+    },
+    ci: (c) => {
+      const s = c.run.stats;
+      const d = c.base.id === s?.baseline_id ? s?.mmlu_diff : c.base.id === c.run.parent_id ? s?.vs_parent?.mmlu_diff : null;
+      return d ? { diff: d.diff * 100, ci95: [d.ci95[0] * 100, d.ci95[1] * 100] } : null;
+    }, note: "paired McNemar test; difference with a paired (Newcombe) 95% interval" },
   { key: "mmlu_p", group: "Quality", label: "MMLU-Pro returned-option score", unit: "%", better: "higher", get: (r) => (r.mmlu ? r.mmlu.p_correct_mean * 100 : null), fmt: pct,
     note: "Renormalized over option letters in the server's top-k shortlist; not the model's full probability of the correct answer" },
   { key: "needle", group: "Quality", label: "Long-context retrieval", unit: "%", better: "higher", get: (r) => (r.needle?.cells.length && r.needle.acc != null ? r.needle.acc * 100 : null), fmt: (v) => v.toFixed(0),
@@ -127,7 +133,9 @@ export function delta(m: Metric, c: Ctx, session = 0, pAdj?: number | null) {
   let sig = pa < 0.05;
   // Session-to-session drift (measured by repeating the baseline) must also be exceeded.
   if (sig && !m.p && session > 0 && Math.abs(v - b) <= 2 * session) sig = false;
-  const ptxt = `p = ${fmtP(pa)}${pAdj != null && pAdj !== p ? " after correcting for multiple comparisons" : ""}`;
+  const iv = incomparable(m, c) ? null : m.ci?.(c);
+  const citxt = iv ? `; difference ${iv.diff >= 0 ? "+" : ""}${iv.diff.toFixed(1)} ${m.unit === "%" ? "points" : m.unit}, 95% CI ${iv.ci95[0].toFixed(1)} to ${iv.ci95[1].toFixed(1)}` : "";
+  const ptxt = `p = ${fmtP(pa)}${pAdj != null && pAdj !== p ? " after correcting for multiple comparisons" : ""}${citxt}`;
   if (!sig) return { text, tone: "same", title: `No statistically established difference (${ptxt}); this does not prove equivalence` };
   if (!m.better) return { text, tone: "same", title: ptxt };
   const good = m.better === "higher" ? d > 0 : d < 0;
