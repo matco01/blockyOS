@@ -5,10 +5,12 @@
 [![PyPI](https://img.shields.io/pypi/v/blockyos-client?label=blockyos-client)](https://pypi.org/project/blockyos-client/)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-**A self-hosted laboratory for measuring how language models actually run on the hardware in front of you.**
+**A self-hosted laboratory for AI research on the hardware in front of you: deepest for language models, open to any model, method or architecture you write.**
 
 blockyOS turns a machine running Ubuntu Server into a dedicated, private AI appliance. Switch it on, open its web page,
-and you have a local chat assistant and a full research lab. The lab measures every trade-off of local inference with
+and you have a local chat assistant and a full research lab. The lab's built-in measurements cover language models
+in depth, and a general research runner takes any AI code you write: vision or audio models, reinforcement learning, or
+an architecture you invented. The lab measures every trade-off of local inference with
 a fixed, versioned protocol, using statistics that hold up in a paper:
 - quantization,
 - inference engine and engine version,
@@ -84,6 +86,21 @@ Comparisons between runs measured under different conditions are **refused, not 
 ---
 
 ## What you can do
+
+### Invent
+- **Research projects** run your own Python or command-line programs on the machine: a new architecture, a custom
+  training loop, a vision, audio or reinforcement-learning model, or your own evaluator. blockyOS snapshots and hashes
+  the source, records packages and hardware, schedules the GPU, and keeps logs and artifacts.
+- **Metric contracts** let new models be compared fairly. Your evaluator reports each result with its unit, task,
+  dataset fingerprint and protocol, and blockyOS compares only results whose contracts match. That way an invented
+  model can be compared with conventional ones, or with its own earlier versions.
+- **Registered methods** put a tested research project into Experiments next to ordinary models, with the same queue,
+  exports and charts.
+- **New ways to run models**: prototype a quantization method in Python, or change llama.cpp's kernels in your own
+  fork, then measure it against the standard methods and the stock engine under identical conditions.
+
+Built-in benchmarks exist only for language models. For other kinds of AI you supply the evaluator, and blockyOS
+provides provenance, scheduling and comparison. See [docs/RESEARCH_PROJECTS.md](docs/RESEARCH_PROJECTS.md).
 
 ### Measure
 - **Experiments**: the research hub. It runs a queue and full parameter sweeps, measures session noise with repeated
