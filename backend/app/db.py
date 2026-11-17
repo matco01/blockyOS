@@ -90,6 +90,7 @@ DEFAULT_SETTINGS = {
     "electricity_price_kwh": None,
     "currency": "",
     "remote_token": "",
+    "rpc_worker": {"enabled": False, "expose": False, "port": 50052},  # this device as a llama.cpp RPC worker (rpcworker.py)
     "anthropic_api_key": "",    # the agent's Claude key (optional); never returned by the API
     "agent_model": "claude-opus-5-5",         # set = other devices may control this one with this token (Settings → Remote access)
 }

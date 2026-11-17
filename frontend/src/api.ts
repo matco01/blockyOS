@@ -76,7 +76,8 @@ export type ToolRun = {
 export type ExpConfig = { model: string; ctx: number; kv: string; ngl: string | number; vram_limit_mb: number | null; fa: string; threads: number | null; engine?: string;
   method_config?: Record<string, unknown>;
   device?: "gpu" | "cpu"; cores?: number | null; ram_limit_mb?: number | null; preset?: string | null;
-  gpus?: number | null; split_mode?: "layer" | "row" | "none" | null };
+  gpus?: number | null; split_mode?: "layer" | "row" | "none" | null; rpc?: string[] | null; pp?: number | null };
+export type RpcWorker = { enabled: boolean; expose: boolean; port: number; running: boolean; host: string; installed: boolean; error: string | null };
 export type Device = { id: number; name: string; url: string; token: boolean; created_at: number };
 export type RemoteJob = { id: number; experiment_id: number; device: string; device_id?: number; status: string; step: string | null; error: string | null; imported?: { runs: number } };
 export type DevicePreset = { label: string; config: Partial<ExpConfig>; ram_bandwidth_gbps?: number; memory?: string };
@@ -165,7 +166,7 @@ export type LayerMeasure ={ layer: number; kld: number | null; kld_p99: number |
 export type LayerScan = { id: number; created_at: number; model: string; mode: "quantize" | "prune"; qtype: string | null; status: string; step: string | null; error: string | null;
   results: { layers?: LayerMeasure[]; n_layers?: number; source_type?: string; control?: { kld: number | null; same_top: number | null }; reference?: { ppl: number | null };
     most_sensitive?: number[]; least_sensitive?: number[] } };
-export type Engine = { id: string; name: string; kind?: "llamacpp" | "vllm" | "sglang"; repo: string; ref: string; commit_sha: string | null; status: string; step?: string | null;
+export type Engine = { id: string; name: string; kind?: "llamacpp" | "vllm" | "sglang" | "trtllm"; repo: string; ref: string; commit_sha: string | null; status: string; step?: string | null;
   error?: string | null; built_at: number | null; created_at?: number };
 export type WeightFile ={ file: string; quant: string | null; bits: number; size_bytes: number; layers: number | null; recipe: Record<string, unknown> | null };
 export type TensorGroup = { pattern: string; count: number; bytes: number; types: string[]; part: string };
@@ -367,6 +368,7 @@ export const api = {
   torchDownload: (repo: string) => json<{ id: number }>("/api/torch/download", send("POST", { repo })),
   torchActivations: (checkpoint: string, prompt: string) => json<{ id: number }>("/api/torch/activations", send("POST", { checkpoint, prompt })),
   torchLora: (body: Record<string, unknown>) => json<{ id: number }>("/api/torch/lora", send("POST", body)),
+  torchTrain: (body: Record<string, unknown>) => json<{ id: number }>("/api/torch/train", send("POST", body)),
   torchQuantsim: (body: Record<string, unknown>) => json<{ id: number }>("/api/torch/quantsim", send("POST", body)),
   torchQuantsimExport: (id: number, type: string) => json<{ id: number }>(`/api/torch/quantsim/${id}/export`, send("POST", { type, profile: true })),
   notebooks: () => json<{ installed: boolean; running: boolean; url: string | null; folder: string }>("/api/notebooks"),
@@ -375,6 +377,8 @@ export const api = {
   scanCancel: (id: number) => json(`/api/scans/${id}/cancel`, send("POST", {})),
   scanDelete: (id: number) => json(`/api/scans/${id}`, { method: "DELETE" }),
   engines: () => json<Engine[]>("/api/engines"),
+  rpcWorker: () => json<RpcWorker>("/api/rpc-worker"),
+  setRpcWorker: (s: { enabled: boolean; expose: boolean; port: number }) => json<RpcWorker>("/api/rpc-worker", send("POST", s)),
   remoteAccess: () => json<{ enabled: boolean; token: string | null }>("/api/remote-access"),
   setRemoteAccess: (enabled: boolean) => json<{ enabled: boolean; token: string | null }>("/api/remote-access", send("POST", { enabled })),
   devices: () => json<Device[]>("/api/devices"),

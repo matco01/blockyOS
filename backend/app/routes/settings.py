@@ -18,6 +18,7 @@ def get_settings():
 @router.patch("/api/settings")
 def update_settings(body: dict):
     body.pop("remote_token", None)  # only POST /api/remote-access creates or clears it
+    body.pop("rpc_worker", None)  # only POST /api/rpc-worker changes it (and starts or stops the worker)
     body.pop("anthropic_api_key", None)  # only POST /api/agent/key sets it
     if "agent_model" in body and body["agent_model"] not in agent.CLAUDE_MODELS:
         raise HTTPException(400, "Unknown model")

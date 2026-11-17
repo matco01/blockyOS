@@ -13,6 +13,8 @@ editing code. This file is for changing Blocky itself.
 | `backend/app/main.py` | FastAPI app wiring: lifespan (DB init, workers, MCP session manager), access control (loopback, Host, Origin), router order |
 | `backend/app/routes/` | REST endpoints, one module per area (`experiments.py`, `chat.py`, `torch.py`, …); `common.py` holds shared helpers and app state |
 | `backend/app/jobstore.py` | Saves in-memory background jobs (downloads, weight builds, quantizations, remote-device jobs) so they survive restarts |
+| `backend/app/rpcworker.py` | This device as a llama.cpp RPC worker (multi-machine runs); off and localhost-only by default |
+| `backend/torch_tools/train.py` | Full training (all weights, or pretraining) with a held-out evaluation; FSDP under torchrun |
 | `backend/app/instrument.py` | Instrument checks: properties a correct measurement pipeline must show (baseline vs itself, quant order, bandwidth, cited values) |
 | `backend/app/profile.py` | Experiments: run tree, config validation, the measurement protocol, statistics, analysis, import/export |
 | `backend/app/mcp_server.py` | MCP tools for AI assistants (thin wrappers over the modules below) |
@@ -21,7 +23,7 @@ editing code. This file is for changing Blocky itself.
 | `backend/tests/` | pytest suite (no GPU or models needed) |
 | `frontend/src/` | React + TypeScript UI (Vite). `ExperimentsPage.tsx`, `ResearchCanvas.tsx`, `expmetrics.ts`, `GuidePage.tsx` |
 | `client/blocky.py` | Python client used in notebooks |
-| `scripts/` | Install and setup scripts (`install.sh`, `setup-ml.sh`, `setup-vllm.sh`, `setup-sglang.sh`, `setup-notebooks.sh`) |
+| `scripts/` | Install and setup scripts (`install.sh`, `setup-ml.sh`, `setup-vllm.sh`, `setup-sglang.sh`, `setup-trtllm.sh`, `setup-notebooks.sh`) |
 
 ## Checks before you finish
 

@@ -7,6 +7,9 @@ backend itself stays small. GPU jobs take the lab lock and pause the chat model,
   activations   one prompt through the model: per-layer residual norms, layer deltas, logit lens, attention entropy
   lora          LoRA fine-tune on a dataset -> merge -> llama.cpp convert_hf_to_gguf.py -> a GGUF in the models folder
                 (+ recipe.json), so it can be profiled in Experiments like any other weights
+  train         full training: fine-tune every weight, or pretrain from scratch with the checkpoint's architecture; one
+                GPU, several (FSDP via torchrun) or several machines; held-out loss/perplexity; the result is a new
+                checkpoint (and optionally a GGUF) for Experiments
 """
 import asyncio
 import json
@@ -446,3 +449,169 @@ async def _lora(jid: int, log: list[str], d: Path, p: dict) -> dict:
     shutil.rmtree(out / "merged", ignore_errors=True)  # the GGUF is what we keep
     return {"curve": steps[::max(1, len(steps) // 400)], "info": next((x for x in lines if x.get("event") == "start"), None),
             "gguf": name, "size_bytes": dest.stat().st_size, "final_loss": recipe["final_loss"], "first_loss": recipe["first_loss"]}
+
+
+# ---------- Full training (fine-tuning all weights, or pretraining) ----------
+
+TRAIN_MODES = ("finetune", "pretrain")
+_ADDR = re.compile(r"^[A-Za-z0-9.\-]{1,253}$")
+
+
+def train_plan(body: dict, gpu_count: int) -> dict:
+    """Validate a training request. Multi-machine runs need the address other nodes reach this one at, chosen explicitly
+    (torchrun's rendezvous opens a port there for the duration of the job)."""
+    d = _ckpt(body.get("checkpoint", ""))
+    data = str(body.get("data") or "").strip()
+    local_file = data.startswith("/") and data.endswith((".txt", ".jsonl"))
+    if not data or ".." in data or not (local_file or re.match(r"^[A-Za-z0-9_./:-]+$", data)):
+        raise ValueError("Data: a Hugging Face dataset id (optionally id:config) or an absolute path to a .txt / .jsonl file")
+    if local_file and not Path(data).is_file():
+        raise ValueError("That data file doesn't exist")
+    mode = body.get("mode") or "finetune"
+    if mode not in TRAIN_MODES:
+        raise ValueError("Mode must be finetune or pretrain")
+    gpus = int(body.get("gpus") or 1)
+    if not 1 <= gpus <= max(1, gpu_count):
+        raise ValueError(f"This device has {gpu_count} GPU(s): use 1-{max(1, gpu_count)}")
+    nnodes = int(body.get("nnodes") or 1)
+    if not 1 <= nnodes <= 64:
+        raise ValueError("Machines: 1-64")
+    eval_frac = body.get("eval_frac")
+    p = {"checkpoint": d.name, "mode": mode, "data": data, "split": str(body.get("split") or "train")[:40],
+         "rows": max(10, min(5_000_000, int(body.get("rows") or 5000))), "steps": max(1, min(1_000_000, int(body.get("steps") or 500))),
+         "lr": float(body.get("lr") or (3e-4 if mode == "pretrain" else 2e-5)), "batch": max(1, min(256, int(body.get("batch") or 4))),
+         "accum": max(1, min(512, int(body.get("accum") or 1))), "max_len": max(64, min(32768, int(body.get("max_len") or 1024))),
+         "eval_frac": min(0.5, max(0.0, float(eval_frac if eval_frac is not None else 0.02))),
+         "eval_every": max(0, min(100_000, int(body.get("eval_every") or 100))),
+         "layers": max(0, min(512, int(body.get("layers") or 0))) if mode == "pretrain" else 0,
+         "seed": int(body.get("seed") or 0), "gpus": gpus, "nnodes": nnodes,
+         "to_gguf": bool(body.get("to_gguf")), "outtype": body.get("outtype") if body.get("outtype") in ("q8_0", "f16", "bf16") else "q8_0",
+         "name": re.sub(r"[^A-Za-z0-9._-]+", "-", str(body.get("name") or "")).strip("-")[:40]}
+    if not re.match(r"^[A-Za-z0-9_-]{1,40}$", p["split"]):
+        raise ValueError("Bad split name")
+    if not 0 < p["lr"] < 1:
+        raise ValueError("Learning rate must be between 0 and 1")
+    if nnodes > 1:
+        addr = str(body.get("master_addr") or "").strip()
+        if not _ADDR.match(addr) or addr in ("localhost", "127.0.0.1"):
+            raise ValueError("Several machines: give this machine's address on the network the others can reach (e.g. 192.168.1.40)")
+        port = int(body.get("master_port") or 29500)
+        if not 1024 <= port <= 65535:
+            raise ValueError("Port must be 1024-65535")
+        p.update(master_addr=addr, master_port=port)
+    return p
+
+
+def train_args(p: dict, d: Path, out: Path) -> list[str]:
+    script = [str(TOOLS / "train.py"), "--model", str(d), "--mode", p["mode"], "--data", p["data"], "--split", p["split"],
+              "--rows", str(p["rows"]), "--steps", str(p["steps"]), "--lr", str(p["lr"]), "--batch", str(p["batch"]),
+              "--accum", str(p["accum"]), "--max_len", str(p["max_len"]), "--eval_frac", str(p["eval_frac"]),
+              "--eval_every", str(p["eval_every"]), "--layers", str(p["layers"]), "--seed", str(p["seed"]), "--out", str(out)]
+    if p["gpus"] == 1 and p["nnodes"] == 1:
+        return script
+    launch = ["-m", "torch.distributed.run", "--nproc_per_node", str(p["gpus"]), "--nnodes", str(p["nnodes"])]
+    if p["nnodes"] > 1:
+        launch += ["--node_rank", "0", "--master_addr", p["master_addr"], "--master_port", str(p["master_port"])]
+    else:
+        launch += ["--standalone"]
+    return launch + script
+
+
+def other_node_command(p: dict, args: list[str]) -> str | None:
+    """What to run on each other machine (same checkpoint and data paths there), with the node rank to fill in."""
+    if p["nnodes"] <= 1:
+        return None
+    shown = list(args)
+    shown[shown.index("--node_rank") + 1] = f"<node rank: 1 to {p['nnodes'] - 1}>"
+    return "python " + " ".join(shown)
+
+
+def mfu(tokens_per_second: float | None, params: int | None, gpus: int, peak_tflops: float | None) -> float | None:
+    """Model FLOPs utilization, estimated: 6 x parameters FLOPs per trained token (forward + backward, attention not
+    counted) over the spec-sheet peak of the GPUs used. Gradient checkpointing recomputes the forward pass, which this
+    doesn't count either, so real hardware utilization is higher."""
+    if not tokens_per_second or not params or not peak_tflops or gpus < 1:
+        return None
+    return round(6 * params * tokens_per_second / (peak_tflops * 1e12 * gpus), 4)
+
+
+def start_train(body: dict) -> int:
+    p = train_plan(body, len(lab.hardware().get("gpus") or []))
+    jid = _new("train", p)
+    asyncio.get_running_loop().create_task(_gpu(jid, _train, _ckpt(p["checkpoint"]), p))
+    return jid
+
+
+def _read_progress(path: Path) -> tuple[list[dict], list[dict], dict | None, dict | None]:
+    lines = []
+    if path.is_file():
+        for x in path.read_text().splitlines():
+            try:
+                lines.append(json.loads(x))
+            except ValueError:
+                pass  # a line still being written
+    steps = [x for x in lines if "step" in x and "loss" in x]
+    evals = [x for x in lines if x.get("event") == "eval"]
+    return steps, evals, next((x for x in lines if x.get("event") == "start"), None), next((x for x in lines if x.get("event") == "end"), None)
+
+
+async def _train(jid: int, log: list[str], d: Path, p: dict) -> dict:
+    from . import profile
+    out = WORK / f"train-{jid}"
+    shutil.rmtree(out, ignore_errors=True)
+    out.mkdir(parents=True)
+    prog = out / "progress.jsonl"
+    args = train_args(p, d, out)
+    others = other_node_command(p, args)
+
+    def summary(steps, evals, info, end):
+        return {"curve": steps[::max(1, len(steps) // 400)], "evals": evals, "info": info, "end": end, "other_nodes_command": others}
+
+    async def follow():
+        while True:
+            await asyncio.sleep(5)
+            steps, evals, info, end = _read_progress(prog)
+            _save(jid, step=f"training · step {steps[-1]['step']} of {p['steps']}" if steps else
+                  ("waiting for the other machines" if others else "loading data"), results=summary(steps, evals, info, end))
+
+    watcher = asyncio.create_task(follow())
+    try:
+        _save(jid, step="waiting for the other machines" if others else "loading data", results=summary([], [], None, None))
+        if await _py(jid, args, log, timeout=7 * 24 * 3600):
+            raise RuntimeError(" | ".join(log[-3:])[-400:])
+    finally:
+        watcher.cancel()
+    steps, evals, info, end = _read_progress(prog)
+    if not (out / "model" / "config.json").is_file():
+        raise RuntimeError("Training finished without saving a model: " + " | ".join(log[-3:])[-300:])
+
+    # The result becomes a checkpoint like any download, so it can be profiled with vLLM / SGLang / TensorRT-LLM.
+    tag = p["name"] or f"{'pt' if p['mode'] == 'pretrain' else 'ft'}-{p['steps']}s-{jid}"
+    ckpt = HF / f"{d.name}-{tag}"
+    if ckpt.exists():
+        ckpt = HF / f"{d.name}-{tag}-{jid}"
+    shutil.move(str(out / "model"), str(ckpt))
+    lim = profile.limits()
+    res = {**summary(steps, evals, info, end), "checkpoint": ckpt.name,
+           "first_eval": evals[0] if evals else None, "final_eval": evals[-1] if evals else None,
+           "first_loss": steps[0]["loss"] if steps else None, "final_loss": steps[-1]["loss"] if steps else None,
+           "mfu_estimate": mfu((end or {}).get("tokens_per_second"), (info or {}).get("params"), p["gpus"] * p["nnodes"], lim.get("gpu_tflops")),
+           "mfu_note": "Estimated: 6 x parameters FLOPs per token against the spec-sheet peak; excludes attention and recomputation"}
+    recipe = {"made_by": f"Blocky full training ({p['mode']})", "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+              "base_checkpoint": d.name.replace("--", "/", 1), "params": p,
+              "commands": ["python " + " ".join(args)] + ([others] if others else []),
+              "environment": info, "first_eval": res["first_eval"], "final_eval": res["final_eval"], "end": end}
+    (ckpt / "blocky-recipe.json").write_text(json.dumps(recipe, indent=1))
+
+    if p["to_gguf"]:
+        _save(jid, step="converting to GGUF")
+        name = f"{ckpt.name.split('--', 1)[-1]}-{p['outtype'].upper()}.gguf"
+        dest = lab.MODELS_DIR / name
+        conv = [str(LLAMA_SRC / "convert_hf_to_gguf.py"), str(ckpt), "--outfile", str(dest.with_suffix(".gguf.part")), "--outtype", p["outtype"]]
+        if await _py(jid, conv, log, timeout=3600, env={"PYTHONPATH": str(LLAMA_SRC / "gguf-py")}):
+            res["gguf_error"] = "GGUF conversion failed: " + " | ".join(log[-3:])[-300:]
+        else:
+            dest.with_suffix(".gguf.part").rename(dest)
+            dest.with_suffix(".recipe.json").write_text(json.dumps({**recipe, "commands": recipe["commands"] + ["python " + " ".join(conv)]}, indent=1))
+            res["gguf"] = name
+    return res

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Bot, Code2, Info, Lock, Network, Palette, PlugZap, Server, Trash2 } from "lucide-react";
-import { api, Device, Settings, Status } from "./api";
+import { api, Device, RpcWorker, Settings, Status } from "./api";
 import { Accent, ACCENTS, Theme } from "./settings";
 
 const THEMES: { id: Theme; label: string }[] = [
@@ -156,6 +156,37 @@ function EnergySettings() {
   );
 }
 
+/** This device as a llama.cpp RPC worker for multi-machine runs. Off and localhost-only unless the owner chooses otherwise. */
+function RpcWorkerRow() {
+  const [w, setW] = useState<RpcWorker | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => { api.rpcWorker().then(setW).catch(() => {}); }, []);
+  const apply = async (patch: Partial<RpcWorker>) => {
+    if (!w) return;
+    setErr(null);
+    try { setW(await api.setRpcWorker({ enabled: w.enabled, expose: w.expose, port: w.port, ...patch })); } catch (e) { setErr((e as Error).message); }
+  };
+  if (!w) return null;
+  return (
+    <div className="row">
+      <span className="row-icon" style={{ background: "linear-gradient(180deg,#bf5af2,#8944ab)" }}><Network /></span>
+      <div className="row-main">
+        <div>Multi-machine: lend this GPU to another Blocky (llama.cpp RPC worker)</div>
+        <div className="row-sub">Another machine can then hold part of a model here (its experiments list this device under “RPC workers”). rpc-server has <b>no authentication or encryption</b>: by default it listens on localhost only, for an SSH tunnel (<code>ssh -L {w.port}:localhost:{w.port} user@this-device</code>). Listening on the network lets anyone who can reach port {w.port} use this GPU; only do that on a network you trust.</div>
+        <div className="row-sub" style={{ marginTop: 6 }}>
+          {w.running ? <>Running on <code>{w.host}:{w.port}</code></> : w.enabled ? "Not running" : "Off"}{!w.installed && " · rpc-server isn't built yet: re-run scripts/install.sh"}{w.error && ` · ${w.error}`}
+          {w.enabled && <label style={{ marginLeft: 12 }}><input type="checkbox" checked={w.expose} onChange={(e) => apply({ expose: e.target.checked })} /> Listen on the network</label>}
+        </div>
+        {err && <div className="row-sub" style={{ color: "var(--red, #e5484d)" }}>{err}</div>}
+      </div>
+      <div className="segmented">
+        <button className={w.enabled ? "" : "on"} onClick={() => apply({ enabled: false })}>Off</button>
+        <button className={w.enabled ? "on" : ""} onClick={() => apply({ enabled: true })}>On</button>
+      </div>
+    </div>
+  );
+}
+
 function RemoteSettings() {
   const [access, setAccess] = useState<{ enabled: boolean; token: string | null } | null>(null);
   const [devs, setDevs] = useState<Device[]>([]);
@@ -190,6 +221,7 @@ function RemoteSettings() {
             <button className={access?.enabled ? "on" : ""} onClick={async () => setAccess(await api.setRemoteAccess(true))}>On</button>
           </div>
         </div>
+        <RpcWorkerRow />
         <div className="row">
           <span className="row-icon" style={{ background: "linear-gradient(180deg,#a1a1a6,#6e6e73)" }}><Server /></span>
           <div className="row-main">

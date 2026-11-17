@@ -253,8 +253,29 @@ def get_jobs() -> str:
         "weights": [{k: j.get(k) for k in ("id", "out", "status", "step", "error")} for j in weights.list_jobs()[:10]],
         "scans": [{k: s.get(k) for k in ("id", "model", "mode", "status", "step", "error")} for s in scans.list_scans()[:10]],
         "engines": [{k: e.get(k) for k in ("id", "status", "step", "error", "commit_sha")} for e in engines.list_engines()],
-        "torch": [{k: j.get(k) for k in ("id", "kind", "status", "step", "error")} for j in torchlab.jobs()[:10]],
+        "torch": [{**{k: j.get(k) for k in ("id", "kind", "status", "step", "error")},
+                   **({"results": {k: (j.get("results") or {}).get(k) for k in ("checkpoint", "gguf", "first_eval", "final_eval", "first_loss",
+                                                                               "final_loss", "mfu_estimate", "other_nodes_command", "end")}}
+                      if j.get("kind") == "train" else {})} for j in torchlab.jobs()[:10]],
     }, default=str)
+
+
+@server.tool(description="Full training on a Hugging Face checkpoint: mode 'finetune' updates every weight; 'pretrain' starts from random weights "
+                         "with the checkpoint's architecture and tokenizer (layers: optionally fewer). data: a Hugging Face dataset id (id:config) "
+                         "or an absolute .txt/.jsonl path; chat-style rows train on answers, text rows are packed into max_len blocks. A held-out "
+                         "share (eval_frac) gives loss/perplexity before, during and after. gpus > 1 shards with FSDP. Several machines: nnodes > 1 "
+                         "plus master_addr (this machine's network address); the job's results then show the command to run on the others. "
+                         "The trained model becomes a new checkpoint (hf:<name>) for Experiments; to_gguf also converts it. Follow with get_jobs.")
+async def start_training(checkpoint: str, data: str, mode: str = "finetune", steps: int = 500, lr: float = 0.0, batch: int = 4, accum: int = 1,
+                         max_len: int = 1024, rows: int = 5000, eval_frac: float = 0.02, eval_every: int = 100, layers: int = 0, gpus: int = 1,
+                         nnodes: int = 1, master_addr: str = "", to_gguf: bool = False, name: str = "") -> str:
+    try:
+        return json.dumps({"job_id": torchlab.start_train({"checkpoint": checkpoint.removeprefix("hf:"), "data": data, "mode": mode, "steps": steps,
+                                                           "lr": lr or None, "batch": batch, "accum": accum, "max_len": max_len, "rows": rows,
+                                                           "eval_frac": eval_frac, "eval_every": eval_every, "layers": layers, "gpus": gpus,
+                                                           "nnodes": nnodes, "master_addr": master_addr, "to_gguf": to_gguf, "name": name})})
+    except ValueError as err:
+        return json.dumps({"error": str(err)})
 
 
 @server.tool(description="Technique playground: simulate a quantization method on a Hugging Face checkpoint (fake quantization: quantize, then "

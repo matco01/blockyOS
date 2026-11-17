@@ -28,7 +28,7 @@ const PHASES = [
 /* ---------- Pieces ---------- */
 
 /** Frameworks that serve Hugging Face checkpoints (not GGUF files). */
-const isCkpt = (e?: string | null) => e === "vllm" || e === "sglang";
+const isCkpt = (e?: string | null) => e === "vllm" || e === "sglang" || e === "trtllm";
 
 function Tile({ icon: Icon, color, label, value, unit, sub }: { icon: LucideIcon; color: string; label: React.ReactNode; value: string; unit?: string; sub?: string }) {
   return (
@@ -117,7 +117,9 @@ function ChangePanel({ base: rawBase, models, onRun, onSweep, onModels }: { base
     else if (DEVICE_KEYS.some((k) => k in patch)) next.preset = null;  // customizing the device: no longer the preset
     // Engines run different formats: vLLM and SGLang take checkpoints, llama.cpp takes GGUF. Keep the pair valid.
     if (isCkpt(patch.engine) && !next.model.startsWith("hf:") && ckpts[0]) next.model = `hf:${ckpts[0].id}`;
-    if (isCkpt(patch.engine)) next = { ...next, kv: "auto", ngl: "auto", fa: "auto", threads: null, ram_limit_mb: null, device: "gpu", preset: null, split_mode: null };
+    if (isCkpt(patch.engine)) next = { ...next, kv: "auto", ngl: "auto", fa: "auto", threads: null, ram_limit_mb: null, device: "gpu", preset: null, split_mode: null, rpc: null };
+    if (patch.engine && !isCkpt(patch.engine)) next.pp = null;
+    if (patch.engine === "sglang") next.pp = null;
     if (patch.engine && !isCkpt(patch.engine) && next.kv === "auto") next.kv = "q8_0";
     if (patch.engine && !isCkpt(patch.engine) && next.model.startsWith("hf:")) next.model = base.model.startsWith("hf:") ? (family[0]?.file ?? models[0]?.file ?? next.model) : base.model;
     return next;
@@ -158,7 +160,7 @@ function ChangePanel({ base: rawBase, models, onRun, onSweep, onModels }: { base
         </div></div>
       {eng && <div className="xc-shop"><EnginesPanel onChange={loadEngines} /></div>}
       {(mode === "sweep" ? (grid.engine ?? []).some((e) => isCkpt(e as string)) : isCkpt(cfg.engine)) && (
-        <div className="xc-row"><div><b>Checkpoint (vLLM / SGLang)</b><span>vLLM and SGLang run original Hugging Face weights (16-bit). Download more in Internals → Checkpoints.</span></div>
+        <div className="xc-row"><div><b>Checkpoint (vLLM / SGLang / TensorRT-LLM)</b><span>These frameworks run original Hugging Face weights (16-bit). Download more in Internals → Checkpoints.</span></div>
           <div className="segmented wrap">{ckpts.length ? ckpts.map((c) => <Opt key={c.id} k="model" v={`hf:${c.id}`} label={`${c.repo} · ${(c.size_bytes / 2 ** 30).toFixed(1)} GB`} />)
             : <span className="row-sub" style={{ padding: "4px 10px" }}>No checkpoints yet</span>}</div></div>
       )}
@@ -188,6 +190,11 @@ function ChangePanel({ base: rawBase, models, onRun, onSweep, onModels }: { base
         <div className="xc-row"><div><b>Multi-GPU split</b><span>llama.cpp -sm: layer (pipeline; one GPU works at a time per sequence), row (tensor parallel; every GPU works on every layer), none (one GPU)</span></div>
           <div className="segmented"><Opt k="split_mode" v={null} label="Auto" /><Opt k="split_mode" v="layer" label="Layer" /><Opt k="split_mode" v="row" label="Row" /><Opt k="split_mode" v="none" label="None" /></div></div>
       </>}
+      {mode === "single" && !isCkpt(cfg.engine) && <RpcWorkers value={cfg.rpc ?? []} onChange={(rpc) => set({ rpc: rpc.length ? rpc : null })} />}
+      {(cfg.engine === "vllm" || cfg.engine === "trtllm") && (
+        <div className="xc-row"><div><b>Pipeline stages</b><span>Split the model's layers into stages. vLLM places stages on other machines through a Ray cluster you start first (<code>ray start --head</code> here, <code>ray start --address=…</code> on the others); TensorRT-LLM uses this machine's GPUs</span></div>
+          <div className="segmented"><Opt k="pp" v={null} label="1" />{[2, 4, 8].map((n) => <Opt key={n} k="pp" v={n} label={String(n)} />)}</div></div>
+      )}
       </details>
       {mode === "single" ? (
         <div className="xc-foot">
@@ -212,6 +219,17 @@ function ChangePanel({ base: rawBase, models, onRun, onSweep, onModels }: { base
         </div>
       )}
     </div>
+  );
+}
+
+/** llama.cpp RPC workers: other machines running rpc-server that hold part of the model. */
+function RpcWorkers({ value, onChange }: { value: string[]; onChange: (v: string[]) => void }) {
+  const [text, setText] = useState(value.join(", "));
+  useEffect(() => setText(value.join(", ")), [value.join(",")]); // eslint-disable-line react-hooks/exhaustive-deps
+  return (
+    <div className="xc-row"><div><b>RPC workers (other machines)</b><span>llama.cpp --rpc: addresses of machines running rpc-server (Settings → Multi-machine on another Blocky). Layers are spread over this machine and the workers; the network then sets much of the speed</span></div>
+      <input className="field" aria-label="RPC workers" placeholder="192.168.1.40:50052, 192.168.1.41:50052" value={text}
+        onChange={(e) => setText(e.target.value)} onBlur={() => onChange(text.split(",").map((x) => x.trim()).filter(Boolean))} /></div>
   );
 }
 

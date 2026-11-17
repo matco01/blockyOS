@@ -65,6 +65,14 @@ async def torch_activations(body: dict):
         _bad(e)
 
 
+@router.post("/api/torch/train")
+async def torch_train(body: dict):
+    try:
+        return {"id": torchlab.start_train(body)}
+    except (ValueError, TypeError) as e:
+        _bad(e)
+
+
 @router.post("/api/torch/lora")
 async def torch_lora(body: dict):
     try:

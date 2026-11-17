@@ -21,7 +21,7 @@ function JobLine({ j }: { j: TorchJob }) {
   return (
     <div className={`ws-job ${j.status}`}>
       {j.status === "running" || j.status === "queued" ? <Loader2 className="spin" size={15} /> : j.status === "done" ? null : <AlertCircle size={15} />}
-      <div><b>#{j.id} · {j.kind === "download" ? j.params.repo : j.kind === "lora" ? `LoRA on ${j.params.checkpoint} · ${j.params.data}` : j.kind === "quantsim" ? `${qsName(j.params)} on ${j.params.checkpoint}` : `${j.params.checkpoint}`}</b>
+      <div><b>#{j.id} · {j.kind === "download" ? j.params.repo : j.kind === "lora" ? `LoRA on ${j.params.checkpoint} · ${j.params.data}` : j.kind === "train" ? `${j.params.mode === "pretrain" ? "Pretraining" : "Full fine-tune"} on ${j.params.checkpoint} · ${j.params.data}` : j.kind === "quantsim" ? `${qsName(j.params)} on ${j.params.checkpoint}` : `${j.params.checkpoint}`}</b>
         <span>{j.status === "running" ? `${j.step ?? "starting"}…` : j.status}{j.error ? `: ${j.error}` : ""}</span></div>
       {(j.status === "running" || j.status === "queued") && <button className="btn small ghost" onClick={() => api.torchCancel(j.id)}><Square /> Stop</button>}
     </div>
@@ -204,6 +204,85 @@ function FineTune({ status }: { status: TorchStatus | null }) {
   );
 }
 
+/* ---------- Full training ---------- */
+
+type TrainEval = { step: number; eval_loss: number; eval_ppl: number };
+
+function FullTraining({ status }: { status: TorchStatus | null }) {
+  const [jobs, setJobs] = useJobs("train");
+  const [f, setF] = useState({ checkpoint: "", mode: "finetune", data: "wikitext:wikitext-2-raw-v1", split: "train", rows: 5000, steps: 500, lr: 0, batch: 4,
+    accum: 1, max_len: 1024, eval_frac: 0.02, eval_every: 100, layers: 0, gpus: 1, nnodes: 1, master_addr: "", to_gguf: false, outtype: "q8_0", name: "" });
+  const [sel, setSel] = useState<number | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => { if (!f.checkpoint && status?.checkpoints[0]) setF((x) => ({ ...x, checkpoint: status.checkpoints[0].id })); }, [status]); // eslint-disable-line react-hooks/exhaustive-deps
+  const shown = jobs.find((j) => j.id === sel) ?? jobs[0];
+  const r = (shown?.results ?? {}) as { curve?: { step: number; loss: number }[]; evals?: TrainEval[]; checkpoint?: string; gguf?: string; gguf_error?: string;
+    first_eval?: TrainEval; final_eval?: TrainEval; mfu_estimate?: number | null; mfu_note?: string; other_nodes_command?: string | null;
+    end?: { seconds: number; tokens: number; tokens_per_second: number } | null; info?: { params: number; world_size: number; weights_dtype: string; train_examples: number; eval_examples: number } | null };
+  const curve = useMemo(() => (r.curve ?? []).map((p) => ({ x: p.step, y: p.loss })), [r.curve]);
+  const evalCurve = useMemo(() => (r.evals ?? []).map((p) => ({ x: p.step, y: p.eval_ppl })), [r.evals]);
+  const set = (k: string, v: string | number | boolean) => setF((x) => ({ ...x, [k]: v }));
+  const start = async () => {
+    setErr(null);
+    try {
+      const body = { ...f, lr: f.lr || undefined, master_addr: f.nnodes > 1 ? f.master_addr : undefined };
+      const { id } = await api.torchTrain(body); setSel(id); setJobs(await api.torchJobs("train"));
+    } catch (e) { setErr((e as Error).message); }
+  };
+  return (
+    <div className="ws">
+      <div className="row-sub">Train <b>every weight</b>: fine-tune a checkpoint, or pretrain a model from random weights with its architecture and tokenizer. A held-out share of the data gives loss and perplexity before, during and after training, so you see generalization, not just the training loss. Several GPUs are sharded with FSDP; several machines run through torchrun. The result becomes a new checkpoint for Experiments (vLLM, SGLang, TensorRT-LLM), and optionally a GGUF for llama.cpp. Memory: full fine-tuning needs roughly 8–16 bytes per parameter on one GPU, so an 8 GB GPU fits models up to a few hundred million parameters; pretraining a smaller version (fewer layers) fits more.</div>
+      <div className="ws-grid">
+        <label><span>Checkpoint</span><select className="field select" value={f.checkpoint} onChange={(e) => set("checkpoint", e.target.value)}>
+          {(status?.checkpoints ?? []).map((c) => <option key={c.id} value={c.id}>{c.repo}</option>)}</select></label>
+        <label><span>Mode</span><select className="field select" value={f.mode} onChange={(e) => set("mode", e.target.value)}>
+          <option value="finetune">Fine-tune all weights</option><option value="pretrain">Pretrain from scratch (same architecture)</option></select>
+          {f.mode === "pretrain" && <em>Random weights; the checkpoint provides only the architecture and tokenizer.</em>}</label>
+        <label><span>Data (Hugging Face id or id:config, or an absolute .txt / .jsonl path)</span><input className="field" value={f.data} onChange={(e) => set("data", e.target.value)} />
+          <em>Text rows are packed into max-length blocks; chat-style rows (instruction/output, messages…) train on answers only.</em></label>
+        <label><span>Rows · steps · max length</span><div className="ft-row">
+          <input className="field" type="number" value={f.rows} onChange={(e) => set("rows", Number(e.target.value))} />
+          <input className="field" type="number" value={f.steps} onChange={(e) => set("steps", Number(e.target.value))} />
+          <input className="field" type="number" value={f.max_len} onChange={(e) => set("max_len", Number(e.target.value))} /></div></label>
+        <label><span>Batch per GPU · accumulation · learning rate (0 = default)</span><div className="ft-row">
+          <input className="field" type="number" value={f.batch} onChange={(e) => set("batch", Number(e.target.value))} />
+          <input className="field" type="number" value={f.accum} onChange={(e) => set("accum", Number(e.target.value))} />
+          <input className="field" type="number" step="0.00001" value={f.lr} onChange={(e) => set("lr", Number(e.target.value))} /></div></label>
+        <label><span>Held-out share · evaluate every N steps{f.mode === "pretrain" ? " · layers (0 = same)" : ""}</span><div className="ft-row">
+          <input className="field" type="number" step="0.01" value={f.eval_frac} onChange={(e) => set("eval_frac", Number(e.target.value))} />
+          <input className="field" type="number" value={f.eval_every} onChange={(e) => set("eval_every", Number(e.target.value))} />
+          {f.mode === "pretrain" && <input className="field" type="number" value={f.layers} onChange={(e) => set("layers", Number(e.target.value))} />}</div></label>
+        <label><span>GPUs on this machine · machines</span><div className="ft-row">
+          <input className="field" type="number" min={1} value={f.gpus} onChange={(e) => set("gpus", Number(e.target.value))} />
+          <input className="field" type="number" min={1} value={f.nnodes} onChange={(e) => set("nnodes", Number(e.target.value))} /></div>
+          {f.nnodes > 1 && <><input className="field" placeholder="This machine's network address, e.g. 192.168.1.40" value={f.master_addr} onChange={(e) => set("master_addr", e.target.value)} />
+            <em>torchrun opens a port on that address while the job runs. Every machine needs the same checkpoint and data paths and the ML environment; the job shows the command to start on each of them.</em></>}</label>
+        <label className="ws-check"><input type="checkbox" checked={f.to_gguf} onChange={(e) => set("to_gguf", e.target.checked)} />
+          <span><b>Also convert to GGUF</b><em>For llama.cpp experiments (needs the llama.cpp source tree's converter).</em></span></label>
+        <label><span>{f.to_gguf ? "GGUF type · name" : "Name"}</span><div className="ft-row">
+          {f.to_gguf && <select className="field select" value={f.outtype} onChange={(e) => set("outtype", e.target.value)}><option>q8_0</option><option>f16</option><option>bf16</option></select>}
+          <input className="field" placeholder="optional" value={f.name} onChange={(e) => set("name", e.target.value)} /></div></label>
+      </div>
+      <div className="xc-btns"><button className="btn" disabled={!f.checkpoint} onClick={start}><Wand2 /> Train</button>
+        {jobs.length > 1 && <select className="field select small-select" value={shown?.id ?? ""} onChange={(e) => setSel(Number(e.target.value))}>
+          {jobs.map((j) => <option key={j.id} value={j.id}>#{j.id} · {j.params.mode} · {j.params.data} · {j.status}</option>)}</select>}</div>
+      {err && <div className="error"><AlertCircle /> {err}</div>}
+      {shown && <JobLine j={shown} />}
+      {r.other_nodes_command && shown?.status === "running" && <div className="row-sub">Start this on each other machine: <code style={{ userSelect: "all" }}>{r.other_nodes_command}</code></div>}
+      {r.info && <div className="row-sub">{(r.info.params / 1e6).toFixed(0)}M parameters · {r.info.world_size} process{r.info.world_size > 1 ? "es (FSDP)" : ""} · weights {r.info.weights_dtype} · {r.info.train_examples} training / {r.info.eval_examples} held-out examples</div>}
+      {curve.length > 1 && <div><div className="mini-title">Training loss <span className="muted">(per step)</span></div>
+        <LineChart points={curve} height={140} color="var(--series-1)" unit="" fmtX={(x) => `step ${x}`} /></div>}
+      {evalCurve.length > 1 && <div><div className="mini-title">Held-out perplexity <span className="muted">(data the model never trained on)</span></div>
+        <LineChart points={evalCurve} height={120} color="var(--series-2)" unit="" fmtX={(x) => `step ${x}`} /></div>}
+      {shown?.status === "done" && r.checkpoint && <div className="row-sub">Saved checkpoint <b>hf:{r.checkpoint}</b>{r.gguf ? <> and <b>{r.gguf}</b></> : null}{r.gguf_error ? ` (${r.gguf_error})` : ""}.
+        {r.first_eval && r.final_eval ? <> Held-out perplexity {r.first_eval.eval_ppl.toFixed(2)} → {r.final_eval.eval_ppl.toFixed(2)}.</> : null}
+        {r.end ? <> {Math.round(r.end.tokens_per_second).toLocaleString()} tokens/s over {(r.end.seconds / 60).toFixed(1)} min.</> : null}
+        {r.mfu_estimate != null ? <> Estimated utilization {(r.mfu_estimate * 100).toFixed(0)}% <span title={r.mfu_note}>(spec-sheet peak; see note)</span>.</> : null}
+        {" "}Open Experiments to profile it.</div>}
+    </div>
+  );
+}
+
 /* ---------- Technique playground ---------- */
 
 const CUSTOM_EXAMPLE = `import torch
@@ -349,13 +428,14 @@ export default function InternalsPage() {
     <div className="page">
       <div className="page-inner wide">
         <h1 className="page-title">Internals</h1>
-        <p className="page-sub">The PyTorch side of the lab: look inside a model's layers, and fine-tune it, then bring the result back to GGUF to measure it like any other weights.</p>
+        <p className="page-sub">The PyTorch side of the lab: look inside a model's layers, fine-tune it (LoRA or every weight) or pretrain one, then measure the result like any other weights.</p>
         {status && !status.installed && <div className="group pad"><b>The PyTorch environment isn't installed.</b> <span className="row-sub">On the box: bash scripts/setup-ml.sh (a few GB).</span></div>}
         {status?.installed && <div className="row-sub ft-env"><Brain size={14} /> PyTorch {status.torch} · CUDA {status.cuda ? "on" : "off"} · transformers {status.transformers} · peft {status.peft}</div>}
-        <Tabs value={tab} onChange={setTab} tabs={[{ id: "act", label: "Activations" }, { id: "ft", label: "Fine-tune (LoRA)" }, { id: "play", label: "Technique playground" }, { id: "ckpt", label: "Checkpoints" }]} />
+        <Tabs value={tab} onChange={setTab} tabs={[{ id: "act", label: "Activations" }, { id: "ft", label: "Fine-tune (LoRA)" }, { id: "train", label: "Full training" }, { id: "play", label: "Technique playground" }, { id: "ckpt", label: "Checkpoints" }]} />
         <div className="group pad">
           {tab === "act" && <Activations status={status} />}
           {tab === "ft" && <FineTune status={status} />}
+          {tab === "train" && <FullTraining status={status} />}
           {tab === "play" && <Playground status={status} />}
           {tab === "ckpt" && <Checkpoints status={status} reload={load} />}
         </div>

@@ -136,3 +136,66 @@ def test_bandwidth_roof_adds_up_only_for_tensor_parallel():
     assert profile.parallel_gpus({"engine": "vllm", "gpus": 2}, lim) == 2
     assert profile.parallel_gpus({"engine": "vllm"}, lim) == 1
     assert profile.parallel_gpus({"device": "cpu", "split_mode": "row"}, lim) == 1
+
+
+def test_trtllm_is_a_checkpoint_framework(make_gguf, checkpoint, monkeypatch):
+    monkeypatch.setattr(profile.engines, "trtllm_installed", lambda: True)
+    make_gguf("G-Q4_K_M.gguf")
+    exp = {"model": "G-Q4_K_M.gguf"}
+    cfg = profile.normalize_config(exp, {"model": checkpoint, "engine": "trtllm"})
+    assert cfg["engine"] == "trtllm" and cfg["kv"] == "auto"
+    monkeypatch.setattr(profile.engines, "trtllm_installed", lambda: False)
+    with pytest.raises(ValueError, match="setup-trtllm"):
+        profile.normalize_config(exp, {"model": checkpoint, "engine": "trtllm"})
+
+
+def test_checkpoint_server_commands(checkpoint, tmp_path):
+    cfg = {"model": checkpoint, "ctx": 4096, "gpus": 2}
+    vllm, note = profile.checkpoint_server_cmd("vllm", tmp_path, cfg, 0.8)
+    assert vllm[1] == "serve" and vllm[vllm.index("--tensor-parallel-size") + 1] == "2" and note is None
+    assert "--pipeline-parallel-size" not in vllm
+    vpp, _ = profile.checkpoint_server_cmd("vllm", tmp_path, {**cfg, "pp": 2}, 0.8)
+    assert vpp[vpp.index("--pipeline-parallel-size") + 1] == "2" and vpp[vpp.index("--distributed-executor-backend") + 1] == "ray"
+    sg, note = profile.checkpoint_server_cmd("sglang", tmp_path, cfg, 0.8)
+    assert sg[1:3] == ["-m", "sglang.launch_server"] and sg[sg.index("--tp-size") + 1] == "2" and "chat template" in note
+    trt, note = profile.checkpoint_server_cmd("trtllm", tmp_path, {**cfg, "pp": 2}, 0.95)
+    assert trt[0].endswith("trtllm-serve") and trt[trt.index("--backend") + 1] == "pytorch"
+    assert trt[trt.index("--tp_size") + 1] == "2" and trt[trt.index("--pp_size") + 1] == "2"
+    assert float(trt[trt.index("--kv_cache_free_gpu_memory_fraction") + 1]) == 0.9
+    for c in (vllm, sg, trt):   # every framework answers to the same model name the measurement client uses
+        assert "blocky" in c or c is trt
+        assert c[c.index("--port") + 1] == str(profile.PORT) and c[c.index("--host") + 1] == "127.0.0.1"
+
+
+def test_rpc_workers_and_pipeline_stages(make_gguf, checkpoint, monkeypatch):
+    make_gguf("G-Q4_K_M.gguf")
+    exp = {"model": "G-Q4_K_M.gguf"}
+    cfg = profile.normalize_config(exp, {"rpc": "192.168.1.40:50052, box2.lan:50052"})
+    assert cfg["rpc"] == ["192.168.1.40:50052", "box2.lan:50052"]
+    assert profile._placement_args(cfg, 8000)[-2:] == ["--rpc", "192.168.1.40:50052,box2.lan:50052"]
+    assert profile.describe_change(profile.normalize_config(exp, {}), cfg) == "+2 RPC workers"
+    assert "rpc" not in profile.normalize_config(exp, {"rpc": ""})
+    for bad in ("no-port", "a:b", "x;rm -rf /:50052", ["1.2.3.4:50052"] * 17):
+        with pytest.raises(ValueError):
+            profile.normalize_config(exp, {"rpc": bad})
+    with pytest.raises(ValueError, match="Pipeline stages apply"):
+        profile.normalize_config(exp, {"pp": 2})                       # llama.cpp: use RPC workers instead
+    monkeypatch.setattr(profile.engines, "vllm_installed", lambda: True)
+    assert profile.normalize_config(exp, {"model": checkpoint, "engine": "vllm", "pp": 2})["pp"] == 2
+    assert "pp" not in profile.normalize_config(exp, {"model": checkpoint, "engine": "vllm", "pp": 1})
+    with pytest.raises(ValueError, match="does not apply"):
+        profile.normalize_config(exp, {"model": checkpoint, "engine": "vllm", "rpc": "1.2.3.4:50052"})
+
+
+def test_unreachable_rpc_worker_fails_fast():
+    with pytest.raises(RuntimeError, match="isn't reachable"):
+        profile.check_rpc_workers({"rpc": ["127.0.0.1:1"]}, timeout=0.5)
+
+
+def test_distributed_runs_have_no_single_machine_roofline(checkpoint):
+    res = {"weight_summary": {"bytes": 4e9, "params": 4e9, "embedding_bytes": 0}, "speed": {"tg": 30.0, "pp": 900.0}}
+    lim = {"gpu_bandwidth_gbps": 300, "gpu_tflops": 20, "gpu_count": 1}
+    local = profile.analyze(res, {"model": checkpoint, "ctx": 4096}, lim)
+    assert local["decode"]["roof_util"] is not None
+    remote = profile.analyze(res, {"model": checkpoint, "ctx": 4096, "rpc": ["10.0.0.2:50052"]}, lim)
+    assert remote["decode"]["roof_util"] is None and "other machines" in remote["distributed_note"]

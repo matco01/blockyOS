@@ -283,7 +283,7 @@ def cancel_queue(exp_id: int) -> int:
     return len(ids)
 
 
-SWEEP_KEYS = ("model", "engine", "kv", "ctx", "vram_limit_mb", "ngl", "fa", "threads", "device", "cores", "ram_limit_mb", "preset", "gpus", "split_mode")
+SWEEP_KEYS = ("model", "engine", "kv", "ctx", "vram_limit_mb", "ngl", "fa", "threads", "device", "cores", "ram_limit_mb", "preset", "gpus", "split_mode", "pp")
 MAX_SWEEP = 32
 
 
@@ -430,7 +430,7 @@ def normalize_config(exp: dict, cfg: dict) -> dict:
     if ckpt:
         requested = cfg or {}
         unsupported = [k for k in ("kv", "ngl", "fa") if requested.get(k) not in (None, "", "auto")]
-        unsupported += [k for k in ("threads", "ram_limit_mb", "split_mode") if out.get(k) not in (None, "", "auto")]
+        unsupported += [k for k in ("threads", "ram_limit_mb", "split_mode", "rpc") if out.get(k) not in (None, "", "auto", [])]
         if unsupported:
             raise ValueError(f"{fw} does not apply these settings in Blocky: {', '.join(unsupported)}. Use engine defaults (auto) or llama.cpp")
         out["kv"] = "auto"
@@ -465,6 +465,23 @@ def normalize_config(exp: dict, cfg: dict) -> dict:
         out.pop("split_mode", None)
     elif out["split_mode"] not in ("layer", "row", "none"):
         raise ValueError("Split mode must be auto, layer (pipeline: layers spread over GPUs), row (tensor parallel) or none (one GPU)")
+    # Other machines: llama.cpp RPC workers (host:port of an rpc-server), or pipeline stages for vLLM / TensorRT-LLM.
+    rpc = out.get("rpc")
+    if rpc in (None, "", []):
+        out.pop("rpc", None)
+    else:
+        items = [x.strip() for x in (rpc.split(",") if isinstance(rpc, str) else rpc) if str(x).strip()]
+        if not 1 <= len(items) <= 16 or not all(isinstance(x, str) and _RPC.match(x) for x in items):
+            raise ValueError("RPC workers: 1-16 addresses like 192.168.1.40:50052")
+        out["rpc"] = items
+    if out.get("pp") in (None, "", 1, "1", "auto"):
+        out.pop("pp", None)
+    else:
+        out["pp"] = int(out["pp"])
+        if not 2 <= out["pp"] <= 16:
+            raise ValueError("Pipeline stages must be 1-16")
+        if engines.kind(out["engine"]) not in ("vllm", "trtllm"):
+            raise ValueError("Pipeline stages apply to vLLM (across machines with Ray) and TensorRT-LLM; llama.cpp uses RPC workers")
     if out["cores"]:
         out["cores"] = int(out["cores"])
         if not 1 <= out["cores"] <= (os.cpu_count() or 1):
@@ -473,6 +490,9 @@ def normalize_config(exp: dict, cfg: dict) -> dict:
         out["ram_limit_mb"] = max(1024, int(out["ram_limit_mb"]))
     engines.bin_dir(out["engine"])  # raises if unknown or not built
     return out
+
+
+_RPC = re.compile(r"^[A-Za-z0-9.\-]{1,253}:\d{2,5}$|^\[[0-9A-Fa-f:]+\]:\d{2,5}$")
 
 
 def create_run(exp_id: int, body: dict) -> int:
@@ -541,6 +561,10 @@ def describe_change(base: dict, cfg: dict) -> str:
         parts.append(f"{cfg['gpus']} GPU{'s' if cfg['gpus'] > 1 else ''}" if cfg.get("gpus") else "all GPUs")
     if cfg.get("split_mode") != base.get("split_mode"):
         parts.append(f"split {cfg.get('split_mode') or 'auto'}")
+    if cfg.get("rpc") != base.get("rpc"):
+        parts.append(f"+{len(cfg['rpc'])} RPC worker{'s' if len(cfg['rpc']) > 1 else ''}" if cfg.get("rpc") else "no RPC workers")
+    if cfg.get("pp") != base.get("pp"):
+        parts.append(f"{cfg.get('pp') or 1} pipeline stages")
     new_preset = cfg.get("preset") and cfg.get("preset") != base.get("preset")
     if cfg.get("threads") != base.get("threads") and not new_preset:
         parts.append(f"{cfg['threads'] or 'auto'} threads")
@@ -574,7 +598,47 @@ def _placement_args(cfg: dict, vram_total: float, bench: bool = False) -> list[s
         args += ["-t", str(threads)]
     if cfg.get("split_mode"):
         args += ["-sm", cfg["split_mode"]]
+    if cfg.get("rpc"):
+        args += ["--rpc", ",".join(cfg["rpc"])]
     return args
+
+
+def check_rpc_workers(cfg: dict, timeout: float = 3) -> None:
+    """Fail fast, with the address, when an RPC worker can't be reached (instead of a hang inside llama.cpp)."""
+    import socket
+    for addr in cfg.get("rpc") or []:
+        host, _, port = addr.rpartition(":")
+        try:
+            socket.create_connection((host.strip("[]"), int(port)), timeout=timeout).close()
+        except OSError as e:
+            raise RuntimeError(f"RPC worker {addr} isn't reachable ({e.__class__.__name__}). Start it there "
+                               "(Settings → Multi-machine on that device, or rpc-server) and check the address") from None
+
+
+def checkpoint_server_cmd(fw: str, ebin: Path, cfg: dict, util: float) -> tuple[list[str], str | None]:
+    """Command that serves a Hugging Face checkpoint as an OpenAI-compatible API named "blocky" on PORT, plus a note
+    about anything this framework can't be told (shown with the run)."""
+    model, tp, pp = str(model_path(cfg["model"])), str(cfg.get("gpus") or 1), int(cfg.get("pp") or 1)
+    if fw == "vllm":
+        cmd = [str(ebin / "vllm"), "serve", model, "--host", "127.0.0.1", "--port", str(PORT), "--served-model-name", "blocky",
+               "--max-model-len", str(cfg["ctx"]), "--gpu-memory-utilization", f"{util:.6f}", "--max-num-seqs", "4",
+               "--tensor-parallel-size", tp, "--default-chat-template-kwargs", '{"enable_thinking": false}']
+        if pp > 1:  # stages on other machines: the Ray cluster the user started (ray start --head / --address)
+            cmd += ["--pipeline-parallel-size", str(pp), "--distributed-executor-backend", "ray"]
+        return cmd, None
+    if fw == "sglang":
+        return ([str(ebin / "python"), "-m", "sglang.launch_server", "--model-path", model, "--host", "127.0.0.1", "--port", str(PORT),
+                 "--served-model-name", "blocky", "--context-length", str(cfg["ctx"]), "--mem-fraction-static", f"{util:.6f}",
+                 "--max-running-requests", "4", "--tp-size", tp],
+                "SGLang serves with the model's default chat template (no server-wide setting turns thinking off)")
+    if fw == "trtllm":
+        # PyTorch backend: serves the checkpoint directly, no separate engine build. Its KV-cache budget is a fraction of
+        # the memory left after loading the weights, so the same number means something different than in vLLM.
+        return ([str(ebin / "trtllm-serve"), model, "--host", "127.0.0.1", "--port", str(PORT), "--backend", "pytorch",
+                 "--max_seq_len", str(cfg["ctx"]), "--max_batch_size", "4", "--tp_size", tp, "--pp_size", str(pp),
+                 "--kv_cache_free_gpu_memory_fraction", f"{min(0.9, util):.4f}"],
+                "TensorRT-LLM (PyTorch backend) uses the model's default chat template; its KV-cache budget is a share of the memory left after the weights")
+    raise ValueError(f"Unknown checkpoint framework {fw}")
 
 
 def _pin(cmd: list[str], cfg: dict) -> list[str]:
@@ -1155,6 +1219,7 @@ def provenance(cfg: dict) -> dict:
         "engine": next((e for e in engines.list_engines() if e["id"] == (cfg.get("engine") or "stock")), {"id": cfg.get("engine")}),
         "framework": engines.kind(cfg.get("engine")) if ckpt else "llama.cpp",
         "gpus_all": [x.get("name") for x in hw["gpus"]],
+        "distributed": ({"rpc_workers": cfg.get("rpc"), "pipeline_stages": cfg.get("pp")} if (cfg.get("rpc") or cfg.get("pp")) else None),
         "llama_cpp": ({"version": engines.framework_version(cfg.get("engine")), "commit": None,
                        "built_with": engines.CHECKPOINT_FRAMEWORKS[engines.kind(cfg.get("engine"))]} if ckpt else
                       {"version": m.group(1) if m else None, "commit": m.group(2) if m else None,
@@ -1378,27 +1443,20 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
             api = "openai" if ckpt else "llamacpp"
             logfile = exp_dir / f"run{run_id}-server.log"
             if ckpt:
-                # vLLM and SGLang pre-allocate a fraction of each GPU: give them what's actually free (other programs may
-                # hold some), or the simulated VRAM limit.
+                # vLLM, SGLang and TensorRT-LLM pre-allocate a fraction of each GPU: give them what's actually free (other
+                # programs may hold some), or the simulated VRAM limit.
                 await asyncio.sleep(1.5)
                 used = (sampler.samples[-1].get("vram_mb") if sampler.samples else 0) or 0
                 budget = min(vram_total - used - 300, cfg.get("vram_limit_mb") or vram_total)
                 if not vram_total or budget <= 0:
                     raise RuntimeError(f"Cannot determine a positive GPU memory budget for {engines.CHECKPOINT_FRAMEWORKS[fw]}")
                 util = min(0.92, budget / vram_total)
-                tp = str(cfg.get("gpus") or 1)
-                if fw == "vllm":
-                    cmd = [str(ebin / "vllm"), "serve", str(model_path(cfg["model"])), "--host", "127.0.0.1", "--port", str(PORT),
-                           "--served-model-name", "blocky", "--max-model-len", str(cfg["ctx"]), "--gpu-memory-utilization", f"{util:.6f}",
-                           "--max-num-seqs", "4", "--tensor-parallel-size", tp, "--default-chat-template-kwargs", '{"enable_thinking": false}']
-                else:
-                    # SGLang has no server-wide chat-template override: models with a thinking mode use their template's default.
-                    cmd = [str(ebin / "python"), "-m", "sglang.launch_server", "--model-path", str(model_path(cfg["model"])),
-                           "--host", "127.0.0.1", "--port", str(PORT), "--served-model-name", "blocky", "--context-length", str(cfg["ctx"]),
-                           "--mem-fraction-static", f"{util:.6f}", "--max-running-requests", "4", "--tp-size", tp]
-                    res["framework_note"] = "SGLang serves with the model's default chat template (no server-wide setting turns thinking off)"
+                cmd, note = checkpoint_server_cmd(fw, ebin, cfg, util)
+                if note:
+                    res["framework_note"] = note
                 env = dict(os.environ)
             else:
+                check_rpc_workers(cfg)
                 cmd = [str(ebin / "llama-server"), "-m", str(model_path(cfg["model"])), "--host", "127.0.0.1",
                        "--port", str(PORT), "-c", str(cfg["ctx"]), "-np", "1", "-ctk", cfg["kv"], "-ctv", cfg["kv"], "-fa", cfg["fa"],
                        "--jinja", "--no-webui", "-lv", "4",
@@ -1613,6 +1671,9 @@ def analyze(res: dict, cfg: dict, lim: dict) -> dict:
     par = parallel_gpus(cfg, lim)
     if par > 1:  # identical GPUs assumed (spec of the first one); tensor-parallel GPUs read their weight shards at the same time
         bw, peak_tf = (bw * par if bw else bw), (peak_tf * par if peak_tf else peak_tf)
+    distributed = bool(cfg.get("rpc")) or int(cfg.get("pp") or 1) > 1
+    if distributed:  # part of the model runs on other machines: this machine's limits don't bound the result
+        bw = ram_bw = peak_tf = None
 
     gb = w["bytes"] / 1e9
     # Which weights live where, from the load log: host "model" buffers minus the embedding table (always on CPU, only looked up).
@@ -1625,6 +1686,9 @@ def analyze(res: dict, cfg: dict, lim: dict) -> dict:
                  "params_active_b": round(w["params"] / 1e9, 3) if w["params"] else None,
                  "peaks": {"vram_gbps": bw, "ram_gbps": ram_bw, "tflops": peak_tf, "tflops_kind": lim.get("gpu_tflops_kind"),
                            "sm_clock_mhz": lim.get("sm_clock_max"), "gpus": gpus_used(cfg, lim), "parallel_gpus": par}}
+    if distributed:
+        out["distributed_note"] = ("Part of the model runs on other machines (RPC workers or pipeline stages): the hardware limits of this "
+                                   "machine don't apply, and network transfers are part of every token's time")
 
     if tg:
         t_gpu = gpu_gb / bw * 1000 if bw else (0.0 if not gpu_gb else None)

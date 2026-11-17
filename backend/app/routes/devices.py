@@ -64,6 +64,21 @@ def remote_jobs_cancel(job_id: int):
     return {"ok": True}
 
 
+@router.get("/api/rpc-worker")
+def rpc_worker_get():
+    from .. import rpcworker
+    return rpcworker.status()
+
+
+@router.post("/api/rpc-worker")
+def rpc_worker_set(body: dict):
+    from .. import rpcworker
+    try:
+        return rpcworker.configure(body)
+    except (ValueError, TypeError, OSError) as e:
+        raise HTTPException(400, str(e))
+
+
 @router.post("/api/power/test")
 async def power_test(body: dict):
     """Read the wall-power meter once (to check the address before running experiments)."""

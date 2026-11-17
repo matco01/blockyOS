@@ -25,7 +25,7 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y -qq build-essential cmake git 
 echo "==> llama.cpp"
 if [[ ! -x "$PREFIX/llama.cpp/bin/llama-server" ]]; then
   [[ -d "$LLAMA_SRC" ]] || sudo -u blocky git clone --depth 1 https://github.com/ggml-org/llama.cpp "$LLAMA_SRC"
-  CMAKE_ARGS=(-DCMAKE_BUILD_TYPE=Release -DLLAMA_CURL=ON)
+  CMAKE_ARGS=(-DCMAKE_BUILD_TYPE=Release -DLLAMA_CURL=ON -DGGML_RPC=ON)
   if command -v nvcc >/dev/null 2>&1 || [[ -x /usr/local/cuda/bin/nvcc ]]; then
     export PATH=/usr/local/cuda/bin:$PATH
     # 61 = GTX 10xx (Pascal), 75 = RTX 20xx, 86 = RTX 30xx, 89 = RTX 40xx
@@ -35,7 +35,7 @@ if [[ ! -x "$PREFIX/llama.cpp/bin/llama-server" ]]; then
     echo "    no CUDA toolkit found, building CPU-only"
   fi
   sudo -u blocky env PATH="$PATH" cmake -S "$LLAMA_SRC" -B "$LLAMA_SRC/build" "${CMAKE_ARGS[@]}" >/dev/null
-  sudo -u blocky env PATH="$PATH" cmake --build "$LLAMA_SRC/build" --config Release -j"$(nproc)" --target llama-server llama-bench llama-perplexity llama-quantize llama-batched-bench llama-imatrix
+  sudo -u blocky env PATH="$PATH" cmake --build "$LLAMA_SRC/build" --config Release -j"$(nproc)" --target llama-server llama-bench llama-perplexity llama-quantize llama-batched-bench llama-imatrix rpc-server
   # Copy the server, benchmark tool and their shared libraries.
   mkdir -p "$PREFIX/llama.cpp/bin"
   # --remove-destination replaces files instead of overwriting them in place: a running

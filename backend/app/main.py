@@ -19,7 +19,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import agent, arena, benchmarks, config, db, engines, evals, jobstore, lab, mcp_server, profile, quantlab, remote, research_jobs, scans
-from . import tools, torchlab, weights
+from . import rpcworker, tools, torchlab, weights
 from .routes import (agent as agent_routes, arena as arena_routes, bench, chat, common, devices, engines as engine_routes, evals as eval_routes,
                      experiments, models, openai, quantlab as quantlab_routes, research, settings, system, torch)
 
@@ -44,6 +44,7 @@ async def lifespan(app: FastAPI):
     remote.init()
     agent.init()
     research_jobs.init()
+    rpcworker.init()
     for name, jobs in (("downloads", lab.downloads), ("benchmark-downloads", benchmarks.downloads),
                        ("weights", weights.jobs), ("quantize", quantlab.jobs)):
         jobstore.persist(name, jobs)
@@ -67,6 +68,7 @@ async def lifespan(app: FastAPI):
     for task in pending:
         task.cancel()
     await asyncio.gather(worker, research_worker, return_exceptions=True)
+    rpcworker.stop()
     await app.state.llm.aclose()
 
 

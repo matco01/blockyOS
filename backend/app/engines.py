@@ -54,8 +54,9 @@ def init() -> None:
 
 VLLM_VENV = config.DATA_DIR.parent / "vllm-venv"
 SGLANG_VENV = config.DATA_DIR.parent / "sglang-venv"
+TRTLLM_VENV = config.DATA_DIR.parent / "trtllm-venv"
 # Frameworks that serve Hugging Face checkpoints through an OpenAI-compatible API (measured with the same client code).
-CHECKPOINT_FRAMEWORKS = {"vllm": "vLLM", "sglang": "SGLang"}
+CHECKPOINT_FRAMEWORKS = {"vllm": "vLLM", "sglang": "SGLang", "trtllm": "TensorRT-LLM"}
 
 
 def vllm_installed() -> bool:
@@ -64,6 +65,10 @@ def vllm_installed() -> bool:
 
 def sglang_installed() -> bool:
     return (SGLANG_VENV / "bin" / "python").is_file() and any(SGLANG_VENV.glob("lib/python3*/site-packages/sglang/__init__.py"))
+
+
+def trtllm_installed() -> bool:
+    return (TRTLLM_VENV / "bin" / "trtllm-serve").is_file()
 
 
 def kind(engine: str | None) -> str:
@@ -103,8 +108,23 @@ def sglang_version() -> str | None:
     return _sglang_version or None
 
 
+_trtllm_version: str | None = None
+
+
+def trtllm_version() -> str | None:
+    global _trtllm_version
+    if _trtllm_version is None and trtllm_installed():
+        try:
+            out = subprocess.run([str(TRTLLM_VENV / "bin" / "python"), "-c", "import tensorrt_llm; print(tensorrt_llm.__version__)"],
+                                 capture_output=True, text=True, timeout=180).stdout.strip()
+            _trtllm_version = out.splitlines()[-1] if out else ""  # the import prints a banner first
+        except (OSError, subprocess.SubprocessError):
+            _trtllm_version = ""
+    return _trtllm_version or None
+
+
 def framework_version(engine: str | None) -> str | None:
-    return {"vllm": vllm_version, "sglang": sglang_version}.get(kind(engine), lambda: None)()
+    return {"vllm": vllm_version, "sglang": sglang_version, "trtllm": trtllm_version}.get(kind(engine), lambda: None)()
 
 
 def bin_dir(engine: str | None) -> Path:
@@ -119,6 +139,10 @@ def bin_dir(engine: str | None) -> Path:
         if not sglang_installed():
             raise ValueError("SGLang isn't installed (scripts/setup-sglang.sh)")
         return SGLANG_VENV / "bin"
+    if engine == "trtllm":
+        if not trtllm_installed():
+            raise ValueError("TensorRT-LLM isn't installed (scripts/setup-trtllm.sh)")
+        return TRTLLM_VENV / "bin"
     if not re.fullmatch(r"[a-z0-9-]{1,40}", engine):
         raise ValueError("Unknown engine")
     d = ROOT / engine / "bin"
@@ -145,6 +169,9 @@ def list_engines() -> list[dict]:
     if sglang_installed():
         out.append({"id": "sglang", "name": "SGLang", "kind": "sglang", "repo": "https://github.com/sgl-project/sglang", "ref": sglang_version() or "installed",
                     "commit_sha": None, "status": "ready", "built_at": None})
+    if trtllm_installed():
+        out.append({"id": "trtllm", "name": "TensorRT-LLM", "kind": "trtllm", "repo": "https://github.com/NVIDIA/TensorRT-LLM",
+                    "ref": trtllm_version() or "installed", "commit_sha": None, "status": "ready", "built_at": None})
     return out
 
 
@@ -215,7 +242,7 @@ def add(body: dict) -> str:
     base, n = engine_id, 2
     while engine_id in existing or engine_id == "stock" or engine_id in CHECKPOINT_FRAMEWORKS:
         engine_id, n = f"{base}-{n}", n + 1
-    args = ["-DCMAKE_BUILD_TYPE=Release", "-DLLAMA_CURL=OFF"] + backend_args(str(body.get("backend") or "auto"))
+    args = ["-DCMAKE_BUILD_TYPE=Release", "-DLLAMA_CURL=OFF", "-DGGML_RPC=ON"] + backend_args(str(body.get("backend") or "auto"))
     with db.connect() as c:
         c.execute("INSERT INTO engines (id, created_at, name, repo, ref, status, cmake_args) VALUES (?, ?, ?, ?, ?, 'queued', ?)",
                   (engine_id, time.time(), name, repo, ref, json.dumps(args)))
@@ -288,11 +315,14 @@ async def _build(engine_id: str) -> None:
             if await _sh(engine_id, ["cmake", "--build", str(src / "build"), "--config", "Release", "-j", str(os.cpu_count() or 4),
                                      "--target", *TARGETS], log, timeout=7200):
                 raise RuntimeError("Build failed (see log)")
+            # The RPC worker (multi-machine runs) is optional: very old refs don't have it.
+            await _sh(engine_id, ["cmake", "--build", str(src / "build"), "--config", "Release", "-j", str(os.cpu_count() or 4),
+                                  "--target", "rpc-server"], log, timeout=3600)
             out = ROOT / engine_id / "bin"
             shutil.rmtree(out, ignore_errors=True)
             out.mkdir(parents=True)
             for f in (src / "build" / "bin").iterdir():
-                if f.is_file() and (f.name in TARGETS or ".so" in f.name):
+                if f.is_file() and (f.name in TARGETS or f.name == "rpc-server" or ".so" in f.name):
                     shutil.copy2(f, out / f.name, follow_symlinks=True)
             missing = [t for t in TARGETS if not (out / t).is_file()]
             if missing:
