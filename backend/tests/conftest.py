@@ -54,9 +54,10 @@ def make_gguf():
 @pytest.fixture
 def fresh_db():
     """An empty database with every table Blocky creates."""
-    from app import config, db, profile
+    from app import arena, config, db, engines, evals, jobstore, profile, quantlab, research_jobs, scans, tools, torchlab, weights
     if config.DB_PATH.exists():
         config.DB_PATH.unlink()
     db.init()
-    profile.init()
+    for module in (jobstore, arena, evals, quantlab, tools, profile, weights, engines, scans, torchlab, research_jobs):
+        module.init()
     return db

@@ -1,15 +1,81 @@
 """Experiments: runs, sweeps, validation, instrument checks, export/import."""
 import json
 import re
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 from .. import profile
 from .common import _bad
 
 router = APIRouter()
+
+
+# Request bodies. Extra fields are accepted and passed through (older clients and remote devices keep working), and only
+# the fields a client actually sent reach the experiment code, which still applies its own validation and defaults.
+class _Body(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    def sent(self) -> dict:
+        return self.model_dump(exclude_unset=True)
+
+
+class RunIn(_Body):
+    """One profiled run: the full setup (missing settings come from the experiment's defaults) and the run it branches from."""
+    config: dict[str, Any] = Field(default_factory=dict, description="Setup: model, engine, kv, ctx, ngl, fa, threads, device, gpus, split_mode, rpc, pp, ...")
+    parent_id: int | None = Field(None, description="Run this one branches from; omit for the baseline")
+    label: str | None = Field(None, max_length=60)
+
+
+class SweepIn(_Body):
+    grid: dict[str, list[Any]] = Field(description="Setting -> values; every combination is queued (max 32 runs)")
+    parent_id: int | None = None
+    repeats: int = Field(1, ge=1, le=5)
+
+
+class LmEvalIn(BaseModel):
+    tasks: str
+    limit: int = 100
+
+
+class RulerIn(BaseModel):
+    samples: int = 8
+
+
+class ProtocolIn(_Body):
+    """Tests and measurement settings every run of the experiment gets (replaces the previous choice)."""
+    lm_eval: LmEvalIn | None = None
+    kernels: bool = False
+    mmlu_per_category: int | None = Field(None, description="40, 100 or 250 questions per subject (560, 1400, 3500)")
+    ruler: RulerIn | None = None
+    ppl_chunks: int | None = Field(None, description="Perplexity/KLD sample: 32, 64, 128 or 256 chunks of 512 tokens")
+    fidelity_text: str | None = Field(None, description="Absolute path of a .txt to score perplexity/KLD on (default WikiText-2 test)")
+    equivalence_margin_pts: float | None = Field(None, description="Accuracy margin for equivalence (TOST) verdicts")
+    lock_clocks_mhz: int | None = Field(None, description="Lock the GPU clock during runs (needs the install.sh helper)")
+    cooldown_s: int | None = Field(None, description="Pause before each run")
+
+
+class ValidateIn(_Body):
+    """Counterbalanced repeats of two setups for one preselected metric."""
+    reference_id: int
+    candidate_id: int
+    pairs: int = Field(6, ge=3, le=12)
+    metric: str = "tg"
+    min_effect_pct: float = Field(3, ge=0, le=100)
+
+
+class PreregistrationIn(_Body):
+    hypothesis: str = Field(min_length=10, max_length=4000)
+    primary_metric: str
+    claim: str = "difference"
+    direction: str = "either"
+    alpha: float = 0.05
+    min_effect: float | None = None
+    equivalence_margin_pts: float | None = None
+    analysis: str = ""
+    secondary_metrics: list[str] = Field(default_factory=list)
 
 
 @router.get("/api/experiments")
@@ -70,29 +136,29 @@ def experiments_delete(exp_id: int):
 
 
 @router.post("/api/experiments/{exp_id}/runs")
-def experiments_run(exp_id: int, body: dict):
+def experiments_run(exp_id: int, body: RunIn):
     """Queues a profile; the experiments worker runs queued profiles in order."""
     try:
-        run_id = profile.create_run(exp_id, body)
+        run_id = profile.create_run(exp_id, body.sent())
     except (ValueError, TypeError) as e:
         _bad(e)
     return {"id": run_id}
 
 
 @router.post("/api/experiments/{exp_id}/sweep")
-def experiments_sweep(exp_id: int, body: dict):
+def experiments_sweep(exp_id: int, body: SweepIn):
     try:
-        ids = profile.create_sweep(exp_id, body)
+        ids = profile.create_sweep(exp_id, body.sent())
     except (ValueError, TypeError) as e:
         _bad(e)
     return {"ids": ids}
 
 
 @router.post("/api/experiments/{exp_id}/validate")
-def experiments_validate(exp_id: int, body: dict):
+def experiments_validate(exp_id: int, body: ValidateIn):
     from .. import validation
     try:
-        return validation.create(exp_id, body)
+        return validation.create(exp_id, body.sent())
     except (ValueError, TypeError) as e:
         _bad(e)
 
@@ -124,10 +190,28 @@ def experiments_validation_cancel(exp_id: int, vid: int):
         _bad(e)
 
 
-@router.put("/api/experiments/{exp_id}/protocol")
-def experiments_protocol(exp_id: int, body: dict):
+@router.get("/api/experiments/{exp_id}/bundle.zip")
+def experiments_bundle(exp_id: int):
+    from .. import bundle
     try:
-        return profile.set_protocol(exp_id, body)
+        name, data = bundle.build(exp_id)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    return Response(data, media_type="application/zip", headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+@router.post("/api/experiments/{exp_id}/preregistrations")
+def experiments_preregister(exp_id: int, body: PreregistrationIn):
+    try:
+        return profile.preregister(exp_id, body.sent())
+    except (ValueError, TypeError) as e:
+        _bad(e)
+
+
+@router.put("/api/experiments/{exp_id}/protocol")
+def experiments_protocol(exp_id: int, body: ProtocolIn):
+    try:
+        return profile.set_protocol(exp_id, body.model_dump(exclude_unset=True, mode="json"))
     except (ValueError, TypeError) as e:
         _bad(e)
 

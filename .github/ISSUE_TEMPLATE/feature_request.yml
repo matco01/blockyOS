@@ -1,0 +1,19 @@
+name: Feature request
+description: A new capability or an improvement
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What research question or task would this help with?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+  - type: textarea
+    id: measurement
+    attributes:
+      label: Does it change how anything is measured?
+      description: If yes, it's a protocol change (see CONTRIBUTING.md).

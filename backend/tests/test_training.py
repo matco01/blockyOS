@@ -1,6 +1,5 @@
 """Full training: request validation, the launch command (one GPU, FSDP via torchrun, several machines) and the MFU estimate."""
 import json
-from pathlib import Path
 
 import pytest
 

@@ -1,0 +1,24 @@
+cff-version: 1.2.0
+message: "If you use blockyOS in your research, please cite it as below, including the version and the measurement protocol your results were produced with (recorded in every run's provenance)."
+title: "blockyOS: a local lab for measuring how language models run on the hardware they're on"
+type: software
+authors:
+  - alias: matco01
+version: 0.2.0
+date-released: 2026-11-17
+license: Apache-2.0
+repository-code: "https://github.com/matco01/blockyOS"
+abstract: >-
+  blockyOS is a self-hosted research environment for local language-model inference. It profiles complete
+  configurations (weights, quantization, engine build, framework, context, device limits) with a fixed, versioned
+  measurement protocol: paired accuracy tests on MMLU-Pro, KL divergence against a baseline's logits, repeated speed
+  measurements with robust spread, energy per token, and a roofline-style hardware analysis. Every run records its
+  provenance, comparisons refuse mismatched conditions, and instrument checks test that the measurement pipeline behaves
+  correctly on the machine at hand.
+keywords:
+  - large language models
+  - quantization
+  - inference
+  - benchmarking
+  - reproducibility
+  - llama.cpp

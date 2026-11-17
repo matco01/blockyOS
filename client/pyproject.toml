@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "blockyos-client"
+version = "0.2.0"
+description = "Python client for blockyOS: queue experiments, read results as tables, report metrics from research programs"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+authors = [{ name = "The blockyOS authors" }]
+keywords = ["llm", "benchmarking", "quantization", "llama.cpp", "reproducibility"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Intended Audience :: Science/Research",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = []  # standard library only
+
+[project.optional-dependencies]
+tables = ["pandas"]
+mlflow = ["mlflow"]
+wandb = ["wandb"]
+
+[project.urls]
+Homepage = "https://github.com/matco01/blockyOS"
+Documentation = "https://github.com/matco01/blockyOS/blob/main/docs/PROTOCOL.md"
+
+[tool.setuptools]
+py-modules = ["blocky", "blocky_research"]

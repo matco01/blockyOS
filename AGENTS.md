@@ -15,6 +15,9 @@ editing code. This file is for changing Blocky itself.
 | `backend/app/jobstore.py` | Saves in-memory background jobs (downloads, weight builds, quantizations, remote-device jobs) so they survive restarts |
 | `backend/app/rpcworker.py` | This device as a llama.cpp RPC worker (multi-machine runs); off and localhost-only by default |
 | `backend/torch_tools/train.py` | Full training (all weights, or pretraining) with a held-out evaluation; FSDP under torchrun |
+| `backend/app/bundle.py`, `reproduce_template.py` | Reproducibility bundle per experiment, and the script inside it that re-runs and compares |
+| `backend/tests/fake_llama.py`, `test_pipeline_e2e.py` | A fake llama.cpp and complete experiments through the real pipeline |
+| `docs/PROTOCOL.md` | The measurement specification: update it with every measurement change |
 | `backend/app/instrument.py` | Instrument checks: properties a correct measurement pipeline must show (baseline vs itself, quant order, bandwidth, cited values) |
 | `backend/app/profile.py` | Experiments: run tree, config validation, the measurement protocol, statistics, analysis, import/export |
 | `backend/app/mcp_server.py` | MCP tools for AI assistants (thin wrappers over the modules below) |
@@ -32,6 +35,8 @@ The backend needs Python 3.12 or newer.
 ```bash
 # backend (from backend/)
 python -m pytest -q
+# lint (from the repository root)
+ruff check backend client
 # frontend (from frontend/)
 npm test && npm run build
 ```
@@ -41,7 +46,8 @@ CI runs the same on every push (`.github/workflows/ci.yml`).
 ## Rules
 
 - **Measurement changes are protocol changes.** If you change how a metric is measured, bump `PROTOCOL` in
-  `profile.py` so results from different versions are never compared silently.
+  `profile.py` so results from different versions are never compared silently, and update docs/PROTOCOL.md and
+  CHANGELOG.md. The end-to-end tests (fake llama.cpp) must keep passing; extend the fake when a tool's output changes.
 - **Report noise, not just numbers.** New metrics need a spread (sd / CI) and, where it applies, a significance test.
   The UI must not state conclusions the data doesn't support.
 - **Generic product text.** The UI and docs are for every user and every device: never hard-code facts about one

@@ -1,9 +1,8 @@
 import copy
-import json
 
 import pytest
 
-from app import db, profile, validation
+from app import profile, validation
 
 
 @pytest.fixture

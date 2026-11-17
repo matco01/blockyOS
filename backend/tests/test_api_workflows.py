@@ -163,3 +163,19 @@ def test_research_result_continues_directly_in_experiments(api, tmp_path, monkey
 def test_python_client_download(api):
     r = api.get("/api/client.py")
     assert r.status_code == 200 and b"def " in r.content
+
+
+def test_openapi_documents_experiment_requests(api):
+    schemas = api.get("/openapi.json").json()["components"]["schemas"]
+    assert {"RunIn", "SweepIn", "ProtocolIn", "ValidateIn", "PreregistrationIn"} <= set(schemas)
+    assert "ppl_chunks" in schemas["ProtocolIn"]["properties"] and "parent_id" in schemas["RunIn"]["properties"]
+
+
+def test_typed_bodies_pass_through_unknown_fields_and_keep_defaults(api, make_gguf):
+    make_gguf("typed.gguf")
+    eid = api.post("/api/experiments", json={"name": "typed", "model": "typed.gguf"}).json()["id"]
+    # An older client sending an extra field still works; omitted fields keep the experiment code's own defaults.
+    r = api.post(f"/api/experiments/{eid}/runs", json={"config": {}, "client_note": "from an older client"})
+    assert r.status_code == 200
+    assert api.put(f"/api/experiments/{eid}/protocol", json={"ppl_chunks": 64}).json() == {"ppl_chunks": 64}
+    assert api.post(f"/api/experiments/{eid}/sweep", json={"grid": {"ctx": [4096]}, "repeats": 9}).status_code == 422

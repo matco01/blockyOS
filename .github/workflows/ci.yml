@@ -6,15 +6,37 @@ on:
 
 jobs:
   backend:
-    name: Backend tests
+    name: Backend tests (Python ${{ matrix.python }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -r backend/requirements-dev.txt
+      # Includes end-to-end experiments through the whole measurement pipeline with a fake llama.cpp (tests/fake_llama.py).
+      - run: python -m pytest -q backend/tests --cov --cov-report=term --cov-report=xml
+      - uses: actions/upload-artifact@v4
+        if: matrix.python == '3.12'
+        with:
+          name: coverage
+          path: coverage.xml
+
+  lint:
+    name: Lint
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -r backend/requirements-dev.txt
-      - run: python -m pytest -q backend/tests
+      - run: pip install ruff==0.17.5
+      - run: ruff check backend client
+      - run: bash -n scripts/*.sh
 
   frontend:
     name: Frontend tests and build

@@ -216,6 +216,69 @@ def list_experiments() -> list[dict]:
     return exps
 
 
+PREREG_SCHEMA = """
+CREATE TABLE IF NOT EXISTS preregistrations (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    experiment_id INTEGER NOT NULL REFERENCES experiments(id) ON DELETE CASCADE,
+    created_at    REAL NOT NULL,
+    plan          TEXT NOT NULL,
+    sha256        TEXT NOT NULL
+);
+"""
+PREREG_METRICS = ("mmlu", "kld", "same_top", "ppl", "tg", "pp", "srv_tg", "jpt", "needle")
+
+
+def preregister(exp_id: int, body: dict) -> dict:
+    """Record a hypothesis and analysis plan before the data exists. Plans are append-only (no edits, no deletes): a
+    changed plan is a new entry with its own time, and runs finished after a plan count as confirmatory for it."""
+    import hashlib
+    if not get_experiment(exp_id):
+        raise ValueError("Experiment not found")
+    hyp = str(body.get("hypothesis") or "").strip()
+    if not 10 <= len(hyp) <= 4000:
+        raise ValueError("Write the hypothesis (10-4000 characters)")
+    metric = body.get("primary_metric")
+    if metric not in PREREG_METRICS:
+        raise ValueError(f"Primary metric: one of {', '.join(PREREG_METRICS)}")
+    claim = body.get("claim") or "difference"
+    if claim not in ("difference", "equivalence", "non_inferiority"):
+        raise ValueError("Claim: difference, equivalence or non_inferiority")
+    plan = {"hypothesis": hyp, "primary_metric": metric, "claim": claim,
+            "direction": body.get("direction") if body.get("direction") in ("higher", "lower", "either") else "either",
+            "alpha": float(body.get("alpha") or 0.05), "analysis": str(body.get("analysis") or "").strip()[:4000],
+            "secondary_metrics": [m for m in (body.get("secondary_metrics") or []) if m in PREREG_METRICS][:8]}
+    if not 0.001 <= plan["alpha"] <= 0.2:
+        raise ValueError("Alpha: 0.001-0.2")
+    for key, lo, hi in (("min_effect", 0.0, 1e6), ("equivalence_margin_pts", 0.1, 20)):
+        if body.get(key) not in (None, ""):
+            v = float(body[key])
+            if not lo <= v <= hi:
+                raise ValueError(f"{key}: {lo}-{hi}")
+            plan[key] = v
+    if claim in ("equivalence", "non_inferiority") and metric == "mmlu" and not plan.get("equivalence_margin_pts"):
+        raise ValueError("An equivalence or non-inferiority claim on accuracy needs its margin (accuracy points) now")
+    plan["protocol"] = PROTOCOL
+    text = json.dumps(plan, sort_keys=True)
+    with db.connect() as c:
+        c.executescript(PREREG_SCHEMA)
+        pid = c.execute("INSERT INTO preregistrations (experiment_id, created_at, plan, sha256) VALUES (?, ?, ?, ?)",
+                        (exp_id, time.time(), text, hashlib.sha256(text.encode()).hexdigest())).lastrowid
+    return {"id": pid, "sha256": hashlib.sha256(text.encode()).hexdigest()}
+
+
+def preregistrations(exp_id: int, runs: list[dict]) -> list[dict]:
+    with db.connect() as c:
+        c.executescript(PREREG_SCHEMA)
+        rows = [dict(r) for r in c.execute("SELECT * FROM preregistrations WHERE experiment_id = ? ORDER BY id", (exp_id,))]
+    out = []
+    for r in rows:
+        after = [x["id"] for x in runs if x["status"] == "done" and (x.get("created_at") or 0) > r["created_at"]]
+        out.append({"id": r["id"], "created_at": r["created_at"], "sha256": r["sha256"], "plan": json.loads(r["plan"]),
+                    "confirmatory_runs": after,
+                    "note": "Runs queued after this plan are confirmatory for it; earlier runs are exploratory."})
+    return out
+
+
 def get_experiment(exp_id: int) -> dict | None:
     with db.connect() as c:
         e = c.execute("SELECT * FROM experiments WHERE id = ?", (exp_id,)).fetchone()
@@ -223,7 +286,8 @@ def get_experiment(exp_id: int) -> dict | None:
             return None
         runs = [_run(r) for r in c.execute("SELECT * FROM exp_runs WHERE experiment_id = ? ORDER BY id", (exp_id,))]
     from . import validation
-    return {**enrich({**_exp(e), "runs_list": runs, "limits": limits()}), "validations": validation.list_batches(exp_id, runs)}
+    return {**enrich({**_exp(e), "runs_list": runs, "limits": limits(), "preregistrations": preregistrations(exp_id, runs)}),
+            "validations": validation.list_batches(exp_id, runs)}
 
 
 def create_experiment(name: str, model: str) -> int:
@@ -248,6 +312,8 @@ def delete_experiment(exp_id: int) -> None:
     for rid in active:
         cancel(rid)
     with db.connect() as c:
+        c.executescript(PREREG_SCHEMA)
+        c.execute("DELETE FROM preregistrations WHERE experiment_id = ?", (exp_id,))  # deleting the experiment is the user's choice
         c.execute("DELETE FROM exp_runs WHERE experiment_id = ?", (exp_id,))
         c.execute("DELETE FROM experiments WHERE id = ?", (exp_id,))
     shutil.rmtree(DIR / str(exp_id), ignore_errors=True)
@@ -899,6 +965,17 @@ def ppl_chunks(exp: dict) -> int:
     return int((exp.get("protocol") or {}).get("ppl_chunks") or PPL_CHUNKS)
 
 
+async def fidelity_text(exp: dict) -> Path:
+    """The text perplexity and KL divergence are scored on: WikiText-2 (test) unless the experiment chose its own file."""
+    custom = (exp.get("protocol") or {}).get("fidelity_text")
+    if custom:
+        p = Path(custom)
+        if not p.is_file():
+            raise RuntimeError(f"The experiment's perplexity/KLD text {custom} is missing")
+        return p
+    return await quantlab.ensure_text()
+
+
 def set_protocol(exp_id: int, body: dict) -> dict:
     """Extra tests every run of this experiment gets. Today: lm-evaluation-harness tasks (generative, via chat)."""
     lm = body.get("lm_eval") or {}
@@ -915,6 +992,31 @@ def set_protocol(exp_id: int, body: dict) -> dict:
         proto["mmlu_per_category"] = n
     if body.get("ruler"):
         proto["ruler"] = {"samples": max(2, min(50, int((body["ruler"] or {}).get("samples") or 8)))}
+    text = str(body.get("fidelity_text") or "").strip()
+    if text:
+        p = Path(text)
+        if not p.is_absolute() or p.suffix != ".txt" or not p.is_file():
+            raise ValueError("Perplexity/KLD text: an absolute path to an existing .txt file on this device")
+        if p.stat().st_size < 50_000:
+            raise ValueError("Perplexity/KLD text: use at least 50 KB of text (32 chunks of 512 tokens need roughly 70 KB)")
+        proto["fidelity_text"] = str(p)
+    margin = body.get("equivalence_margin_pts")
+    if margin not in (None, "", 0):
+        margin = float(margin)
+        if not 0.1 <= margin <= 20:
+            raise ValueError("Equivalence margin: 0.1-20 accuracy points")
+        proto["equivalence_margin_pts"] = margin
+    clock = body.get("lock_clocks_mhz")
+    if clock not in (None, "", 0):
+        clock = int(clock)
+        if not 300 <= clock <= 4000:
+            raise ValueError("GPU clock lock: 300-4000 MHz")
+        proto["lock_clocks_mhz"] = clock
+    cool = int(body.get("cooldown_s") or 0)
+    if cool:
+        if not 5 <= cool <= 600:
+            raise ValueError("Cool-down: 5-600 seconds")
+        proto["cooldown_s"] = cool
     if int(body.get("ppl_chunks") or PPL_CHUNKS) != PPL_CHUNKS:
         n = int(body["ppl_chunks"])
         if n not in PPL_CHUNK_OPTIONS:
@@ -1144,6 +1246,24 @@ def paired_diff_ci(a: str, b: str, z: float = 1.96) -> dict | None:
             "method": "Newcombe hybrid score (paired)"}
 
 
+def equivalence(a: str, b: str, margin_pts: float | None = None) -> dict | None:
+    """Two one-sided tests (TOST) for "B's accuracy is within ±margin of A's", at α = 0.05 each side.
+
+    Equivalent to checking whether the 90% paired interval (Newcombe) lies inside (-margin, +margin). Also reports the
+    smallest margin the data would support, which is informative without a preselected margin; a claim of equivalence
+    should use a margin chosen before seeing the data (a preregistration, or the experiment's test settings).
+    """
+    ci = paired_diff_ci(a, b, z=1.6448536)
+    if not ci:
+        return None
+    lo, hi = ci["ci95"]  # with z = 1.645 this is the 90% interval
+    out = {"ci90_pts": [round(lo * 100, 3), round(hi * 100, 3)], "min_margin_pts": round(max(abs(lo), abs(hi)) * 100, 3),
+           "method": "TOST (two one-sided tests, α = 0.05) via the 90% Newcombe paired interval"}
+    if margin_pts:
+        out.update(margin_pts=margin_pts, equivalent=(-margin_pts < lo * 100 and hi * 100 < margin_pts))
+    return out
+
+
 # ---------- Provenance: everything needed to reproduce (or question) a run ----------
 
 PROTOCOL = "blocky-profile/3 (MMLU-Pro option logprobs · llama-bench p512 n128 d0,4096 r5 · PPL/KLD WikiText-2 c512 x32 · serving/energy: actual usage, full request interval)"
@@ -1345,7 +1465,7 @@ class _SkipRest(Exception):
     """Jump to the final analysis step (used when an engine can't run the remaining phases)."""
 
 
-def _check_kld_reference(path: Path, baseline: dict | None, chunks: int = PPL_CHUNKS) -> None:
+def _check_kld_reference(path: Path, baseline: dict | None, chunks: int = PPL_CHUNKS, text_sha256: str | None = None) -> None:
     try:
         ref = json.loads(path.with_suffix(".json").read_text())
     except (OSError, ValueError):
@@ -1355,6 +1475,9 @@ def _check_kld_reference(path: Path, baseline: dict | None, chunks: int = PPL_CH
     if int(ref.get("chunks") or PPL_CHUNKS) != chunks:
         raise RuntimeError(f"The baseline's logits cover {ref.get('chunks') or PPL_CHUNKS} perplexity chunks but this experiment now uses {chunks}. "
                            "Create a new experiment (or set the sample size back) so every run is scored on the same text")
+    if text_sha256 and ref.get("text_sha256") and ref["text_sha256"] != text_sha256:
+        raise RuntimeError("The baseline's logits were computed on a different perplexity/KLD text than this run uses. "
+                           "Create a new experiment so every run is scored on the same text")
 
 
 async def _stop_server(proc: asyncio.subprocess.Process | None) -> None:
@@ -1380,6 +1503,35 @@ async def _stop_server(proc: asyncio.subprocess.Process | None) -> None:
             os.killpg(pgid, signal.SIGKILL)  # stragglers (e.g. vLLM's engine core) that outlived the parent
         except ProcessLookupError:
             pass
+
+
+GPU_CLOCKS = "/usr/local/sbin/blocky-gpu-clocks"  # root-owned helper allowed by sudoers (install.sh): lock <MHz> | reset
+
+
+async def noise_controls_on(exp: dict, cfg: dict) -> dict:
+    """Optional, per experiment: wait for the GPU to cool down, then lock its clock so boost behavior doesn't add noise.
+
+    Both are recorded in the run's provenance; a run whose clock lock failed says so (and doesn't compare with locked runs).
+    """
+    proto = exp.get("protocol") or {}
+    out: dict = {"cooldown_s": proto.get("cooldown_s"), "clock_lock_requested_mhz": proto.get("lock_clocks_mhz"), "clock_lock_mhz": None}
+    if proto.get("cooldown_s"):
+        await asyncio.sleep(proto["cooldown_s"])
+    code, temp = await lab._run("nvidia-smi", "--query-gpu=temperature.gpu", "--format=csv,noheader,nounits", timeout=10)
+    out["start_temp_c"] = float(temp.split()[0]) if code == 0 and temp.strip()[:1].isdigit() else None
+    mhz = proto.get("lock_clocks_mhz")
+    if mhz and cfg.get("device") != "cpu":
+        code, msg = await lab._run("sudo", "-n", GPU_CLOCKS, "lock", str(mhz), timeout=20)
+        if code == 0:
+            out["clock_lock_mhz"] = mhz
+        else:
+            out["clock_lock_error"] = (msg.strip() or f"exit code {code}")[-200:] + " (re-run scripts/install.sh to install the clock helper)"
+    return out
+
+
+async def noise_controls_off(nc: dict | None) -> None:
+    if nc and nc.get("clock_lock_mhz"):
+        await lab._run("sudo", "-n", GPU_CLOCKS, "reset", timeout=20)
 
 
 async def run(run_id: int, llm: httpx.AsyncClient) -> None:
@@ -1428,11 +1580,16 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
                                                 "lm_eval": (exp.get("protocol") or {}).get("lm_eval"),
                                                 "mmlu_questions": 14 * ((exp.get("protocol") or {}).get("mmlu_per_category") or MMLU_PER_CATEGORY),
                                                 "ppl_chunks": ppl_chunks(exp),
+                                                "fidelity_text": (exp.get("protocol") or {}).get("fidelity_text") or "WikiText-2 test",
                                                 "ruler": (exp.get("protocol") or {}).get("ruler")}
+            ftext = await fidelity_text(exp)
+            res["provenance"]["data"]["fidelity_text"] = {"name": (exp.get("protocol") or {}).get("fidelity_text") or "WikiText-2 test",
+                                                          "sha256": file_sha256(ftext)}
             cmds: dict[str, str] = {}
             res["commands"] = cmds
             await lab.llm_service("stop")
             await asyncio.sleep(1)
+            res["provenance"]["noise_controls"] = await noise_controls_on(exp, cfg)
             sampler.start()
 
             # 1) Load: start a server with exactly this configuration, time it, read the memory layout.
@@ -1491,7 +1648,7 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
                         raise RuntimeError(f"Doesn't fit a device with {cfg['ram_limit_mb'] / 1024:.0f} GB RAM: the model's CPU-side buffers "
                                            f"plus ~{OS_RESERVE_MB} MB for the system need {need / 1024:.1f} GB")
 
-                # 2) Quality: MMLU-Pro, 5-shot log-likelihood, same 280 questions for every run of the experiment.
+                # 2) Quality: MMLU-Pro, 5-shot option-letter scoring, the same questions (560 by default) for every run.
                 phase("quality")
                 def progress(i, n, k):
                     res["mmlu_progress"] = {"done": i, "total": n, "correct": k}
@@ -1562,7 +1719,7 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
 
             # 4) Fidelity: perplexity, and KL divergence vs the experiment's baseline.
             phase("fidelity")
-            text = await quantlab.ensure_text()
+            text = await fidelity_text(exp)
             pcmd = [str(ebin / "llama-perplexity"), "-m", str(lab.MODELS_DIR / cfg["model"]), "-f", str(text), "-c", "512",
                     "--chunks", str(ppl_chunks(exp)), "-ctk", cfg["kv"], "-ctv", cfg["kv"], "-fa", cfg["fa"]] + _placement_args(cfg, vram_total)
             pcmd = _pin(pcmd, cfg)
@@ -1585,11 +1742,12 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
                 res["ppl_sd"] = quantlab._num(r"Final estimate: PPL = [\d.]+\s*\+/-\s*([\d.]+)", out)
                 if res["ppl"] is None or not base_kld.is_file():
                     raise RuntimeError("The evaluator did not produce baseline perplexity and logits")
-                base_kld.with_suffix(".json").write_text(json.dumps({"run_id": run_id, "protocol": PROTOCOL, "chunks": ppl_chunks(exp)}))
+                base_kld.with_suffix(".json").write_text(json.dumps({"run_id": run_id, "protocol": PROTOCOL, "chunks": ppl_chunks(exp),
+                                                                     "text_sha256": file_sha256(text)}))
                 res["kld"], res["same_top"] = 0.0, 100.0
                 res["kld_reference"] = True
             else:
-                _check_kld_reference(base_kld, base_run, ppl_chunks(exp))
+                _check_kld_reference(base_kld, base_run, ppl_chunks(exp), file_sha256(text))
                 cmds["fidelity"] = _cmdline(pcmd + ["--kl-divergence-base", str(base_kld), "--kl-divergence"])
                 out = await quantlab._proc(pcmd + ["--kl-divergence-base", str(base_kld), "--kl-divergence"], log, run_id)
                 res["ppl"] = quantlab._num(r"Mean PPL\(Q\)\s*:\s*([\d.]+)", out)
@@ -1615,6 +1773,7 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
             status, error = "error", str(e)[:400]
         finally:
             await sampler.stop()
+            await noise_controls_off(res.get("provenance", {}).get("noise_controls"))
             _retain_output(run_id, "log", "\n".join(log))
             await _stop_server(proc)
             if res.get("series") is None and sampler.samples:
@@ -1758,7 +1917,7 @@ def analyze(res: dict, cfg: dict, lim: dict) -> dict:
     return out
 
 
-def compare(base: dict | None, run: dict) -> dict:
+def compare(base: dict | None, run: dict, margin_pts: float | None = None) -> dict:
     """Paired statistics of a run against the experiment's baseline."""
     if not base or base["id"] == run["id"]:
         return {}
@@ -1783,9 +1942,14 @@ def compare(base: dict | None, run: dict) -> dict:
         # Runs from before the setting existed used the default sample.
         if (_get(pa, ("extra_tests", "ppl_chunks")) or PPL_CHUNKS) != (_get(pb, ("extra_tests", "ppl_chunks")) or PPL_CHUNKS):
             out["env_mismatch"].append("perplexity/KLD sample size")
+        if _get(pa, ("data", "fidelity_text", "sha256")) != _get(pb, ("data", "fidelity_text", "sha256")):
+            out["env_mismatch"].append("perplexity/KLD text")
+        if _get(pa, ("noise_controls", "clock_lock_mhz")) != _get(pb, ("noise_controls", "clock_lock_mhz")):
+            out["env_mismatch"].append("GPU clock lock")
     if a.get("answers") and b.get("answers") and not out.get("env_mismatch"):
         out["mmlu_p"] = mcnemar_p(a["answers"], b["answers"])
         out["mmlu_diff"] = paired_diff_ci(a["answers"], b["answers"])
+        out["mmlu_equiv"] = equivalence(a["answers"], b["answers"], margin_pts)
         out["mmlu_flips"] = {"lost": sum(1 for x, y in zip(a["answers"], b["answers"]) if x == "1" and y == "0"),
                              "gained": sum(1 for x, y in zip(a["answers"], b["answers"]) if x == "0" and y == "1")}
     return out
@@ -1796,6 +1960,9 @@ def enrich(exp: dict) -> dict:
     lim = exp["limits"]
     base = next((r for r in exp["runs_list"] if r["status"] == "done"), None)
     by_id = {r["id"]: r for r in exp["runs_list"]}
+    # A preregistered margin wins over one set later in the test settings: it was fixed before the data existed.
+    prereg = next((p["plan"] for p in reversed(exp.get("preregistrations") or []) if p["plan"].get("equivalence_margin_pts")), None)
+    margin = (prereg or {}).get("equivalence_margin_pts") or (exp.get("protocol") or {}).get("equivalence_margin_pts")
     for r in exp["runs_list"]:
         if r["config"].get("engine") != "research" and any(x["config"].get("engine") == "research" for x in exp["runs_list"]):
             from . import research_jobs
@@ -1812,13 +1979,13 @@ def enrich(exp: dict) -> dict:
                 if analysis:
                     r["results"]["hw"] = analysis
             r["results"].pop("bottleneck", None)
-            r["stats"] = compare(base, r)
+            r["stats"] = compare(base, r, margin)
             if base:
                 r["stats"]["baseline_id"] = base["id"]
             parent = by_id.get(r.get("parent_id"))
             if parent and base and parent["id"] != base["id"] and parent["status"] == "done":
-                vp = compare(parent, r)
-                r["stats"]["vs_parent"] = {k: vp[k] for k in ("mmlu_p", "mmlu_diff", "mmlu_flips", "env_mismatch") if k in vp}
+                vp = compare(parent, r, margin)
+                r["stats"]["vs_parent"] = {k: vp[k] for k in ("mmlu_p", "mmlu_diff", "mmlu_equiv", "mmlu_flips", "env_mismatch") if k in vp}
     # Many runs vs one baseline: Holm-adjusted p-values (family-wise error rate) next to the raw ones.
     tested = [r for r in exp["runs_list"] if (r.get("stats") or {}).get("mmlu_p") is not None]
     for r, p in zip(tested, holm([r["stats"]["mmlu_p"] for r in tested])):

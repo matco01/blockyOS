@@ -150,12 +150,17 @@ export type KernelProfile = { total_ms: number; categories: { category: string; 
 export type ExpRun ={ id: number; experiment_id: number; created_at: number; status: string; label: string; config: ExpConfig; results: ExpResults;
   log?: string | null;
   phase: string | null; error: string | null; parent_id?: number | null;
-  stats?: { mmlu_p?: number | null; mmlu_diff?: PairedDiff | null; mmlu_flips?: { lost: number; gained: number }; env_mismatch?: string[]; hw_diff?: string[]; baseline_id?: number;
-    vs_parent?: { mmlu_p?: number | null; mmlu_diff?: PairedDiff | null; mmlu_flips?: { lost: number; gained: number }; env_mismatch?: string[] } } };
+  stats?: { mmlu_p?: number | null; mmlu_diff?: PairedDiff | null; mmlu_equiv?: Equivalence | null; mmlu_flips?: { lost: number; gained: number }; env_mismatch?: string[]; hw_diff?: string[]; baseline_id?: number;
+    vs_parent?: { mmlu_p?: number | null; mmlu_diff?: PairedDiff | null; mmlu_equiv?: Equivalence | null; mmlu_flips?: { lost: number; gained: number }; env_mismatch?: string[] } } };
 export type InstrumentCheck = { id: string; title: string; status: "pass" | "warn" | "fail" | "not_run"; detail: string; todo?: string; hint?: string;
   runs?: number[]; value?: number | null; inversions?: [string, string][];
   matches?: { run: number; metric: string; measured: number; reference: number; tolerance: number; source: string; ok: boolean }[] };
 export type InstrumentReport = { version: string; checks: InstrumentCheck[]; counts?: Record<"pass" | "warn" | "fail" | "not_run", number>; note: string };
+/** Equivalence test (TOST) of the accuracy difference, in percentage points. */
+export type Equivalence = { ci90_pts: [number, number]; min_margin_pts: number; method: string; margin_pts?: number; equivalent?: boolean };
+export type Preregistration = { id: number; created_at: number; sha256: string; confirmatory_runs: number[]; note: string;
+  plan: { hypothesis: string; primary_metric: string; claim: string; direction: string; alpha: number; analysis: string; protocol: string;
+    min_effect?: number; equivalence_margin_pts?: number; secondary_metrics: string[] } };
 /** Accuracy difference (run minus comparison run, as a fraction) with a paired 95% interval. */
 export type PairedDiff = { diff: number; ci95: [number, number]; n: number; method: string };
 export type TorchStatus = { installed: boolean; converter: boolean; torch?: string; cuda?: boolean; transformers?: string; peft?: string;
@@ -179,7 +184,9 @@ export type CanvasState = { pos: Record<string, { x: number; y: number }>; notes
 export type Experiment = {
   validations?: ValidationBatch[];
   id: number; created_at: number; name: string; model: string; seed: number; runs?: number; canvas?: CanvasState | null;
-  protocol?: { lm_eval?: { tasks: string; limit: number }; kernels?: boolean; mmlu_per_category?: number; ruler?: { samples: number }; ppl_chunks?: number } | null;
+  protocol?: { lm_eval?: { tasks: string; limit: number }; kernels?: boolean; mmlu_per_category?: number; ruler?: { samples: number }; ppl_chunks?: number;
+    fidelity_text?: string; equivalence_margin_pts?: number; lock_clocks_mhz?: number; cooldown_s?: number } | null;
+  preregistrations?: Preregistration[];
   runs_list?: ExpRun[]; limits?: { gpu: string | null; gpu_bandwidth_gbps: number | null; gpu_tflops: number | null; gpu_tflops_kind: string | null; sm_clock_max: number | null;
     vram_mb: number; power_limit_w: number | null; ram_bandwidth_gbps: number | null; ram_mb: number; cpu: string; cpu_power_source: string | null };
 };
@@ -412,8 +419,11 @@ export const api = {
     if (!r.ok) throw new Error(d.detail || `Import failed (${r.status})`);
     return d as { experiment_id: number; runs: number; from: { device: string | null; gpu: string } };
   },
-  experimentProtocol: (id: number, lm_eval: { tasks: string; limit: number } | null, kernels = false, mmlu_per_category = 40, ruler: { samples: number } | null = null, ppl_chunks = 32) =>
-    json(`/api/experiments/${id}/protocol`, send("PUT", { lm_eval, kernels, mmlu_per_category, ruler, ppl_chunks })),
+  experimentProtocol: (id: number, lm_eval: { tasks: string; limit: number } | null, kernels = false, mmlu_per_category = 40, ruler: { samples: number } | null = null, ppl_chunks = 32,
+    more: Record<string, unknown> = {}) =>
+    json(`/api/experiments/${id}/protocol`, send("PUT", { lm_eval, kernels, mmlu_per_category, ruler, ppl_chunks, ...more })),
+  experimentPreregister: (id: number, plan: Record<string, unknown>) =>
+    json<{ id: number; sha256: string }>(`/api/experiments/${id}/preregistrations`, send("POST", plan)),
   experimentCanvas: (id: number, canvas: CanvasState) => json(`/api/experiments/${id}/canvas`, send("PUT", canvas)),
   experimentCancelQueue: (id: number) => json(`/api/experiments/${id}/cancel-queue`, send("POST", {})),
   experimentCancel: (runId: number) => json(`/api/experiments/runs/${runId}/cancel`, send("POST", {})),

@@ -12,13 +12,12 @@ Speculative decoding: a tiny "draft" model from the same family guesses the
 import asyncio
 import json
 import os
-import re
 import time
 from pathlib import Path
 
 import httpx
 
-from . import arena, db, gguf, generate, lab
+from . import arena, db, gguf, lab
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS lab_runs (

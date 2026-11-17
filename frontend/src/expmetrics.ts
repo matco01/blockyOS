@@ -11,7 +11,7 @@ export type Metric = {
   sd?: (r: ExpResults) => number | null | undefined;        // descriptive spread shown next to the value
   se?: (r: ExpResults) => number | null | undefined;        // standard error, only when the source explicitly reports one
   p?: (c: Ctx) => number | null | undefined;                 // custom test: p-value for this pair (e.g. paired McNemar)
-  ci?: (c: Ctx) => { diff: number; ci95: [number, number] } | null | undefined; // 95% interval of the difference, in metric units
+  ci?: (c: Ctx) => { diff: number; ci95: [number, number]; extra?: string } | null | undefined; // 95% interval of the difference, in metric units
   fmt?: (v: number) => string; note?: string;
   minRel?: number;                                           // legacy display metadata; never a significance test
 };
@@ -39,7 +39,8 @@ export const METRICS: Metric[] = [
     ci: (c) => {
       const s = c.run.stats;
       const d = c.base.id === s?.baseline_id ? s?.mmlu_diff : c.base.id === c.run.parent_id ? s?.vs_parent?.mmlu_diff : null;
-      return d ? { diff: d.diff * 100, ci95: [d.ci95[0] * 100, d.ci95[1] * 100] } : null;
+      const e = c.base.id === s?.baseline_id ? s?.mmlu_equiv : c.base.id === c.run.parent_id ? s?.vs_parent?.mmlu_equiv : null;
+      return d ? { diff: d.diff * 100, ci95: [d.ci95[0] * 100, d.ci95[1] * 100], extra: e ? equivText(e) : undefined } : null;
     }, note: "paired McNemar test; difference with a paired (Newcombe) 95% interval" },
   { key: "mmlu_p", group: "Quality", label: "MMLU-Pro returned-option score", unit: "%", better: "higher", get: (r) => (r.mmlu ? r.mmlu.p_correct_mean * 100 : null), fmt: pct,
     note: "Renormalized over option letters in the server's top-k shortlist; not the model's full probability of the correct answer" },
@@ -99,6 +100,13 @@ function incomparable(m: Metric, c: Ctx): string | null {
   return null;
 }
 
+/** One sentence on an equivalence test: with a preselected margin, the verdict; without one, the smallest margin the data supports. */
+export function equivText(e: { margin_pts?: number; equivalent?: boolean; min_margin_pts: number }): string {
+  if (e.margin_pts != null && e.equivalent != null)
+    return e.equivalent ? `equivalent within ±${e.margin_pts} points (TOST, α = 0.05)` : `equivalence within ±${e.margin_pts} points not shown (TOST)`;
+  return `the data are compatible with equivalence only within ±${e.min_margin_pts.toFixed(1)} points (no margin was chosen in advance)`;
+}
+
 /** p-value of the difference between two runs on one metric, or null when the metric has no noise model. */
 export function pValue(m: Metric, c: Ctx): number | null {
   if (incomparable(m, c)) return null;
@@ -134,7 +142,7 @@ export function delta(m: Metric, c: Ctx, session = 0, pAdj?: number | null) {
   // Session-to-session drift (measured by repeating the baseline) must also be exceeded.
   if (sig && !m.p && session > 0 && Math.abs(v - b) <= 2 * session) sig = false;
   const iv = incomparable(m, c) ? null : m.ci?.(c);
-  const citxt = iv ? `; difference ${iv.diff >= 0 ? "+" : ""}${iv.diff.toFixed(1)} ${m.unit === "%" ? "points" : m.unit}, 95% CI ${iv.ci95[0].toFixed(1)} to ${iv.ci95[1].toFixed(1)}` : "";
+  const citxt = iv ? `; difference ${iv.diff >= 0 ? "+" : ""}${iv.diff.toFixed(1)} ${m.unit === "%" ? "points" : m.unit}, 95% CI ${iv.ci95[0].toFixed(1)} to ${iv.ci95[1].toFixed(1)}${iv.extra ? `; ${iv.extra}` : ""}` : "";
   const ptxt = `p = ${fmtP(pa)}${pAdj != null && pAdj !== p ? " after correcting for multiple comparisons" : ""}${citxt}`;
   if (!sig) return { text, tone: "same", title: `No statistically established difference (${ptxt}); this does not prove equivalence` };
   if (!m.better) return { text, tone: "same", title: ptxt };

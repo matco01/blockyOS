@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ExpRun } from "./api";
-import { allMetrics, delta, hwLabel, METRICS, pValue, runTitle } from "./expmetrics";
+import { allMetrics, delta, equivText, hwLabel, METRICS, pValue, runTitle } from "./expmetrics";
 
 const run = (id: number, results: Record<string, unknown>, extra: Partial<ExpRun> = {}): ExpRun => ({
   id, experiment_id: 1, created_at: 0, status: "done", label: `run ${id}`, phase: null, error: null, parent_id: id === 1 ? null : 1,
@@ -37,6 +37,11 @@ describe("delta: only differences bigger than the noise are colored", () => {
     const parent = run(5, { mmlu: { acc: 0.6 } });
     const child = run(6, { mmlu: { acc: 0.59 } }, { parent_id: 5, stats: { baseline_id: 1, vs_parent: { mmlu_p: 0.9 } } });
     expect(delta(m("mmlu"), { base: parent, run: child })?.tone).toBe("same");
+  });
+  it("equivalence is only claimed against a margin chosen in advance", () => {
+    expect(equivText({ margin_pts: 1, equivalent: true, min_margin_pts: 0.8 })).toBe("equivalent within ±1 points (TOST, α = 0.05)");
+    expect(equivText({ margin_pts: 1, equivalent: false, min_margin_pts: 2.4 })).toContain("not shown");
+    expect(equivText({ min_margin_pts: 2.4 })).toContain("no margin was chosen in advance");
   });
   it("MMLU-Pro shows the paired interval of the difference next to the p-value", () => {
     const base = run(1, { mmlu: { acc: 0.6 } });

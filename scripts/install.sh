@@ -54,8 +54,22 @@ python3 -c 'import sys; sys.exit(sys.version_info < (3, 12))' || {
 echo "==> Permissions"
 # The web app may start/stop/restart the model server (for model switching and
 # benchmarks) and read its log. Nothing else.
+# GPU clock lock for low-noise experiments (opt-in per experiment). A tiny helper accepts only "lock <MHz>" or "reset",
+# so the service account can't use nvidia-smi to change anything else.
+cat > /usr/local/sbin/blocky-gpu-clocks <<'EOF'
+#!/bin/bash
+set -euo pipefail
+case "${1:-}" in
+  lock)  [[ "${2:-}" =~ ^[0-9]{3,4}$ ]] || { echo "usage: blocky-gpu-clocks lock <MHz>" >&2; exit 2; }
+         exec /usr/bin/nvidia-smi -lgc "$2,$2" ;;
+  reset) exec /usr/bin/nvidia-smi -rgc ;;
+  *)     echo "usage: blocky-gpu-clocks lock <MHz> | reset" >&2; exit 2 ;;
+esac
+EOF
+chown root:root /usr/local/sbin/blocky-gpu-clocks
+chmod 755 /usr/local/sbin/blocky-gpu-clocks
 cat > /etc/sudoers.d/blocky-services <<'EOF'
-blocky ALL=(root) NOPASSWD: /usr/bin/systemctl start blocky-llm, /usr/bin/systemctl stop blocky-llm, /usr/bin/systemctl restart blocky-llm
+blocky ALL=(root) NOPASSWD: /usr/bin/systemctl start blocky-llm, /usr/bin/systemctl stop blocky-llm, /usr/bin/systemctl restart blocky-llm, /usr/local/sbin/blocky-gpu-clocks
 EOF
 chmod 440 /etc/sudoers.d/blocky-services
 visudo -cf /etc/sudoers.d/blocky-services >/dev/null

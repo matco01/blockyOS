@@ -4,6 +4,11 @@ A local AI appliance: Ubuntu Server + llama.cpp + a web UI. Turn it on, open the
 
 **New machine?** See [docs/SETUP.md](docs/SETUP.md) for the full from-scratch setup (WSL or a dedicated box), plus what isn't in git and how to back it up.
 
+**For research:** every number is measured as specified in [docs/PROTOCOL.md](docs/PROTOCOL.md); see
+[docs/VALIDATION.md](docs/VALIDATION.md) for instrument checks and repeated validation. Cite it with
+[CITATION.cff](CITATION.cff) and include the version and the protocol string from your runs' provenance.
+Licensed under [Apache-2.0](LICENSE). Changes: [CHANGELOG.md](CHANGELOG.md). Contributing: [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Layout
 
 | Path | What it is |

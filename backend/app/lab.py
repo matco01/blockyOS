@@ -189,7 +189,12 @@ def validate_runtime(body: dict) -> dict:
 
 
 async def _run(*cmd: str, timeout: float = 120) -> tuple[int, str]:
-    proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+    """Run a command; a program that isn't installed (e.g. nvidia-smi on a CPU-only or AMD/Intel machine) is exit code 127,
+    like a shell would report it, instead of an exception that would end the caller's job."""
+    try:
+        proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+    except OSError as e:
+        return 127, f"{cmd[0]}: {e.strerror or e}"
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout)
     except asyncio.TimeoutError:

@@ -9,7 +9,7 @@ from .common import state
 router = APIRouter()
 
 
-@router.api_route("/v1/{path:path}", methods=["GET", "POST"])
+@router.api_route("/v1/{path:path}", methods=["GET", "POST"], include_in_schema=False)  # a pass-through: the upstream API documents it
 async def openai_proxy(path: str, request: Request):
     """Pass-through to llama-server's OpenAI-compatible API, so external harnesses can test the local model."""
     if path not in ("models", "chat/completions", "completions", "embeddings"):

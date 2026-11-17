@@ -138,6 +138,19 @@ def get_instrument_check(experiment_id: int) -> str:
     return json.dumps(instrument.check(e) if e else {"error": "Experiment not found"})
 
 
+@server.tool(description="Preregister a hypothesis for an experiment before running it: primary_metric (mmlu, kld, same_top, ppl, tg, pp, srv_tg, "
+                         "jpt, needle), claim (difference, equivalence, non_inferiority), direction, alpha, min_effect, equivalence_margin_pts (needed for "
+                         "accuracy equivalence), analysis text. Append-only: runs queued afterwards are confirmatory, earlier ones exploratory.")
+def preregister(experiment_id: int, hypothesis: str, primary_metric: str, claim: str = "difference", direction: str = "either",
+                alpha: float = 0.05, min_effect: float | None = None, equivalence_margin_pts: float | None = None, analysis: str = "") -> str:
+    try:
+        return json.dumps(profile.preregister(experiment_id, {"hypothesis": hypothesis, "primary_metric": primary_metric, "claim": claim,
+                                                              "direction": direction, "alpha": alpha, "min_effect": min_effect,
+                                                              "equivalence_margin_pts": equivalence_margin_pts, "analysis": analysis}))
+    except ValueError as err:
+        return json.dumps({"error": str(err)})
+
+
 @server.tool(description="Create an experiment for a model (a GGUF file name, or 'hf:<checkpoint>' for vLLM). Then queue a baseline with queue_run (no parent).")
 def create_experiment(model: str, name: str = "") -> str:
     try:
@@ -185,14 +198,19 @@ def cancel_run(run_id: int) -> str:
                          "(larger detects smaller accuracy differences; nested, so paired tests vs older runs still work). ruler_samples: 0 (off), or "
                          "samples per task and length for the RULER-style long-context suite (4 quick, 8 standard, 20 precise). lm-evaluation-harness "
                          "tasks (generative, e.g. 'gsm8k,ifeval') with a per-task limit, and/or a GPU kernel profile. ppl_chunks: perplexity/KLD "
-                         "sample, 32 (default), 64, 128 or 256 chunks of 512 tokens; set it before the baseline (KLD needs the same text for every run).")
+                         "sample, 32 (default), 64, 128 or 256 chunks of 512 tokens; set it before the baseline (KLD needs the same text for every run). "
+                         "fidelity_text: absolute path of a .txt on the device to score perplexity/KLD on instead of WikiText-2 (e.g. code or another "
+                         "language). equivalence_margin_pts: accuracy margin for equivalence tests. lock_clocks_mhz / cooldown_s: noise controls.")
 def set_experiment_tests(experiment_id: int, mmlu_questions: int = 560, ruler_samples: int = 0, lm_eval_tasks: str = "", lm_eval_limit: int = 100,
-                         kernel_profile: bool = False, ppl_chunks: int = 32) -> str:
+                         kernel_profile: bool = False, ppl_chunks: int = 32, fidelity_text: str = "", equivalence_margin_pts: float = 0.0,
+                         lock_clocks_mhz: int = 0, cooldown_s: int = 0) -> str:
     try:
         return json.dumps(profile.set_protocol(experiment_id, {"lm_eval": {"tasks": lm_eval_tasks, "limit": lm_eval_limit} if lm_eval_tasks else None,
                                                                "kernels": kernel_profile, "mmlu_per_category": max(1, mmlu_questions // 14),
                                                                "ruler": {"samples": ruler_samples} if ruler_samples else None,
-                                                               "ppl_chunks": ppl_chunks}))
+                                                               "ppl_chunks": ppl_chunks, "fidelity_text": fidelity_text,
+                                                               "equivalence_margin_pts": equivalence_margin_pts or None,
+                                                               "lock_clocks_mhz": lock_clocks_mhz or None, "cooldown_s": cooldown_s or None}))
     except ValueError as err:
         return json.dumps({"error": str(err)})
 

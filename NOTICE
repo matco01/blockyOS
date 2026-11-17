@@ -1,0 +1,7 @@
+blockyOS
+Copyright 2026 The blockyOS authors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+It runs, but does not include, third-party software such as llama.cpp, vLLM, SGLang, TensorRT-LLM and PyTorch, each
+under its own license. Benchmark datasets (MMLU-Pro, WikiText-2 and others) are downloaded at run time and keep their
+own licenses and terms.

@@ -222,6 +222,51 @@ function ChangePanel({ base: rawBase, models, onRun, onSweep, onModels }: { base
   );
 }
 
+/** Preregistration: the hypothesis and analysis, fixed before the data. Append-only. */
+function PreregPanel({ exp, onSaved }: { exp: Experiment; onSaved: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [p, setP] = useState({ hypothesis: "", primary_metric: "kld", claim: "difference", direction: "either", alpha: 0.05, min_effect: "", equivalence_margin_pts: "", analysis: "" });
+  const [err, setErr] = useState<string | null>(null);
+  const plans = exp.preregistrations ?? [];
+  const set = (k: string, v: string | number) => setP((x) => ({ ...x, [k]: v }));
+  const save = async () => {
+    setErr(null);
+    try {
+      await api.experimentPreregister(exp.id, { ...p, min_effect: p.min_effect === "" ? null : Number(p.min_effect),
+        equivalence_margin_pts: p.equivalence_margin_pts === "" ? null : Number(p.equivalence_margin_pts) });
+      setOpen(false); onSaved();
+    } catch (e) { setErr((e as Error).message); }
+  };
+  return (
+    <details className="group pad xadv" open={open || undefined} onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}>
+      <summary><b>Preregistration</b> <span className="row-sub">{plans.length ? `${plans.length} plan${plans.length > 1 ? "s" : ""} recorded` : "fix the hypothesis and analysis before running, so results can be reported as confirmatory"}</span></summary>
+      {plans.map((pl) => (
+        <div key={pl.id} className="row-sub" style={{ marginTop: 8 }}>
+          <b>#{pl.id}</b> · {new Date(pl.created_at * 1000).toLocaleString()} · SHA-256 <code>{pl.sha256.slice(0, 12)}…</code><br />
+          {pl.plan.hypothesis}<br />
+          Primary: {pl.plan.primary_metric} · {pl.plan.claim.replace("_", "-")}{pl.plan.equivalence_margin_pts ? ` within ±${pl.plan.equivalence_margin_pts} points` : ""} · α = {pl.plan.alpha}
+          {pl.plan.min_effect != null ? ` · minimum effect ${pl.plan.min_effect}` : ""} · confirmatory runs: {pl.confirmatory_runs.length ? pl.confirmatory_runs.map((r) => `#${r}`).join(", ") : "none yet"}
+        </div>
+      ))}
+      <div className="ws-grid" style={{ marginTop: 10 }}>
+        <label><span>Hypothesis</span><textarea className="field" rows={2} value={p.hypothesis} onChange={(e) => set("hypothesis", e.target.value)} placeholder="e.g. Q4_K_M keeps MMLU-Pro accuracy within 1 point of Q8_0 on this model" /></label>
+        <label><span>Primary metric · claim · direction</span><div className="ft-row">
+          <select className="field select" value={p.primary_metric} onChange={(e) => set("primary_metric", e.target.value)}>{["kld", "mmlu", "same_top", "ppl", "tg", "pp", "srv_tg", "jpt", "needle"].map((m) => <option key={m}>{m}</option>)}</select>
+          <select className="field select" value={p.claim} onChange={(e) => set("claim", e.target.value)}><option value="difference">difference</option><option value="equivalence">equivalence</option><option value="non_inferiority">non-inferiority</option></select>
+          <select className="field select" value={p.direction} onChange={(e) => set("direction", e.target.value)}><option>either</option><option>higher</option><option>lower</option></select></div></label>
+        <label><span>α · minimum effect · equivalence margin (points)</span><div className="ft-row">
+          <input className="field" type="number" step={0.01} value={p.alpha} onChange={(e) => set("alpha", Number(e.target.value))} />
+          <input className="field" value={p.min_effect} placeholder="optional" onChange={(e) => set("min_effect", e.target.value)} />
+          <input className="field" value={p.equivalence_margin_pts} placeholder="for equivalence" onChange={(e) => set("equivalence_margin_pts", e.target.value)} /></div></label>
+        <label><span>Analysis plan</span><textarea className="field" rows={2} value={p.analysis} onChange={(e) => set("analysis", e.target.value)} placeholder="Which runs, which test, how many repeats, what counts as support" /></label>
+      </div>
+      <div className="xc-btns"><button className="btn small" disabled={p.hypothesis.trim().length < 10} onClick={save}>Record plan</button>
+        <span className="row-sub">Plans can't be edited or deleted; a new plan is a new entry with its own time.</span></div>
+      {err && <div className="error"><AlertCircle /> {err}</div>}
+    </details>
+  );
+}
+
 /** llama.cpp RPC workers: other machines running rpc-server that hold part of the model. */
 function RpcWorkers({ value, onChange }: { value: string[]; onChange: (v: string[]) => void }) {
   const [text, setText] = useState(value.join(", "));
@@ -453,14 +498,20 @@ function TestProtocol({ exp, onSaved }: { exp: Experiment; onSaved: () => void }
   const [mmluN, setMmluN] = useState(exp.protocol?.mmlu_per_category ?? 40);
   const [ruler, setRuler] = useState(exp.protocol?.ruler?.samples ?? 0);
   const [chunks, setChunks] = useState(exp.protocol?.ppl_chunks ?? 32);
+  const [ftext, setFtext] = useState(exp.protocol?.fidelity_text ?? "");
+  const [margin, setMargin] = useState(exp.protocol?.equivalence_margin_pts ?? 0);
+  const [clock, setClock] = useState(exp.protocol?.lock_clocks_mhz ?? 0);
+  const [cool, setCool] = useState(exp.protocol?.cooldown_s ?? 0);
   const [err, setErr] = useState<string | null>(null);
   useEffect(() => { setTasks(exp.protocol?.lm_eval?.tasks ?? ""); setLimit(exp.protocol?.lm_eval?.limit ?? 100); setKern(!!exp.protocol?.kernels);
-    setMmluN(exp.protocol?.mmlu_per_category ?? 40); setRuler(exp.protocol?.ruler?.samples ?? 0); setChunks(exp.protocol?.ppl_chunks ?? 32); }, [exp.id]); // eslint-disable-line react-hooks/exhaustive-deps
+    setMmluN(exp.protocol?.mmlu_per_category ?? 40); setRuler(exp.protocol?.ruler?.samples ?? 0); setChunks(exp.protocol?.ppl_chunks ?? 32);
+    setFtext(exp.protocol?.fidelity_text ?? ""); setMargin(exp.protocol?.equivalence_margin_pts ?? 0); setClock(exp.protocol?.lock_clocks_mhz ?? 0); setCool(exp.protocol?.cooldown_s ?? 0); }, [exp.id]); // eslint-disable-line react-hooks/exhaustive-deps
   const save = async () => {
     setErr(null);
-    try { await api.experimentProtocol(exp.id, tasks.trim() ? { tasks, limit } : null, kern, mmluN, ruler ? { samples: ruler } : null, chunks); setOpen(false); onSaved(); } catch (e) { setErr((e as Error).message); }
+    try { await api.experimentProtocol(exp.id, tasks.trim() ? { tasks, limit } : null, kern, mmluN, ruler ? { samples: ruler } : null, chunks,
+      { fidelity_text: ftext.trim() || null, equivalence_margin_pts: margin || null, lock_clocks_mhz: clock || null, cooldown_s: cool || null }); setOpen(false); onSaved(); } catch (e) { setErr((e as Error).message); }
   };
-  const extra = cur || exp.protocol?.kernels || exp.protocol?.ruler || (exp.protocol?.mmlu_per_category ?? 40) !== 40 || (exp.protocol?.ppl_chunks ?? 32) !== 32;
+  const extra = cur || exp.protocol?.kernels || exp.protocol?.ruler || (exp.protocol?.mmlu_per_category ?? 40) !== 40 || (exp.protocol?.ppl_chunks ?? 32) !== 32 || !!exp.protocol?.fidelity_text || !!exp.protocol?.equivalence_margin_pts || !!exp.protocol?.lock_clocks_mhz || !!exp.protocol?.cooldown_s;
   return (
     <div className="tp">
       <span className="row-sub"><b>Every run measures:</b> memory · <b>MMLU-Pro ({(14 * (exp.protocol?.mmlu_per_category ?? 40)).toLocaleString()})</b> · long context (2k…ctx) · serving speed · llama-bench speed · perplexity & KLD ({(exp.protocol?.ppl_chunks ?? 32) * 512 >= 1000 ? `${Math.round((exp.protocol?.ppl_chunks ?? 32) * 0.512)}k` : (exp.protocol?.ppl_chunks ?? 32) * 512} tokens) · energy · telemetry
@@ -476,6 +527,14 @@ function TestProtocol({ exp, onSaved }: { exp: Experiment; onSaved: () => void }
             <label><span>Perplexity / KL divergence sample</span><select className="field select" value={chunks} onChange={(e) => setChunks(Number(e.target.value))}>
               <option value={32}>32 × 512 tokens (default)</option><option value={64}>64 × 512 tokens</option><option value={128}>128 × 512 tokens</option><option value={256}>256 × 512 tokens</option></select>
               <em>More text narrows the KL divergence and perplexity error bars, and catches rare large deviations (99th-percentile KLD). Set this before the baseline: every run must be scored on the same text, so changing it later needs a new experiment.</em></label>
+            <label><span>Perplexity / KL divergence text</span><input className="field" placeholder="WikiText-2 test (default) — or /path/to/your-text.txt" value={ftext} onChange={(e) => setFtext(e.target.value)} />
+              <em>Quantization damage differs by domain: score code, another language or your own data with a .txt file on this device (50 KB or more). Set before the baseline; every run is scored on the same text and its SHA-256 goes into provenance.</em></label>
+            <label><span>Equivalence margin (accuracy points)</span><input className="field" type="number" min={0} step={0.5} value={margin || ""} placeholder="none" onChange={(e) => setMargin(Number(e.target.value))} />
+              <em>To claim “no worse than ±X points”, choose X before running (a preregistration fixes it too). Each comparison then reports a TOST equivalence verdict.</em></label>
+            <label><span>Noise controls</span><div className="ft-row">
+              <input className="field" type="number" min={0} placeholder="lock GPU clock, MHz" value={clock || ""} onChange={(e) => setClock(Number(e.target.value))} />
+              <input className="field" type="number" min={0} placeholder="cool-down, s" value={cool || ""} onChange={(e) => setCool(Number(e.target.value))} /></div>
+              <em>Locking the GPU clock (below its maximum boost) and pausing between runs remove most boost and heat noise from speed results. Recorded per run; runs with different settings aren't compared. Needs the clock helper from scripts/install.sh.</em></label>
             <label><span>Long-context suite (RULER-style)</span><select className="field select" value={ruler} onChange={(e) => setRuler(Number(e.target.value))}>
               <option value={0}>Off</option><option value={4}>4 samples per task and length (quick)</option><option value={8}>8 samples (standard)</option><option value={20}>20 samples (precise)</option></select>
               <em>Four synthetic tasks harder than one needle: multi-key retrieval with distractors, all values of a key, variable tracking, common words. Lengths 4k up to the run's context. Long contexts make it slow.</em></label>
@@ -485,7 +544,7 @@ function TestProtocol({ exp, onSaved }: { exp: Experiment; onSaved: () => void }
             <label className="ws-check"><input type="checkbox" checked={kern} onChange={(e) => setKern(e.target.checked)} />
               <span><b>GPU kernel profile</b><em>Traces every GPU kernel with NVIDIA Nsight Systems during short prefill and decode runs, and groups the time by operation (matrix multiply, attention, normalization…). llama.cpp runs only; needs a system where CUDA kernel tracing works (regular Linux; not WSL).</em></span></label>
           </div>
-          <div className="xc-btns"><button className="btn small" onClick={save}>Save</button>{extra && <button className="btn small ghost" onClick={() => { setTasks(""); setKern(false); setMmluN(40); setRuler(0); setChunks(32); api.experimentProtocol(exp.id, null, false).then(onSaved); setOpen(false); }}>Back to the standard tests</button>}</div>
+          <div className="xc-btns"><button className="btn small" onClick={save}>Save</button>{extra && <button className="btn small ghost" onClick={() => { setTasks(""); setKern(false); setMmluN(40); setRuler(0); setChunks(32); setFtext(""); setMargin(0); setClock(0); setCool(0); api.experimentProtocol(exp.id, null, false).then(onSaved); setOpen(false); }}>Back to the standard tests</button>}</div>
           {err && <div className="error"><AlertCircle /> {err}</div>}
         </div>
       )}
@@ -861,6 +920,7 @@ export default function ExperimentsPage({ status }: { status: Status | null }) {
           {exp && <>
             <a className="btn small ghost" href={`/api/experiments/${exp.id}/export.csv`}><Download /> CSV</a>
             <a className="btn small ghost" href={`/api/experiments/${exp.id}/export.json`} title="Everything, including hardware: import it on another Blocky device to compare"><Download /> JSON</a>
+            <a className="btn small ghost" href={`/api/experiments/${exp.id}/bundle.zip`} title="Reproducibility bundle: experiment, provenance, commands, raw outputs, instrument checks, protocol document and a script that re-runs everything on another Blocky and compares"><Download /> Bundle</a>
             <button className="icon-btn danger" title="Delete experiment" onClick={() => { if (confirm(`Delete "${exp.name}" and all its runs?`)) api.experimentDelete(exp.id).then(() => { setId(null); setExp(null); loadList(); }); }}><Trash2 /></button>
           </>}
           <ImportRuns exp={exp} onDone={(nid) => { loadList(); if (nid !== exp?.id) setId(nid); else load(); }} />
@@ -961,6 +1021,7 @@ export default function ExperimentsPage({ status }: { status: Status | null }) {
                 </section>
                 <section hidden={stage !== "validate" && stage !== "all"}>
                 <ValidationPanel key={exp.id} exp={exp} runs={runs} onChanged={load} />
+                <PreregPanel exp={exp} onSaved={load} />
                 {done.length > 0 && <InstrumentPanel expId={exp.id} runsKey={done.map((r) => r.id).join(",")} />}
                 {done.length > 0 && <details className="group pad xadv">
                   <summary><b>How many runs or questions do I need?</b> <span className="row-sub">sample sizes for the differences you want to detect, from this experiment's measured noise</span></summary>

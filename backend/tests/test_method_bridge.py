@@ -1,6 +1,4 @@
 import asyncio
-import copy
-import json
 from pathlib import Path
 
 import pytest
@@ -44,6 +42,7 @@ def test_cancel_method_run_cancels_its_job(registered):
     eid = profile.create_experiment("Cancel", f"method:{method['id']}")
     rid = profile.create_run(eid, {"config": {}})
     row = profile.get_experiment(eid)["runs_list"][0]
+    assert row["id"] == rid
     profile.cancel_queue(eid)
     assert research.job(row["results"]["research_job_id"])["status"] == "cancelled"
     assert profile.get_experiment(eid)["runs_list"][0]["status"] == "cancelled"

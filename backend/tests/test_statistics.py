@@ -139,3 +139,98 @@ def test_compare_flags_different_perplexity_samples():
         return {"id": rid, "config": {}, "results": {"provenance": prov}}
     assert "perplexity/KLD sample size" not in profile.compare(run(1, None), run(2, 32))["env_mismatch"]
     assert "perplexity/KLD sample size" in profile.compare(run(1, None), run(2, 128))["env_mismatch"]
+
+
+def test_equivalence_tost():
+    a = "1" * 300 + "0" * 260
+    same = profile.equivalence(a, a, 1.0)
+    assert same["equivalent"] is True and same["min_margin_pts"] < 1.0
+    b = "0" * 30 + "1" * 270 + "0" * 260                 # 30 answers lost: about -5.4 points
+    lost = profile.equivalence(a, b, 2.0)
+    assert lost["equivalent"] is False and lost["min_margin_pts"] > 5
+    assert "equivalent" not in profile.equivalence(a, b)  # no margin chosen: only the smallest supported margin
+    # The 90% interval is narrower than the 95% one.
+    ci95 = profile.paired_diff_ci(a, b)["ci95"]
+    lo90, hi90 = lost["ci90_pts"]
+    assert ci95[0] * 100 < lo90 and hi90 < ci95[1] * 100
+
+
+def test_preregistration_is_append_only_and_marks_confirmatory_runs(fresh_db, make_gguf):
+    import pytest
+    from app import db
+    make_gguf("prereg.gguf")
+    eid = profile.create_experiment("prereg", "prereg.gguf")
+    early = profile.create_run(eid, {"config": {}})
+    profile._save(early, status="done", results={})
+    with db.connect() as c:   # queued well before the plan
+        c.execute("UPDATE exp_runs SET created_at = created_at - 100 WHERE id = ?", (early,))
+    with pytest.raises(ValueError, match="margin"):
+        profile.preregister(eid, {"hypothesis": "Q4_K_M keeps accuracy", "primary_metric": "mmlu", "claim": "equivalence"})
+    r = profile.preregister(eid, {"hypothesis": "Q4_K_M keeps accuracy within one point", "primary_metric": "mmlu",
+                                  "claim": "equivalence", "equivalence_margin_pts": 1.0})
+    assert len(r["sha256"]) == 64
+    late = profile.create_run(eid, {"config": {"kv": "q4_0"}})
+    profile._save(late, status="done", results={})
+    exp = profile.get_experiment(eid)
+    (plan,) = exp["preregistrations"]
+    assert plan["confirmatory_runs"] == [late] and plan["plan"]["equivalence_margin_pts"] == 1.0
+    assert plan["plan"]["protocol"] == profile.PROTOCOL
+
+
+def test_custom_fidelity_text_and_noise_settings(fresh_db, make_gguf, tmp_path):
+    import pytest
+    make_gguf("ft.gguf")
+    eid = profile.create_experiment("ft", "ft.gguf")
+    text = tmp_path / "code.txt"
+    text.write_text("def f(x):\n    return x + 1\n" * 4000)
+    proto = profile.set_protocol(eid, {"fidelity_text": str(text), "equivalence_margin_pts": 1.5, "lock_clocks_mhz": 1800, "cooldown_s": 30})
+    assert proto == {"fidelity_text": str(text), "equivalence_margin_pts": 1.5, "lock_clocks_mhz": 1800, "cooldown_s": 30}
+    for bad in ({"fidelity_text": "relative.txt"}, {"fidelity_text": str(tmp_path / "missing.txt")}, {"lock_clocks_mhz": 99999},
+                {"cooldown_s": 1}, {"equivalence_margin_pts": 50}):
+        with pytest.raises(ValueError):
+            profile.set_protocol(eid, bad)
+    small = tmp_path / "small.txt"
+    small.write_text("tiny")
+    with pytest.raises(ValueError, match="50 KB"):
+        profile.set_protocol(eid, {"fidelity_text": str(small)})
+
+
+def test_kld_reference_must_match_the_text(tmp_path):
+    import json
+    import pytest
+    ref = tmp_path / "base.kld"
+    ref.write_bytes(b"x")
+    ref.with_suffix(".json").write_text(json.dumps({"run_id": 1, "protocol": profile.PROTOCOL, "chunks": 32, "text_sha256": "aaa"}))
+    profile._check_kld_reference(ref, {"id": 1}, 32, "aaa")
+    with pytest.raises(RuntimeError, match="different perplexity/KLD text"):
+        profile._check_kld_reference(ref, {"id": 1}, 32, "bbb")
+
+
+def test_noise_controls_record_what_happened(monkeypatch):
+    import asyncio
+    calls = []
+
+    async def fake_run(*cmd, timeout=0):
+        calls.append(cmd)
+        if cmd[0] == "nvidia-smi":
+            return 0, "41\n"
+        return (1, "not permitted") if cmd[-2:] == ("lock", "3999") else (0, "")
+    monkeypatch.setattr(profile.lab, "_run", fake_run)
+    nc = asyncio.run(profile.noise_controls_on({"protocol": {"lock_clocks_mhz": 1800}}, {"device": "gpu"}))
+    assert nc["clock_lock_mhz"] == 1800 and nc["start_temp_c"] == 41.0
+    assert ("sudo", "-n", profile.GPU_CLOCKS, "lock", "1800") in calls
+    asyncio.run(profile.noise_controls_off(nc))
+    assert calls[-1] == ("sudo", "-n", profile.GPU_CLOCKS, "reset")
+    failed = asyncio.run(profile.noise_controls_on({"protocol": {"lock_clocks_mhz": 3999}}, {"device": "gpu"}))
+    assert failed["clock_lock_mhz"] is None and "not permitted" in failed["clock_lock_error"]
+    cpu = asyncio.run(profile.noise_controls_on({"protocol": {"lock_clocks_mhz": 1800}}, {"device": "cpu"}))
+    assert cpu["clock_lock_mhz"] is None and "clock_lock_error" not in cpu
+
+
+def test_compare_flags_different_fidelity_text_and_clock_lock():
+    def run(rid, sha, mhz):
+        prov = {"protocol": profile.PROTOCOL, "data": {"fidelity_text": {"sha256": sha}}, "noise_controls": {"clock_lock_mhz": mhz}}
+        return {"id": rid, "config": {}, "results": {"provenance": prov}}
+    assert profile.compare(run(1, "a", None), run(2, "a", None))["env_mismatch"] == []
+    assert "perplexity/KLD text" in profile.compare(run(1, "a", None), run(2, "b", None))["env_mismatch"]
+    assert "GPU clock lock" in profile.compare(run(1, "a", 1800), run(2, "a", None))["env_mismatch"]
