@@ -665,7 +665,9 @@ function LimitTable({ runs }: { runs: ExpRun[] }) {
       {runs.some((r) => r.results.hw?.projection) && (
         <div className="xlt-legend">
           {runs.map((r, i) => r.results.hw?.projection && (
-            <div key={r.id}><span className="xchip k0">Projection</span>{nameOf(r, i)}: on a {r.results.hw.projection.target} ({r.results.hw.projection.memory}, {r.results.hw.projection.target_ram_gbps} GB/s), decode would reach about <b>{r.results.hw.projection.tg} tok/s</b> at the same {Math.round(r.results.hw.projection.bandwidth_share * 100)}% share of memory bandwidth measured here. Prompt reading is compute-bound and isn't projected.</div>
+            <div key={r.id}><span className="xchip k0">Projection</span>{nameOf(r, i)}: {r.results.hw.projection.tg == null
+              ? <>no estimate for a {r.results.hw.projection.target}: {r.results.hw.projection.unavailable ?? "not available"}. The measured speed here is an upper bound, not the target's speed.</>
+              : <>on a {r.results.hw.projection.target} ({r.results.hw.projection.memory}, {r.results.hw.projection.target_ram_gbps} GB/s), decode would reach about <b>{r.results.hw.projection.tg} tok/s</b> at the same {Math.round((r.results.hw.projection.bandwidth_share ?? 0) * 100)}% share of memory bandwidth measured here. Prompt reading is compute-bound and isn't projected.</>}</div>
           ))}
         </div>
       )}

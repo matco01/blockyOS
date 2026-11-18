@@ -67,6 +67,14 @@ def test_cpu_only_analysis_and_projection(exp, monkeypatch):
     assert pr["tg"] == pytest.approx(0.5 * 38.4 / 2.0, rel=0.01)
 
 
+def test_projection_says_why_when_bandwidth_unknown(exp, monkeypatch):
+    monkeypatch.setattr(profile, "_weights", lambda path: {"bytes": 2e9, "params": 3e9, "embedding_bytes": 0.2e9})
+    cfg = {**profile.normalize_config(exp, {"preset": "sbc-8gb"}), "ctx": 8192}
+    res = {"speed": {"tg": 10.0, "pp": 100.0}, "memory": {"gpu": {}, "ram": {"model": 2e9 / 2**20}}}
+    pr = profile.analyze(res, cfg, {**LIM, "ram_bandwidth_gbps": None})["projection"]
+    assert pr["tg"] is None and "numpy" in pr["unavailable"]  # never a silent gap
+
+
 @pytest.mark.parametrize("backend,ok", [("cpu", True), ("auto", True), ("opencl", False)])
 def test_engine_backends(backend, ok):
     if ok:

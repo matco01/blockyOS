@@ -99,7 +99,7 @@ export type HwAnalysis = {
     mem_util_avg: number | null; cpu_util_avg: number | null; power_avg_w: number | null; cpu_power_avg_w: number | null };
   headroom?: { vram_capacity_mb: number; vram_model_mb: number; vram_used_total_mb: number | null; vram_free_mb: number; kv_mb_per_1k_tokens: number | null; extra_context_tokens: number | null };
   limiter?: { what: string; evidence: string };
-  projection?: { target: string; target_ram_gbps: number; memory?: string; bandwidth_share: number; tg: number | null; method: string };
+  projection?: { target: string; target_ram_gbps: number; memory?: string; bandwidth_share?: number; tg: number | null; method?: string; unavailable?: string };
 };
 export type ExpResults = {
   research_metrics?: Record<string, ResearchMetric>;

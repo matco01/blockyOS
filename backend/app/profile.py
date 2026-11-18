@@ -21,6 +21,7 @@ import re
 import shutil
 import statistics
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -124,7 +125,7 @@ _ram_bw: float | None = None
 
 # Read bandwidth with one process per two hardware threads, summed: what CPU inference actually does.
 _RAM_BW_CODE = """
-import numpy as np, time, os
+import numpy as np, time, os, json
 from multiprocessing import Pool
 def work(_):
     a = np.ones(32 * 2**20, dtype=np.float64); best = 0
@@ -133,8 +134,22 @@ def work(_):
         best = max(best, a.nbytes / dt / 1e9)
     return best
 n = max(1, (os.cpu_count() or 2) // 2)
-with Pool(n) as p:
-    print(sum(p.map(work, range(n))))
+try:
+    with Pool(n) as p:
+        print(json.dumps({"gbps": sum(p.map(work, range(n))), "method": "numpy sum, one process per 2 threads"}))
+except (OSError, EOFError):
+    # No working multiprocessing (e.g. WSL1): threads (numpy releases the GIL while summing). Total bytes over wall time,
+    # not a sum of per-thread rates, which overstates bandwidth when the threads don't actually overlap.
+    from concurrent.futures import ThreadPoolExecutor
+    arrays = [np.ones(32 * 2**20, dtype=np.float64) for _ in range(n)]
+    def run(a):
+        for _ in range(6):
+            a.sum()
+    t = time.perf_counter()
+    with ThreadPoolExecutor(n) as ex:
+        list(ex.map(run, arrays))
+    gbps = n * 6 * arrays[0].nbytes / (time.perf_counter() - t) / 1e9
+    print(json.dumps({"gbps": gbps, "method": "numpy sum, one thread per 2 hardware threads, total bytes / wall time"}))
 """
 
 
@@ -145,12 +160,16 @@ def ram_bandwidth() -> float | None:
     if _ram_bw is None and cache.is_file():
         _ram_bw = json.loads(cache.read_text()).get("gbps")
     if _ram_bw is None:
-        try:
-            out = subprocess.run(["python3", "-c", _RAM_BW_CODE], capture_output=True, text=True, timeout=120).stdout.strip()
-            _ram_bw = round(float(out), 1)
-            cache.write_text(json.dumps({"gbps": _ram_bw, "measured_at": time.time(), "method": "numpy sum, one process per 2 threads"}))
-        except (ValueError, OSError, subprocess.SubprocessError):
-            return None
+        # Needs numpy: the installer adds python3-numpy; the backend's own and the ML environment are fallbacks.
+        for python in ("python3", sys.executable, str(config.DATA_DIR.parent / "ml-venv" / "bin" / "python")):
+            try:
+                out = subprocess.run([python, "-c", _RAM_BW_CODE], capture_output=True, text=True, timeout=120).stdout.strip()
+                measured = json.loads(out.splitlines()[-1])
+                _ram_bw = round(float(measured["gbps"]), 1)
+            except (ValueError, KeyError, IndexError, OSError, subprocess.SubprocessError):
+                continue
+            cache.write_text(json.dumps({"gbps": _ram_bw, "measured_at": time.time(), "method": measured["method"]}))
+            break
     return _ram_bw
 
 
@@ -1887,6 +1906,11 @@ def analyze(res: dict, cfg: dict, lim: dict) -> dict:
         out["projection"] = {"target": preset["label"], "target_ram_gbps": preset["ram_bandwidth_gbps"], "memory": preset.get("memory"),
                              "bandwidth_share": round(share, 3), "tg": round(share * preset["ram_bandwidth_gbps"] / gb, 2) if gb else None,
                              "method": "decode tok/s = (share of RAM bandwidth achieved here) x target spec-sheet bandwidth / weight GB per token"}
+    elif preset and preset.get("ram_bandwidth_gbps") and cpu_only:
+        # Say why instead of leaving the target-device estimate out silently.
+        out["projection"] = {"target": preset["label"], "target_ram_gbps": preset["ram_bandwidth_gbps"], "tg": None,
+                             "unavailable": "this machine's RAM bandwidth couldn't be measured (needs numpy: sudo apt install python3-numpy)"
+                             if not ram_bw else "no decode speed was measured"}
 
     vram_used = mem.get("vram_used_mb")
     ctx_mb = (mem.get("gpu") or {}).get("context") or 0
