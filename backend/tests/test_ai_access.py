@@ -275,3 +275,21 @@ def test_turning_public_access_off_closes_everything(api):
 
 def test_level_context_defaults_to_full_in_process():
     assert mcp_server.LEVEL.get() == "full" and mcp_server._denied("full") is None
+
+
+def test_token_request_with_basic_client_auth(api):
+    """Some clients send client_id in an HTTP Basic header (empty secret) instead of the form."""
+    go_public(api)
+    cid = api.post("/oauth/register", json={"redirect_uris": [REDIRECT]}, headers=CLOUD).json()["client_id"]
+    verifier, challenge = pkce()
+    q = {"client_id": cid, "redirect_uri": REDIRECT, "response_type": "code", "code_challenge": challenge, "code_challenge_method": "S256"}
+    code = api.get("/api/ai-access").json()["pairing_code"]
+    ok = api.post("/oauth/authorize", data={**q, "pairing_code": code, "level": "read", "decision": "approve"}, headers=CLOUD,
+                  follow_redirects=False)
+    auth_code = parse_qs(urlsplit(ok.headers["location"]).query)["code"][0]
+    basic = base64.b64encode(f"{cid}:".encode()).decode()
+    tok = api.post("/oauth/token", data={"grant_type": "authorization_code", "code": auth_code, "redirect_uri": REDIRECT,
+                                         "code_verifier": verifier}, headers={**CLOUD, "authorization": f"Basic {basic}"})
+    assert tok.status_code == 200, tok.text
+    assert api.post("/oauth/token", data={"grant_type": "refresh_token", "refresh_token": tok.json()["refresh_token"]},
+                    headers={**CLOUD, "authorization": "Basic !!!"}).status_code == 401

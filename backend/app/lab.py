@@ -203,8 +203,22 @@ async def _run(*cmd: str, timeout: float = 120) -> tuple[int, str]:
     return proc.returncode or 0, out.decode(errors="replace")
 
 
+def has_systemd() -> bool:
+    """True when systemd runs this machine (a normal install). Containers, WSL1 and plain development shells have none."""
+    return Path("/run/systemd/system").is_dir()
+
+
 async def llm_service(action: str) -> None:
-    """start/stop/restart the model server (allowed via a narrow sudoers rule)."""
+    """start/stop/restart the model server (allowed via a narrow sudoers rule).
+
+    Without systemd there is no blocky-llm service: no chat model runs under Blocky, so pausing it for a measurement
+    and resuming it afterwards are no-ops. Switching the chat model still needs the service and says so.
+    """
+    if not has_systemd():
+        if action in ("stop", "start"):
+            return
+        raise RuntimeError("Switching the chat model needs the blocky-llm service, which needs systemd. This machine runs "
+                           "without systemd (e.g. WSL1 or a container); install Blocky with scripts/install.sh on a system with systemd.")
     code, out = await _run("sudo", "-n", "systemctl", action, "blocky-llm")
     if code != 0:
         raise RuntimeError(f"systemctl {action} failed: {out.strip()[:300]}")

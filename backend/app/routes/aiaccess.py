@@ -1,6 +1,9 @@
 """AI assistants: the owner's settings (/api/ai-access) and the OAuth endpoints cloud assistants sign in with."""
+import base64
+import binascii
 import json
-from urllib.parse import parse_qsl
+import logging
+from urllib.parse import parse_qsl, unquote
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -8,6 +11,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from .. import aiaccess
 
 router = APIRouter()
+log = logging.getLogger("blocky.oauth")
 _NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 _PAGE_HEADERS = {**_NO_STORE, "X-Frame-Options": "DENY", "Content-Security-Policy": "frame-ancestors 'none'; form-action 'self' https: http://localhost:* http://127.0.0.1:*",
                  "Referrer-Policy": "same-origin"}  # "no-referrer" makes browsers send Origin: null on the form post
@@ -58,10 +62,21 @@ async def _form(request: Request) -> dict:
         except ValueError:
             raise aiaccess.OAuthError("invalid_request", "Invalid JSON")
         return data if isinstance(data, dict) else {}
-    return dict(parse_qsl(raw.decode("utf-8", "replace"), keep_blank_values=True))
+    form = dict(parse_qsl(raw.decode("utf-8", "replace"), keep_blank_values=True))
+    # Clients may identify themselves with HTTP Basic auth instead of a client_id field (RFC 6749, section 2.3.1).
+    auth = request.headers.get("authorization", "")
+    if auth[:6].lower() == "basic " and not form.get("client_id"):
+        try:
+            user = base64.b64decode(auth[6:].strip(), validate=True).decode("utf-8").split(":", 1)[0]
+        except (binascii.Error, UnicodeDecodeError):
+            raise aiaccess.OAuthError("invalid_client", "Malformed Basic authorization", 401)
+        form["client_id"] = unquote(user)
+    return form
 
 
-def _oauth_error(e: aiaccess.OAuthError) -> JSONResponse:
+def _oauth_error(e: aiaccess.OAuthError, where: str = "", form: dict | None = None) -> JSONResponse:
+    # Field names only, never values: they include codes and tokens.
+    log.warning("OAuth %s refused: %s (%s); fields: %s", where, e.error, e.description, sorted(form or {}))
     return JSONResponse(e.body(), status_code=e.status, headers=_NO_STORE)
 
 
@@ -85,7 +100,7 @@ async def oauth_register(request: Request):
             raise aiaccess.OAuthError("access_denied", "Public access for AI assistants is turned off in Blocky's Settings.", 403)
         return JSONResponse(aiaccess.register_client(await _form(request)), status_code=201, headers=_NO_STORE)
     except aiaccess.OAuthError as e:
-        return _oauth_error(e)
+        return _oauth_error(e, "registration")
 
 
 @router.get("/oauth/authorize", include_in_schema=False)
@@ -117,9 +132,12 @@ async def oauth_authorize_submit(request: Request):
 @router.post("/oauth/token", include_in_schema=False)
 async def oauth_token(request: Request):
     try:
-        return JSONResponse(aiaccess.token(await _form(request)), headers=_NO_STORE)
+        form = {}
+        form = await _form(request)
+        issued = aiaccess.token(form)
+        return JSONResponse(issued, headers=_NO_STORE)
     except aiaccess.OAuthError as e:
-        return _oauth_error(e)
+        return _oauth_error(e, "token", form)
 
 
 @router.post("/oauth/revoke", include_in_schema=False)
