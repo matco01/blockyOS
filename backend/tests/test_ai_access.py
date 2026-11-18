@@ -60,6 +60,8 @@ def sign_in(client, level="read", code=None) -> dict:
     page = client.get("/oauth/authorize?" + urlencode(q), headers=CLOUD)
     assert page.status_code == 200 and "ChatGPT" in page.text and "chatgpt.com" in page.text
     assert page.headers["x-frame-options"] == "DENY"
+    # With "no-referrer", browsers send Origin: null on the approval form, which the cross-site check refuses.
+    assert page.headers["referrer-policy"] == "same-origin"
     ok = client.post("/oauth/authorize", data={**q, "pairing_code": code.lower().replace("-", ""), "level": level, "decision": "approve"},
                      headers={**CLOUD, "origin": PUBLIC}, follow_redirects=False)
     assert ok.status_code == 303, ok.text

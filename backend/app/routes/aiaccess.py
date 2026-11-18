@@ -10,7 +10,7 @@ from .. import aiaccess
 router = APIRouter()
 _NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 _PAGE_HEADERS = {**_NO_STORE, "X-Frame-Options": "DENY", "Content-Security-Policy": "frame-ancestors 'none'; form-action 'self' https: http://localhost:* http://127.0.0.1:*",
-                 "Referrer-Policy": "no-referrer"}
+                 "Referrer-Policy": "same-origin"}  # "no-referrer" makes browsers send Origin: null on the form post
 
 
 # ---------- Owner settings (this device only; not reachable through MCP) ----------
