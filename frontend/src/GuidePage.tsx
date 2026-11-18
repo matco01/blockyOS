@@ -345,7 +345,7 @@ exp.to_wandb(project="blocky")                   # offline; upload later with \`
             </Section>
 
             <Section id="g-assistants" title="Working with an AI assistant" kicker="Claude, ChatGPT and other agents">
-              <p>Blocky is an <b>MCP server</b> (Model Context Protocol, the standard way AI assistants use tools). Connect the assistant you already use, and it can read your results, plan the next experiment, queue runs and sweeps, build weight variants, scan layers and build engines, while you watch it happen in the UI. Its model and API keys stay in your own app: Blocky never contacts an AI provider by itself.</p>
+              <p>Blocky is an <b>MCP server</b> (Model Context Protocol, the standard way AI assistants use tools). Connect the assistant you already use, and it can see and use all of Blocky: read every result and all stored data, plan the next experiment, queue runs and sweeps, build weight variants and engines, run benchmarks and quality tests, and anything else the web page can do, while you watch it happen in the UI. You decide what each assistant may do (Settings → AI assistants: read, write, or full including deleting). Its model and API keys stay in your own app: Blocky never contacts an AI provider by itself.</p>
               <div className="table-wrap"><table className="data gd-table">
                 <thead><tr><th>Assistant</th><th>How to connect</th></tr></thead>
                 <tbody>
@@ -353,7 +353,8 @@ exp.to_wandb(project="blocky")                   # offline; upload later with \`
                   <tr><td>Claude Desktop</td><td>Settings → Developer → Edit config, add <code>{`"blocky": {"command": "npx", "args": ["mcp-remote", "http://localhost:8000/mcp"]}`}</code> under <code>mcpServers</code> (needs Node.js)</td></tr>
                   <tr><td>VS Code, Cursor, other editors</td><td>Add an MCP server of type <code>http</code> with the URL <code>http://localhost:8000/mcp</code></td></tr>
                   <tr><td>Codex and other CLIs</td><td>Any client that supports Streamable HTTP: URL <code>http://localhost:8000/mcp</code></td></tr>
-                  <tr><td>ChatGPT (web)</td><td>Its connectors only reach public HTTPS servers. Blocky stays local by default, so use a desktop or terminal client on the same computer instead.</td></tr>
+                  <tr><td>ChatGPT</td><td>Publish Blocky through an HTTPS tunnel and turn on Settings → AI assistants → ChatGPT, Claude on the web and phone. In ChatGPT, turn on Developer mode (Settings → Apps &amp; Connectors → Advanced settings), then create a connector with the address shown in Blocky and OAuth sign-in. Approve it on the Blocky page with the pairing code.</td></tr>
+                  <tr><td>Claude on the web and phone</td><td>Same tunnel and switch, then in Claude: Settings → Connectors → Add custom connector with the address shown in Blocky. Approve it with the pairing code.</td></tr>
                 </tbody>
               </table></div>
               <p><b>Most powerful: a coding agent on the Blocky device.</b> An agent like Claude Code or Codex running on the device itself gets a shell, files, Python and PyTorch as well as the lab tools, so it can write analysis scripts or a new quantization method, run them, and iterate. Open the repository's <code>research/</code> folder with it (in VS Code: connect with Remote-SSH, or the WSL extension when Blocky runs in WSL, then start Claude Code there). Its <code>CLAUDE.md</code> / <code>AGENTS.md</code> explain how to do research on Blocky, and <code>.mcp.json</code> connects the lab tools automatically.</p>
@@ -364,7 +365,7 @@ exp.to_wandb(project="blocky")                   # offline; upload later with \`
 
 "Find the layers of Qwen3.5-0.8B that are most sensitive to quantization,
  then build a Q3_K_M variant that keeps them at Q8_0 and profile it against Q4_K_M."`}</pre>
-              <p className="row-sub">What it can do: read status, experiments and scan results; create experiments; queue runs, branches and sweeps; cancel runs; add lm-eval tasks; build weight variants; start layer scans; build engines from git. What it can't: delete anything, change the chat model, or run arbitrary commands. Each run still takes minutes of your machine, and the queue runs one profile at a time. A coding agent working on Blocky's own source code should read <code>AGENTS.md</code> in the repository.</p>
+              <p className="row-sub">What it can do depends on the level you give it. <b>Read</b>: see everything, including read-only database queries (never passwords, tokens or API keys). <b>Write</b>: also start, queue, build and change things, including research jobs that run code on this machine; nothing is deleted. <b>Full</b>: also delete. No level can change who has access or read secrets. Each run still takes minutes of your machine, and the queue runs one profile at a time. A coding agent working on Blocky's own source code should read <code>AGENTS.md</code> in the repository.</p>
             </Section>
 
             <Section id="g-limits" title="Limits & good practice" kicker="Honest notes">

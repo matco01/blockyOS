@@ -155,8 +155,15 @@ provides provenance, scheduling and comparison. See [docs/RESEARCH_PROJECTS.md](
 - **Python client**: `pip install blockyos-client`. Queue runs and sweeps, then get every result as a pandas table, or
   send it to MLflow or Weights & Biases.
 - **JupyterLab** on the device.
-- **MCP server** at `http://localhost:8000/mcp`. Claude Code, Claude Desktop and other assistants can read results
-  and queue experiments under the same rules. There are no delete tools.
+- **AI assistants (MCP)**: ChatGPT, Claude (web, desktop, phone), Claude Code and other MCP clients can see and use
+  all of blockyOS. That covers every API endpoint, read-only SQL over all stored data, and the lab tools.
+  - Assistants on the machine connect to `http://localhost:8000/mcp`.
+  - Cloud assistants connect through your own HTTPS tunnel and sign in with OAuth, approved with a one-time pairing
+    code.
+  - You choose each assistant's access level: read, write, or full (which includes deleting).
+  - Secrets and access settings are never exposed.
+
+  See [docs/AI_ASSISTANTS.md](docs/AI_ASSISTANTS.md).
 - **Research agent** in the UI. It works through a task with every lab tool, and you approve each code run. It runs on
   the local model, or on Claude with your own API key.
 

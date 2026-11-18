@@ -51,13 +51,32 @@ def make_gguf():
     return make
 
 
+@pytest.fixture(scope="session")
+def http_client():
+    """The whole app over HTTP from this device (loopback, Host: localhost). One per test session: the MCP SDK's session
+    manager supports a single lifespan per process."""
+    import asyncio
+    from fastapi.testclient import TestClient
+    from app import main, profile, research_jobs
+
+    async def idle_worker(client):
+        await asyncio.Event().wait()
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(profile, "worker", idle_worker)
+        patch.setattr(research_jobs, "worker", idle_worker)
+        patch.setattr(profile, "limits", lambda: {"gpu": None, "vram_mb": 0})
+        with TestClient(main.app, client=("127.0.0.1", 12345), base_url="http://localhost:8000") as client:
+            yield client
+
+
 @pytest.fixture
 def fresh_db():
     """An empty database with every table Blocky creates."""
-    from app import arena, config, db, engines, evals, jobstore, profile, quantlab, research_jobs, scans, tools, torchlab, weights
+    from app import aiaccess, arena, config, db, engines, evals, jobstore, profile, quantlab, research_jobs, scans, tools, torchlab, weights
     if config.DB_PATH.exists():
         config.DB_PATH.unlink()
     db.init()
-    for module in (jobstore, arena, evals, quantlab, tools, profile, weights, engines, scans, torchlab, research_jobs):
+    for module in (aiaccess, jobstore, arena, evals, quantlab, tools, profile, weights, engines, scans, torchlab, research_jobs):
         module.init()
     return db

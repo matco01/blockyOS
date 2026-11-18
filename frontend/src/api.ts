@@ -79,6 +79,10 @@ export type ExpConfig = { model: string; ctx: number; kv: string; ngl: string | 
   gpus?: number | null; split_mode?: "layer" | "row" | "none" | null; rpc?: string[] | null; pp?: number | null };
 export type RpcWorker = { enabled: boolean; expose: boolean; port: number; running: boolean; host: string; installed: boolean; error: string | null };
 export type Device = { id: number; name: string; url: string; token: boolean; created_at: number };
+export type AiLevel = "read" | "write" | "full";
+export type AiConnection = { id: number; created_at: number; client_name: string; redirect: string; level: AiLevel; last_used_at: number | null };
+export type AiAccess = { local_level: AiLevel; public_enabled: boolean; public_url: string; levels: Record<AiLevel, string>; pairing_code: string | null;
+  local_mcp_url: string; public_mcp_url: string | null; locked: boolean; connections: AiConnection[] };
 export type RemoteJob = { id: number; experiment_id: number; device: string; device_id?: number; status: string; step: string | null; error: string | null; imported?: { runs: number } };
 export type DevicePreset = { label: string; config: Partial<ExpConfig>; ram_bandwidth_gbps?: number; memory?: string };
 export type Finding = { kind: string; severity: "major" | "minor" | "info"; title: string; text: string };
@@ -386,6 +390,10 @@ export const api = {
   engines: () => json<Engine[]>("/api/engines"),
   rpcWorker: () => json<RpcWorker>("/api/rpc-worker"),
   setRpcWorker: (s: { enabled: boolean; expose: boolean; port: number }) => json<RpcWorker>("/api/rpc-worker", send("POST", s)),
+  aiAccess: () => json<AiAccess>("/api/ai-access"),
+  setAiAccess: (patch: Partial<Pick<AiAccess, "local_level" | "public_enabled" | "public_url">>) => json<AiAccess>("/api/ai-access", send("PATCH", patch)),
+  aiNewCode: () => json<AiAccess>("/api/ai-access/pairing-code", send("POST", {})),
+  aiRevoke: (id: number) => json<AiAccess>(`/api/ai-access/connections/${id}`, send("DELETE")),
   remoteAccess: () => json<{ enabled: boolean; token: string | null }>("/api/remote-access"),
   setRemoteAccess: (enabled: boolean) => json<{ enabled: boolean; token: string | null }>("/api/remote-access", send("POST", { enabled })),
   devices: () => json<Device[]>("/api/devices"),

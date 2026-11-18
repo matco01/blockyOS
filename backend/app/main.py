@@ -17,14 +17,15 @@ import psutil
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from mcp.server.transport_security import TransportSecuritySettings
 
-from . import agent, arena, benchmarks, config, db, engines, evals, jobstore, lab, mcp_server, profile, quantlab, remote, research_jobs, scans
+from . import agent, aiaccess, arena, benchmarks, config, db, engines, evals, jobstore, lab, mcp_server, profile, quantlab, remote, research_jobs, scans
 from . import rpcworker, tools, torchlab, weights
-from .routes import (agent as agent_routes, arena as arena_routes, bench, chat, common, devices, engines as engine_routes, evals as eval_routes,
+from .routes import (agent as agent_routes, aiaccess as aiaccess_routes, arena as arena_routes, bench, chat, common, devices, engines as engine_routes, evals as eval_routes,
                      experiments, models, openai, quantlab as quantlab_routes, research, settings, system, torch)
 
 # Include order matters only where two paths could match the same URL; it follows the order these routes always had.
-ROUTERS = (research, chat, settings, agent_routes, devices, system, models, bench, openai, eval_routes, quantlab_routes, experiments,
+ROUTERS = (aiaccess_routes, research, chat, settings, agent_routes, devices, system, models, bench, openai, eval_routes, quantlab_routes, experiments,
            engine_routes, torch, arena_routes)
 
 
@@ -45,6 +46,7 @@ async def lifespan(app: FastAPI):
     agent.init()
     research_jobs.init()
     rpcworker.init()
+    aiaccess.init()
     for name, jobs in (("downloads", lab.downloads), ("benchmark-downloads", benchmarks.downloads),
                        ("weights", weights.jobs), ("quantize", quantlab.jobs)):
         jobstore.persist(name, jobs)
@@ -75,6 +77,14 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="blockyOS", lifespan=lifespan)
 
 
+FORWARDED = ("x-forwarded-for", "forwarded", "cf-connecting-ip", "x-real-ip", "true-client-ip")
+OAUTH_BACKCHANNEL = ("/oauth/token", "/oauth/register", "/oauth/revoke")
+
+
+def _cloud_path(path: str) -> bool:
+    return path in ("/mcp", "/mcp/") or path.startswith(("/oauth/", "/.well-known/oauth-", "/.well-known/openid-configuration"))
+
+
 class LocalOnly:
     """Only this device may use Blocky, unless its owner turned on remote access (then the token is required).
 
@@ -92,8 +102,14 @@ class LocalOnly:
         from urllib.parse import parse_qs
         headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
         host = remote.effective_client((scope.get("client") or ("",))[0], headers.get("host", ""))
+        if host in remote.LOOPBACK_NAMES and any(h in headers for h in FORWARDED):
+            host = "forwarded"  # arrived through a tunnel or reverse proxy on this machine: someone else's request
+        path = scope.get("path", "")
         unsafe = scope["type"] == "websocket" or scope.get("method") not in ("GET", "HEAD", "OPTIONS")
-        if unsafe and not remote.same_origin(headers.get("origin", ""), headers.get("host", "")):
+        # A browser can't attach an Authorization header cross-site without a CORS preflight (which Blocky never
+        # approves), and the OAuth token endpoints carry no ambient authority, so those skip the Origin check.
+        exempt = "authorization" in headers or path in OAUTH_BACKCHANNEL
+        if unsafe and not exempt and not remote.same_origin(headers.get("origin", ""), headers.get("host", "")):
             # Cross-site requests (CSRF): browsers attach no preflight to "simple" POSTs, so refuse them here.
             if scope["type"] == "websocket":
                 return await send({"type": "websocket.close", "code": 1008})
@@ -103,6 +119,7 @@ class LocalOnly:
         jar = SimpleCookie(headers.get("cookie", ""))
         cookie = jar["blocky_key"].value if "blocky_key" in jar else ""
         if remote.allowed(host, headers.get("authorization", ""), cookie or key):
+            scope["blocky.trusted"] = True  # this device, or another device with the remote-access token
             if key and host not in ("127.0.0.1", "::1"):
                 async def send_with_cookie(msg):
                     if msg["type"] == "http.response.start":
@@ -110,6 +127,10 @@ class LocalOnly:
                                                   (b"set-cookie", f"blocky_key={key}; HttpOnly; SameSite=Strict; Max-Age=2592000; Path=/".encode())]}
                     await send(msg)
                 return await self.app(scope, receive, send_with_cookie)
+            return await self.app(scope, receive, send)
+        if scope["type"] == "http" and _cloud_path(path) and aiaccess.public_active() and remote.host_name(headers.get("host", "")) == aiaccess.public_host():
+            # A cloud AI assistant through the owner's tunnel: only MCP (OAuth-protected) and the sign-in endpoints.
+            scope["blocky.trusted"] = False
             return await self.app(scope, receive, send)
         if scope["type"] == "websocket":
             return await send({"type": "websocket.close", "code": 1008})
@@ -123,10 +144,39 @@ for _r in ROUTERS:
     app.include_router(_r.router)
 
 
-# ---------- MCP: AI assistants (Claude Code, Claude Desktop, other MCP clients) drive the lab at /mcp ----------
+# ---------- MCP: AI assistants (ChatGPT, Claude, Claude Code, other MCP clients) use the lab at /mcp ----------
 
-# Stateless Streamable HTTP; Host/Origin checks against DNS rebinding come from the SDK (localhost only).
-app.router.routes.extend(mcp_server.server.streamable_http_app(streamable_http_path="/mcp", stateless_http=True, json_response=True).routes)
+def _mcp_entry(inner):
+    """Decide the caller's access level: this device (or a remote-access token) gets the owner's local level; a cloud
+    assistant needs a valid OAuth access token and gets the level the owner approved for it."""
+    async def entry(scope, receive, send):
+        if scope.get("blocky.trusted"):
+            level = aiaccess.config()["local_level"]
+        else:
+            auth = dict(scope.get("headers", [])).get(b"authorization", b"").decode("latin-1")
+            level = aiaccess.verify(auth[7:].strip()) if auth[:7].lower() == "bearer " else None
+            if not level:
+                meta = f"{aiaccess.public_base()}/.well-known/oauth-protected-resource/mcp"
+                resp = JSONResponse({"error": "invalid_token", "error_description": "Sign in to use this Blocky."}, status_code=401,
+                                    headers={"WWW-Authenticate": f'Bearer resource_metadata="{meta}"'})
+                return await resp(scope, receive, send)
+        token = mcp_server.LEVEL.set(level)
+        try:
+            await inner(scope, receive, send)
+        finally:
+            mcp_server.LEVEL.reset(token)
+    return entry
+
+
+# Stateless Streamable HTTP. Host and Origin checks (DNS rebinding, cross-site requests) are done by LocalOnly above,
+# which also knows the owner's public address, so the SDK's localhost-only check is off.
+_mcp_app = mcp_server.server.streamable_http_app(streamable_http_path="/mcp", stateless_http=True, json_response=True,
+                                                 transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False))
+for _route in _mcp_app.routes:
+    if getattr(_route, "path", "") == "/mcp":
+        _route.app = _mcp_entry(_route.app)
+app.router.routes.extend(_mcp_app.routes)
+mcp_server.APP = app
 
 
 # ---------- Web UI (must be last: catches all other paths) ----------

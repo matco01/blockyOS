@@ -8,20 +8,6 @@ from fastapi.testclient import TestClient
 from app import db, main, profile, research_jobs
 
 
-@pytest.fixture(scope="module")
-def http_client():
-    async def idle_worker(client):
-        await asyncio.Event().wait()
-
-    # The MCP SDK's session manager supports one lifespan per process.
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(profile, "worker", idle_worker)
-        patch.setattr(research_jobs, "worker", idle_worker)
-        patch.setattr(profile, "limits", lambda: {"gpu": None, "vram_mb": 0})
-        with TestClient(main.app, client=("127.0.0.1", 12345), base_url="http://localhost:8000") as client:
-            yield client
-
-
 @pytest.fixture
 def api(http_client, fresh_db):
     return http_client
@@ -63,7 +49,7 @@ def test_settings_memory_and_mcp_catalog(api):
     assert catalog.status_code == 200
     names = {t["name"] for t in catalog.json()["tools"]}
     assert {"queue_run", "queue_sweep", "get_experiment"} <= names
-    assert not any("delete" in name for name in names)
+    assert {"list_api", "api_get", "api_call", "api_delete", "query_database"} <= names  # the whole API, by access level
 
 
 def test_validation_http_queue_and_evidence(api, make_gguf):

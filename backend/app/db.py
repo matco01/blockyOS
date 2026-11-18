@@ -93,6 +93,8 @@ DEFAULT_SETTINGS = {
     "rpc_worker": {"enabled": False, "expose": False, "port": 50052},  # this device as a llama.cpp RPC worker (rpcworker.py)
     "anthropic_api_key": "",    # the agent's Claude key (optional); never returned by the API
     "agent_model": "claude-opus-5-5",         # set = other devices may control this one with this token (Settings → Remote access)
+    "ai_access": {"local_level": "full", "public_enabled": False, "public_url": ""},  # AI assistants over MCP (aiaccess.py)
+    "ai_pairing_code": "",      # one-time code that approves a cloud assistant; only GET /api/ai-access shows it
 }
 
 

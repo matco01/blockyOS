@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Bot, Code2, Info, Lock, Network, Palette, PlugZap, Server, Trash2 } from "lucide-react";
-import { api, Device, RpcWorker, Settings, Status } from "./api";
+import { AiAccess, AiLevel, api, Device, RpcWorker, Settings, Status } from "./api";
 import { Accent, ACCENTS, Theme } from "./settings";
 
 const THEMES: { id: Theme; label: string }[] = [
@@ -48,6 +48,7 @@ export default function SettingsPage({ status, theme, setTheme, accent, setAccen
         </div>
 
         <AgentSettings />
+        <AiAssistantSettings />
         <EnergySettings />
         <RemoteSettings />
 
@@ -55,7 +56,7 @@ export default function SettingsPage({ status, theme, setTheme, accent, setAccen
         <div className="group">
           <div className="row">
             <span className="row-icon" style={{ background: "linear-gradient(180deg,#a1a1a6,#6e6e73)" }}><Info /></span>
-            <div className="row-main">Version</div><span className="value">blockyOS 0.1</span>
+            <div className="row-main">Version</div><span className="value">blockyOS 0.2</span>
           </div>
           <div className="row">
             <span className="row-icon" style={{ background: "linear-gradient(180deg,#5ee08a,#28b350)" }}><Lock /></span>
@@ -74,13 +75,6 @@ export default function SettingsPage({ status, theme, setTheme, accent, setAccen
             <div className="row-main">
               <div>Device configuration</div>
               <div className="row-sub">Edit <code>/etc/blocky/blocky.env</code>, then restart the services.</div>
-            </div>
-          </div>
-          <div className="row">
-            <span className="row-icon" style={{ background: "linear-gradient(180deg,#b38cff,#7a4dff)" }}><Bot /></span>
-            <div className="row-main">
-              <div>AI assistants (MCP)</div>
-              <div className="row-sub">Let Claude Code, Claude Desktop or another MCP client run experiments: <code>claude mcp add --transport http blocky http://localhost:8000/mcp</code>. See the <a href="#/guide">Guide</a>.</div>
             </div>
           </div>
           <div className="row">
@@ -246,6 +240,92 @@ function RemoteSettings() {
             </div>
           </div>
         </div>
+      </div>
+    </>
+  );
+}
+
+const LEVEL_LABEL: Record<AiLevel, string> = { read: "Read", write: "Write", full: "Full" };
+const ago = (t: number | null) => {
+  if (!t) return "not used yet";
+  const s = Date.now() / 1000 - t;
+  return s < 120 ? "used just now" : s < 7200 ? `used ${Math.round(s / 60)} min ago` : s < 172800 ? `used ${Math.round(s / 3600)} h ago` : `used ${Math.round(s / 86400)} days ago`;
+};
+
+/** ChatGPT, Claude and other AI assistants over MCP: what they may do, and the public sign-in for cloud assistants. */
+function AiAssistantSettings() {
+  const [a, setA] = useState<AiAccess | null>(null);
+  const [url, setUrl] = useState("");
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const load = () => api.aiAccess().then((v) => { setA(v); setUrl(v.public_url); }).catch(() => {});
+  useEffect(() => { load(); }, []);
+  const run = async (f: () => Promise<AiAccess>, ok?: string) => {
+    setMsg(null);
+    try { const v = await f(); setA(v); setUrl(v.public_url); if (ok) setMsg({ ok: true, text: ok }); } catch (e) { setMsg({ ok: false, text: (e as Error).message }); }
+  };
+  if (!a) return null;
+  const copy = (text: string) => { navigator.clipboard?.writeText(text).catch(() => {}); };
+  return (
+    <>
+      <div className="group-label">AI assistants (ChatGPT, Claude)</div>
+      <div className="group">
+        <div className="row">
+          <span className="row-icon" style={{ background: "linear-gradient(180deg,#b38cff,#7a4dff)" }}><Bot /></span>
+          <div className="row-main">
+            <div>Assistants on this device</div>
+            <div className="row-sub">Claude Code, Claude Desktop and other MCP clients running here can see and use all of Blocky. Claude Code: <code style={{ userSelect: "all" }}>claude mcp add --transport http blocky {a.local_mcp_url}</code></div>
+            <div className="row-sub" style={{ marginTop: 4 }}>{a.levels[a.local_level]}</div>
+          </div>
+          <div className="segmented">
+            {(["read", "write", "full"] as AiLevel[]).map((l) => (
+              <button key={l} className={a.local_level === l ? "on" : ""} onClick={() => run(() => api.setAiAccess({ local_level: l }))}>{LEVEL_LABEL[l]}</button>
+            ))}
+          </div>
+        </div>
+        <div className="row">
+          <span className="row-icon" style={{ background: "linear-gradient(180deg,#5ac8fa,#007aff)" }}><Network /></span>
+          <div className="row-main">
+            <div>ChatGPT, Claude on the web and phone</div>
+            <div className="row-sub">Cloud assistants can't reach this device directly. Publish it through an HTTPS tunnel (for example <code>cloudflared tunnel --url http://localhost:8000</code> or <code>tailscale funnel 8000</code>), enter that address, and turn this on. Through the tunnel only the assistant connection and its sign-in are reachable; every assistant must be approved here with the pairing code.</div>
+            <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+              <input className="field" placeholder="https://blocky.example.com" value={url} onChange={(e) => setUrl(e.target.value)} style={{ maxWidth: 360 }} />
+              <button className="btn small" disabled={url.trim() === a.public_url} onClick={() => run(() => api.setAiAccess({ public_url: url.trim() }), "Address saved.")}>Save address</button>
+            </div>
+            {a.public_enabled && a.public_mcp_url && (
+              <div className="ai-connect">
+                <div><span className="row-sub">Connector address</span><br /><code style={{ userSelect: "all" }}>{a.public_mcp_url}</code>
+                  <button className="btn small ghost" style={{ marginLeft: 8 }} onClick={() => copy(a.public_mcp_url!)}>Copy</button></div>
+                <div><span className="row-sub">Pairing code (one use)</span><br /><code className="ai-code" style={{ userSelect: "all" }}>{a.pairing_code}</code>
+                  <button className="btn small ghost" style={{ marginLeft: 8 }} onClick={() => run(api.aiNewCode, "New code created; the old one no longer works.")}>New code</button></div>
+                {a.locked && <div className="row-sub" style={{ color: "var(--red, #e5484d)" }}>Locked after several wrong codes. Create a new code to unlock.</div>}
+                <ol className="row-sub ai-steps">
+                  <li><b>ChatGPT:</b> Settings → Apps &amp; Connectors → Advanced settings → turn on Developer mode. Then create a connector with the address above and OAuth sign-in.</li>
+                  <li><b>Claude</b> (web, desktop, phone): Settings → Connectors → Add custom connector, and paste the address above.</li>
+                  <li>A Blocky page opens: choose what the assistant may do, enter the pairing code, and approve.</li>
+                </ol>
+              </div>
+            )}
+          </div>
+          <div className="segmented">
+            <button className={a.public_enabled ? "" : "on"} onClick={() => run(() => api.setAiAccess({ public_enabled: false }))}>Off</button>
+            <button className={a.public_enabled ? "on" : ""} onClick={() => run(() => api.setAiAccess({ public_enabled: true, public_url: url.trim() }))}>On</button>
+          </div>
+        </div>
+        {a.connections.length > 0 && (
+          <div className="row">
+            <span className="row-icon" style={{ background: "linear-gradient(180deg,#a1a1a6,#6e6e73)" }}><Lock /></span>
+            <div className="row-main">
+              <div>Connected assistants</div>
+              {a.connections.map((c) => (
+                <div key={c.id} style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 6, flexWrap: "wrap" }}>
+                  <b>{c.client_name}</b><span className="row-sub">{LEVEL_LABEL[c.level]} · via {c.redirect} · {ago(c.last_used_at)}</span>
+                  <button className="btn small ghost" onClick={() => run(() => api.aiRevoke(c.id), `${c.client_name} disconnected.`)}>Disconnect</button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        {msg && <div className="row"><span className="row-sub" style={{ color: msg.ok ? undefined : "var(--red, #e5484d)" }}>{msg.text}</span></div>}
       </div>
     </>
   );

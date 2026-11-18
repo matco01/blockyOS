@@ -12,6 +12,7 @@ router = APIRouter()
 def get_settings():
     s = db.get_settings()
     key = s.pop("anthropic_api_key", "")
+    s.pop("ai_pairing_code", None)  # Settings → AI assistants shows it (GET /api/ai-access)
     return {**s, "anthropic_api_key_set": bool(key)}  # the key itself never leaves the backend
 
 
@@ -20,6 +21,8 @@ def update_settings(body: dict):
     body.pop("remote_token", None)  # only POST /api/remote-access creates or clears it
     body.pop("rpc_worker", None)  # only POST /api/rpc-worker changes it (and starts or stops the worker)
     body.pop("anthropic_api_key", None)  # only POST /api/agent/key sets it
+    body.pop("ai_access", None)  # only /api/ai-access changes these
+    body.pop("ai_pairing_code", None)
     if "agent_model" in body and body["agent_model"] not in agent.CLAUDE_MODELS:
         raise HTTPException(400, "Unknown model")
     try:

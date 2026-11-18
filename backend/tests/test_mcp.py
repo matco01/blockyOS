@@ -16,7 +16,10 @@ def no_hardware(monkeypatch):
 def test_tools_registered():
     names = {t.name for t in asyncio.run(mcp_server.server.list_tools())}
     assert {"get_status", "get_experiment", "create_experiment", "queue_run", "queue_sweep", "build_weight_variant", "start_layer_scan"} <= names
-    assert not any("delete" in n for n in names)  # deleting stays a human action
+    tools = {t.name: t for t in asyncio.run(mcp_server.server.list_tools())}
+    assert tools["get_status"].annotations.read_only_hint and tools["query_database"].annotations.read_only_hint
+    assert not tools["queue_run"].annotations.read_only_hint and not tools["queue_run"].annotations.destructive_hint
+    assert tools["api_delete"].annotations.destructive_hint  # deleting needs the 'full' level and is marked for confirmation
 
 
 def test_experiment_and_branch(fresh_db, make_gguf, no_hardware):

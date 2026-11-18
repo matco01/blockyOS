@@ -61,6 +61,9 @@ CI runs the same on every push (`.github/workflows/ci.yml`).
 - **Settings that change how a run is measured** (sample sizes, test sets) go into the run's provenance and into
   `compare()`'s mismatch list, so runs measured differently are never compared silently. New config keys are stored only
   when set, so older runs' configs stay equal to new ones (repeat detection depends on it).
-- **No destructive actions from tools.** The MCP server and background jobs don't delete user data; deleting stays a
-  user action in the UI.
+- **Destructive actions need the owner's consent.** Background jobs and the in-UI agent don't delete user data. Through
+  MCP, deleting is possible only at the `full` access level the owner chose (Settings → AI assistants), through the
+  `api_delete` tool marked destructive. MCP never exposes secrets or the endpoints that manage access
+  (`mcp_server.BLOCKED`, `SECRET_KEYS`, `aiaccess.SECRET_TABLES`); new secret settings or access endpoints must be added
+  there.
 - Keep it simple: plain modules and functions, SQLite via `db.connect()`, no new frameworks without a clear need.

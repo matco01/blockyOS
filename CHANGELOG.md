@@ -4,6 +4,23 @@ All notable changes. Versions follow [semantic versioning](https://semver.org); 
 own version (`PROTOCOL` in `backend/app/profile.py`, specified in [docs/PROTOCOL.md](docs/PROTOCOL.md)) and is listed
 with each release. Results are only comparable within one protocol version.
 
+## [Unreleased]
+
+### Added
+- AI assistants over MCP with full access: ChatGPT and Claude (web, desktop and phone) connect through the owner's HTTPS
+  tunnel with OAuth 2.1 sign-in (dynamic client registration, PKCE, rotating refresh tokens, reuse detection). The owner
+  approves each one with a one-time pairing code and chooses its access level (read, write, full); connections can be
+  disconnected at any time. Settings → AI assistants; docs/AI_ASSISTANTS.md.
+- MCP tools for everything: `list_api` (every endpoint), `api_get`, `api_call`, `api_delete` and `query_database`
+  (read-only SQL over all stored data). Every tool is labelled read-only, write or destructive.
+
+### Changed
+- Deleting through MCP is possible at the `full` access level (previously no MCP tool deleted anything). Assistants on
+  this device get the local level, `full` by default. Secrets (tokens, API keys, the pairing code) and the endpoints
+  that manage access are never available through MCP.
+- Requests that arrive through a tunnel or proxy on this machine (forwarding headers) are no longer treated as coming
+  from the device itself.
+
 ## [0.2.0] — 2026-11-17
 
 Measurement protocol: `blocky-profile/3` (unchanged by default; new optional settings are recorded per run).

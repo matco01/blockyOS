@@ -471,3 +471,9 @@ label.row { cursor: pointer; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
+
+/* Settings → AI assistants: connector address, pairing code and setup steps. */
+.ai-connect { display: grid; gap: 10px; margin-top: 10px; padding: 10px 12px; border: 1px solid var(--line, rgba(127, 127, 127, 0.25)); border-radius: 10px; }
+.ai-connect code { overflow-wrap: anywhere; }
+.ai-code { font-size: 1.15em; letter-spacing: 0.12em; font-weight: 600; }
+.ai-steps { margin: 0; padding-left: 18px; display: grid; gap: 4px; }
