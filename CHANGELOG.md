@@ -21,6 +21,9 @@ with each release. Results are only comparable within one protocol version.
 - Requests that arrive through a tunnel or proxy on this machine (forwarding headers) are no longer treated as coming
   from the device itself.
 
+### Fixed
+- GPU clock lock helper (`blocky-gpu-clocks`) also finds `nvidia-smi` where WSL installs it; re-run `scripts/install.sh`.
+
 ## [0.2.0] — 2026-11-17
 
 Measurement protocol: `blocky-profile/3` (unchanged by default; new optional settings are recorded per run).

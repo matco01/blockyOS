@@ -59,10 +59,14 @@ echo "==> Permissions"
 cat > /usr/local/sbin/blocky-gpu-clocks <<'EOF'
 #!/bin/bash
 set -euo pipefail
+# Fixed locations only (never PATH, this runs as root): the driver package's, and WSL's.
+SMI=
+for p in /usr/bin/nvidia-smi /usr/lib/wsl/lib/nvidia-smi; do [[ -x "$p" ]] && { SMI=$p; break; }; done
+[[ -n "$SMI" ]] || { echo "nvidia-smi not found" >&2; exit 3; }
 case "${1:-}" in
   lock)  [[ "${2:-}" =~ ^[0-9]{3,4}$ ]] || { echo "usage: blocky-gpu-clocks lock <MHz>" >&2; exit 2; }
-         exec /usr/bin/nvidia-smi -lgc "$2,$2" ;;
-  reset) exec /usr/bin/nvidia-smi -rgc ;;
+         exec "$SMI" -lgc "$2,$2" ;;
+  reset) exec "$SMI" -rgc ;;
   *)     echo "usage: blocky-gpu-clocks lock <MHz> | reset" >&2; exit 2 ;;
 esac
 EOF
