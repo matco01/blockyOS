@@ -23,6 +23,9 @@ with each release. Results are only comparable within one protocol version.
 
 ### Fixed
 - GPU clock lock helper (`blocky-gpu-clocks`) also finds `nvidia-smi` where WSL installs it; re-run `scripts/install.sh`.
+- Speed: a llama-bench repetition with a negative duration (the clock stepped backwards, seen under WSL) is now dropped
+  like other invalid samples. Before, it counted as a near-zero rate and pulled the median down. Protocol unchanged:
+  this was already the specified rule; earlier stored results keep their values.
 
 ## [0.2.0] — 2026-11-17
 

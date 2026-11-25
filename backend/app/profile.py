@@ -1465,6 +1465,11 @@ def parse_bench(out: str) -> dict:
             x = json.loads(line)
             key = ("pp" if x.get("n_prompt") and not x.get("n_gen") else "tg") + ("_d4096" if x.get("n_depth") else "")
             raw = x.get("samples_ts") or []
+            ns = x.get("samples_ns") or []
+            if len(ns) == len(raw):
+                # A negative duration (clock stepped backwards, seen under WSL) arrives as uint64: ~1.8e19 ns, and a
+                # positive but meaningless rate of ~1e-8 tok/s. The duration is the measurement: drop such samples.
+                raw = [None if isinstance(n, int) and not 0 < n < 2**63 else s for s, n in zip(raw, ns)]
             st = robust_stats(raw)
             if st["dropped"]:
                 res[key + "_dropped"] = st["dropped"]

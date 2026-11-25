@@ -162,7 +162,9 @@ llama-bench -m <model> -p 512 -n 128 -d 0,4096 -r 5 -ctk <kv> -ctv <kv> -fa <fa>
 
 Prefill (512-token prompt) and decode (128 tokens) at depth 0 and at 4,096 tokens of context, five repetitions each.
 Per test, the reported value is the **median** of the per-repetition rates (`samples_ts`), with a robust spread
-1.4826 × MAD. Samples that are non-finite or not positive are dropped and counted; positive outliers are kept, because
+1.4826 × MAD. Samples that are non-finite or not positive are dropped and counted, and so are samples whose duration
+(`samples_ns`) is not positive: a clock that steps backwards gives a negative duration, which llama-bench prints as a
+huge unsigned number and a tiny positive rate. Positive outliers are kept, because
 a summary cannot tell a timer error from a real slowdown. The five repetitions come from one process at one time, so
 their spread is **descriptive**, not a standard error: it doesn't include session-to-session drift (section 12).
 

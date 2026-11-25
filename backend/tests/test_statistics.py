@@ -75,6 +75,17 @@ def test_parse_bench_reads_llama_bench_jsonl():
     assert r["pp_samples"] == [1700, 1750, 1720, 1730, 1690]
 
 
+def test_parse_bench_drops_negative_durations():
+    # Real llama-bench output (RTX 2080 Super under WSL): the clock stepped back during the 5th repetition, so its
+    # duration wrapped to ~2^64 ns and its rate came out as 6.9e-09 tok/s instead of failing.
+    line = ('{"n_prompt": 0, "n_gen": 128, "n_depth": 0, "samples_ts": [160.424, 160.839, 158.132, 143.368, 6.93889e-09],'
+            ' "samples_ns": [797887582, 795827250, 809449741, 892806412, 18446744072840475146]}')
+    r = profile.parse_bench(line)
+    assert r["tg_dropped"] == 1
+    assert r["tg"] == 159.28  # median of the four real repetitions, not 158.13 with the bad one
+    assert r["tg_samples"][4] is None
+
+
 def test_paired_diff_ci_basic_properties():
     a = "1" * 300 + "0" * 260
     assert profile.paired_diff_ci(a, a)["diff"] == 0
