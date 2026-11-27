@@ -164,3 +164,13 @@ button.link { font: inherit; color: var(--accent); background: none; border: 0; 
 .ref-form summary { cursor: pointer; font-size: 13px; color: var(--accent); }
 .ref-form .ws-grid { margin-top: 8px; }
 .ref-source { grid-column: 1 / -1; }
+
+/* UX review fixes */
+.all-tools > summary::after { content: "›"; margin-left: auto; font-size: 15px; line-height: 1; transition: transform 0.2s var(--ease); }
+.all-tools[open] > summary::after { transform: rotate(90deg); }
+.all-tools > summary:hover { color: var(--text); }
+.all-tools-count { font-size: 10.5px; font-weight: 600; padding: 0 6px; border-radius: 99px; background: var(--surface-2); color: var(--text-3); letter-spacing: 0; }
+.xfailed-group { margin: 10px 0; font-size: 13px; }
+.xfailed-group > summary { cursor: pointer; display: flex; align-items: center; gap: 6px; color: var(--text-2); }
+.xfailed-group > summary svg { color: var(--warning, #f5a524); flex: none; }
+.xfailed-group .xfailed { margin-top: 6px; }

@@ -3,7 +3,6 @@
 A project holds experiments (a model and its measured versions) and code (research projects). Both keep working on
 their own; a project only groups them. Deleting a project unlinks its contents, it never deletes them.
 """
-import json
 import time
 
 from . import db
@@ -37,16 +36,6 @@ def _clean(name, goal) -> tuple[str, str]:
     return name, str(goal or "").strip()[:500]
 
 
-def _key_results(results: str | None) -> dict | None:
-    """The few numbers a project card shows: accuracy, decode speed, perplexity."""
-    try:
-        r = json.loads(results or "{}")
-    except ValueError:
-        return None
-    out = {"mmlu": (r.get("mmlu") or {}).get("acc"), "tg": (r.get("speed") or {}).get("tg"), "ppl": r.get("ppl")}
-    return out if any(v is not None for v in out.values()) else None
-
-
 def _experiments(c, where: str, args: tuple) -> list[dict]:
     rows = c.execute(f"""SELECT e.id, e.name, e.model, e.created_at, COUNT(r.id) AS runs,
                                 COALESCE(SUM(r.status = 'done'), 0) AS done,
@@ -55,13 +44,23 @@ def _experiments(c, where: str, args: tuple) -> list[dict]:
                          FROM experiments e LEFT JOIN exp_runs r ON r.experiment_id = e.id
                          WHERE {where} GROUP BY e.id ORDER BY e.id DESC""", args).fetchall()
     out = []
+    # Only the three numbers a card shows, extracted by SQLite: a run's full results are megabytes of JSON.
+    pick = ("SELECT id, label, json_extract(results, '$.mmlu.acc') AS mmlu, json_extract(results, '$.speed.tg') AS tg, "
+            "json_extract(results, '$.ppl') AS ppl FROM exp_runs WHERE experiment_id = ? AND status = 'done'{} ORDER BY id {} LIMIT 1")
     for row in rows:
         e = dict(row)
-        done = c.execute("SELECT label, results FROM exp_runs WHERE experiment_id = ? AND status = 'done' ORDER BY id", (e["id"],)).fetchall()
-        e["baseline"] = {"label": done[0]["label"], "results": _key_results(done[0]["results"])} if done else None
-        e["latest"] = {"label": done[-1]["label"], "results": _key_results(done[-1]["results"])} if len(done) > 1 else None
+        first = c.execute(pick.format("", "ASC"), (e["id"],)).fetchone()
+        # "Latest" is the latest change: reruns of a setup ("Repeat of …") measure noise, not a new version.
+        last = c.execute(pick.format(" AND label NOT LIKE 'Repeat of%'", "DESC"), (e["id"],)).fetchone()
+        e["baseline"] = {"label": first["label"], "results": _key_numbers(first)} if first else None
+        e["latest"] = {"label": last["label"], "results": _key_numbers(last)} if last and last["id"] != first["id"] else None
         out.append(e)
     return out
+
+
+def _key_numbers(row) -> dict | None:
+    out = {"mmlu": row["mmlu"], "tg": row["tg"], "ppl": row["ppl"]}
+    return out if any(v is not None for v in out.values()) else None
 
 
 def _code(c, where: str, args: tuple) -> list[dict]:

@@ -108,7 +108,7 @@ function ProjectList({ open }: { open: (id: number) => void }) {
                 {p.goal ? <span className="pj-card-goal">{p.goal}</span> : <span className="pj-card-goal muted">No goal written yet</span>}
                 <span className="pj-card-meta">
                   {p.experiments.length} model{p.experiments.length === 1 ? "" : "s"} · {versions} version{versions === 1 ? "" : "s"} measured
-                  {p.code.length > 0 && <> · {p.code.length} code</>}
+                  {p.code.length > 0 && <> · {p.code.length} code workspace{p.code.length === 1 ? "" : "s"}</>}
                   {active > 0 && <> · <span className="pj-live">{active} running</span></>}
                 </span>
                 {best && <KeyNumbers r={(best.latest ?? best.baseline)?.results} />}
@@ -305,7 +305,7 @@ function Overview({ project, openVersions, build, onChanged }: { project: Projec
           : unmeasured
             ? <div><b>Next: measure the starting point of {unmeasured.name}.</b><span>Every change is compared against it, so it comes first.</span><button className="btn small" onClick={() => openVersions(unmeasured.id)}><Play /> Open and measure</button></div>
             : measured
-              ? <div><b>Next: try a change and see whether it helps.</b><span>Make a smaller version, fine-tune it on your data, or change one setting in Versions.</span><span className="flow-toolbar"><button className="btn small" onClick={() => build("smaller")}><Layers /> Make it smaller</button><button className="btn small ghost" onClick={() => build("finetune")}><Wand2 /> Fine-tune</button><button className="btn small ghost" onClick={() => openVersions(measured.id)}><GitBranch /> Change a setting</button></span></div>
+              ? <div><b>Next: try a change and see whether it helps.</b><span>Make a smaller version, fine-tune it on your data, or change one setting on the canvas.</span><span className="flow-toolbar"><button className="btn small" onClick={() => build("smaller")}><Layers /> Make it smaller</button><button className="btn small ghost" onClick={() => build("finetune")}><Wand2 /> Fine-tune</button><button className="btn small ghost" onClick={() => openVersions(measured.id, "canvas")}><GitBranch /> Change a setting</button></span></div>
               : <div><b>Next: build something.</b><span>Your code is here; when it reports results, use them in Versions.</span><button className="btn small" onClick={() => build("code")}>Open your code</button></div>}
       </div>
 

@@ -931,7 +931,7 @@ export default function ExperimentsPage({ status, projectId, openExp, onChanged,
             {list.length === 0 && <option>{listLoading ? "Loading experiments..." : listReady ? "No experiments yet" : "Experiments unavailable"}</option>}
             {list.map((e) => <option key={e.id} value={e.id}>{e.name} · {e.id === exp?.id ? runs.length : e.runs} run{(e.id === exp?.id ? runs.length : e.runs) === 1 ? "" : "s"}</option>)}
           </select>
-          <button className="btn small ghost" onClick={() => setCreating(!creating)}><Plus /> New experiment</button>
+          <button className="btn small ghost" onClick={() => setCreating(!creating)}><Plus /> {projectId == null ? "New experiment" : "Add a model"}</button>
           <details className="flow-study-tools" open={mode === "pro" || undefined}><summary>Study tools and export</summary><div className="flow-toolbar">
           {exp && <>
             <a className="btn small ghost" href={`/api/experiments/${exp.id}/export.csv`}><Download /> CSV</a>
@@ -1013,7 +1013,17 @@ export default function ExperimentsPage({ status, projectId, openExp, onChanged,
             )}
 
             </section>
-            {runs.filter((r) => !["done", "running", "queued"].includes(r.status)).map((r) => <div key={r.id} className="xfailed" role="alert"><AlertCircle size={14} />{r.label}: {r.status}{r.error ? ` - ${r.error}` : ""}<button className="icon-btn danger" aria-label={`Delete failed run ${r.id}`} onClick={() => api.experimentDeleteRun(r.id).then(load)}><Trash2 /></button></div>)}
+            {(() => {
+              const unfinished = runs.filter((r) => !["done", "running", "queued"].includes(r.status));
+              if (!unfinished.length) return null;
+              const failed = unfinished.filter((r) => r.status === "error").length, other = unfinished.length - failed;
+              return (
+                <details className="xfailed-group">
+                  <summary><AlertCircle size={14} /> {[failed && `${failed} run${failed === 1 ? "" : "s"} failed`, other && `${other} cancelled`].filter(Boolean).join(" · ")}<span className="row-sub"> · not part of any result; delete them or repeat the setup</span></summary>
+                  {unfinished.map((r) => <div key={r.id} className="xfailed"><AlertCircle size={14} />{r.label}: {r.status}{r.error ? ` - ${r.error}` : ""}<button className="icon-btn danger" aria-label={`Delete unfinished run ${r.id}`} onClick={() => api.experimentDeleteRun(r.id).then(load)}><Trash2 /></button></div>)}
+                </details>
+              );
+            })()}
             {baseline && (
               <>
                 <section hidden={stage !== "setup" && stage !== "all"}>

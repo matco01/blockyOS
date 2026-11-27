@@ -203,7 +203,7 @@ export default function App() {
           ))}
 
           <details className="side-nav all-tools" open={ALL_TOOLS.includes(page) || undefined}>
-            <summary className="section-label"><Wrench /> All tools</summary>
+            <summary className="section-label"><Wrench /> All tools <span className="all-tools-count">{ALL_TOOLS.length}</span></summary>
             {ALL_TOOLS.map((id) => {
               const p = PAGES.find((x) => x.id === id)!;
               return (
