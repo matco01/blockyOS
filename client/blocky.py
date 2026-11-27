@@ -44,15 +44,18 @@ def _flat(d: dict, prefix: str = "") -> dict:
 
 
 class Client:
-    def __init__(self, url: str = "http://localhost:8000", timeout: float = 120):
+    def __init__(self, url: str = "http://localhost:8000", timeout: float = 120, token: str | None = None):
+        """`token`: the remote-access token, when the box is another device (Settings → Remote access)."""
         self.url = url.rstrip("/")
         self.timeout = timeout
+        self.token = token
 
     # ---- HTTP ----
     def _req(self, method: str, path: str, body=None, params: dict | None = None):
         q = f"?{urllib.parse.urlencode({k: v for k, v in params.items() if v is not None})}" if params else ""
         data = json.dumps(body).encode() if body is not None else None
-        r = urllib.request.Request(self.url + path + q, data, {"Content-Type": "application/json"}, method=method)
+        headers = {"Content-Type": "application/json", **({"Authorization": f"Bearer {self.token}"} if self.token else {})}
+        r = urllib.request.Request(self.url + path + q, data, headers, method=method)
         try:
             with urllib.request.urlopen(r, timeout=self.timeout) as resp:
                 raw = resp.read()

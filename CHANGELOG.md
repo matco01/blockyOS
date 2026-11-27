@@ -23,6 +23,10 @@ with each release. Results are only comparable within one protocol version.
   A Hugging Face-format model folder (config.json + safetensors) can be uploaded for fine-tuning, and a `.gguf` can be
   downloaded on the device from any https link.
 
+- **The `blocky` command** (`blockyos-client` 0.3.0): `blocky measure base.gguf variant.gguf` queues a baseline,
+  optional reruns and variants, waits and prints a table where every number has its spread or interval and accuracy
+  differences their paired test; `results`, `check` (exit code 1 on a failed instrument check), `status`, `models`,
+  `experiments`, `projects`; CSV/JSON output; remote devices with `--url`/`--token`. The Python client takes a token.
 - **Ship: publish to Hugging Face with a measured model card.** Each measured version in a project can be used on the
   device, downloaded (model file, model card), or published to a Hugging Face repository (private by default): the
   model card is written only from the measurements (accuracy with its interval and paired test against the baseline,

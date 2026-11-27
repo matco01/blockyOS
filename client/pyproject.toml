@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "blockyos-client"
-version = "0.2.0"
+version = "0.3.0"
 description = "Python client for blockyOS: queue experiments, read results as tables, report metrics from research programs"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -28,4 +28,7 @@ Homepage = "https://github.com/matco01/blockyOS"
 Documentation = "https://github.com/matco01/blockyOS/blob/main/docs/PROTOCOL.md"
 
 [tool.setuptools]
-py-modules = ["blocky", "blocky_research"]
+py-modules = ["blocky", "blocky_research", "blocky_cli"]
+
+[project.scripts]
+blocky = "blocky_cli:main"

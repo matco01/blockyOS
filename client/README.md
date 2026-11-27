@@ -1,6 +1,24 @@
 # blockyos-client
 
-A small, dependency-free Python client for a [blockyOS](https://github.com/matco01/blockyOS) device.
+A small, dependency-free Python client for a [blockyOS](https://github.com/matco01/blockyOS) device, and the
+`blocky` command.
+
+## The `blocky` command
+
+```bash
+blocky measure Qwen3.5-0.8B-F16.gguf Qwen3.5-0.8B-Q4_K_M.gguf   # baseline + variant: queue, wait, print the table
+blocky measure base.gguf --repeat 1 --project "Support bot" --csv results.csv
+blocky results 13            # any experiment, by id or name (--csv, --json)
+blocky check 13              # instrument checks; exit code 1 if one fails
+blocky status                # chat model, lab activity, GPU temperature and safety pause
+blocky models | experiments | projects
+```
+
+Every number comes with its spread or interval, and accuracy differences with the paired test against the baseline.
+Another device: `--url http://box:8000 --token <remote-access token>` (or `BLOCKY_URL`, `BLOCKY_TOKEN`). Exit
+codes: 0 done, 1 a run or check failed, 2 usage or connection error, so it fits CI jobs and scripts.
+
+## Python
 
 ```python
 import blocky
