@@ -4,8 +4,11 @@ import { Tabs, useMode } from "./ui";
 import ConfigFields from "./ConfigFields";
 import { configObject } from "./workflow";
 
-export default function ResearchPage() {
+/** Your own code: programs, evaluators, architectures. Inside a project (`codeIds`), it shows only that project's code
+ *  and hands every new workspace to `onCreate` so the project can claim it. */
+export default function ResearchPage({ codeIds, onCreate }: { codeIds?: number[]; onCreate?: (id: number) => Promise<unknown> } = {}) {
   const mode = useMode();
+  const [created, setCreated] = useState<number[]>([]);
   const pageRef = useRef<HTMLDivElement>(null);
   const [stage, setStage] = useState<"prepare" | "code" | "run" | "results" | "compare">("prepare");
   const [loading, setLoading] = useState(true), [jobsLoading, setJobsLoading] = useState(false), [sourceLoading, setSourceLoading] = useState(false);
@@ -17,7 +20,9 @@ export default function ResearchPage() {
   const [sourceReady, setSourceReady] = useState(false);
   const [jobsReady, setJobsReady] = useState(false);
   const [sourceRevision, setSourceRevision] = useState(0);
-  const [projects, setProjects] = useState<ResearchProject[]>([]), [pid, setPid] = useState(0);
+  const [allProjects, setProjects] = useState<ResearchProject[]>([]), [pid, setPid] = useState(0);
+  const projects = codeIds ? allProjects.filter((p) => codeIds.includes(p.id) || created.includes(p.id)) : allProjects;
+  useEffect(() => { if (codeIds && pid && !projects.some((p) => p.id === pid)) setPid(projects[0]?.id ?? 0); }, [codeIds, pid, projects]);
   const [name, setName] = useState("New research project"), [template, setTemplate] = useState("byte");
   const [files, setFiles] = useState<string[]>([]), [file, setFile] = useState("main.py"), [code, setCode] = useState("");
   const [python, setPython] = useState(""), [argv, setArgv] = useState('["{python}", "main.py"]'), [config, setConfig] = useState("{}");
@@ -27,7 +32,7 @@ export default function ResearchPage() {
   const [profileRuns, setProfileRuns] = useState<{ id: number; label: string; experiment: string }[]>([]);
   const [error, setError] = useState(""), [message, setMessage] = useState(""), [saving, setSaving] = useState(false);
   const [methodName, setMethodName] = useState("");
-  const refreshProjects = () => api.researchProjects().then((d) => { setProjects(d.projects); setProjectsReady(true); setEnvironments(d.environments ?? [{ label: "Standard Python", python: d.python }]); setPython((v) => v || d.python); setPid((v) => v || d.projects[0]?.id || 0); }).finally(() => setLoading(false));
+  const refreshProjects = () => api.researchProjects().then((d) => { setProjects(d.projects); setProjectsReady(true); setEnvironments(d.environments ?? [{ label: "Standard Python", python: d.python }]); setPython((v) => v || d.python); setPid((v) => v || (codeIds ? d.projects.find((p) => codeIds.includes(p.id))?.id : d.projects[0]?.id) || 0); }).finally(() => setLoading(false));
   useEffect(() => { refreshProjects().catch((e) => setError(String(e))); }, []);
   useEffect(() => { api.researchProfileRuns().then(setProfileRuns).catch((e) => setError(String(e))); }, []);
   useEffect(() => {
@@ -67,15 +72,17 @@ export default function ResearchPage() {
     } finally { setSaving(false); }
   };
   const shown = jobs.find((j) => j.id === selected) ?? jobs[0];
-  return <div className="page" ref={pageRef}><div className="page-inner wide">
-    <h1 className="page-title">Develop a method</h1>
-    <p className="page-sub">Build your implementation, run an evaluation, then use the tested result in Experiments.</p>
+  return <div className={codeIds ? "embedded" : "page"} ref={pageRef}><div className={codeIds ? "" : "page-inner wide"}>
+    {!codeIds && <>
+      <h1 className="page-title">Develop a method</h1>
+      <p className="page-sub">Build your implementation, run an evaluation, then use the tested result in Experiments.</p>
+    </>}
     {error && <p className="error" role="alert">{error} <button className="btn small ghost" onClick={() => { setError(""); setLoading(true); refreshProjects().catch((e) => setError(String(e))); }}>Retry loading projects</button></p>}{message && <p role="status">{message}</p>}
     {loading ? <p role="status">Loading projects…</p> : <div className="flow-toolbar"><label>Workspace<select className="field select" value={pid} onChange={(e) => { if (code === savedCode || confirm("Discard unsaved source edits?")) { try { sessionStorage.removeItem(`blocky.source.${pid}.${file}`); } catch { /* storage may be disabled */ } setPid(Number(e.target.value)); setConfig("{}"); setParent(null); setMethodName(""); setFile("main.py"); setStage("prepare"); } }}><option value={0}>Choose a project</option>{projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label><button className="btn" onClick={() => setCreating(!creating)}>New project</button></div>}
     {!loading && projectsReady && (creating || projects.length === 0) && <div className="group pad flow-create"><h2>Choose your starting point</h2><p>Try a working example, evaluate a conventional model, or build a new architecture with your own code.</p><div className="rp-controls">
       <label>New project name<input className="field" value={name} onChange={(e) => setName(e.target.value)} /></label>
       <label>Starting code<select className="field select" value={template} onChange={(e) => setTemplate(e.target.value)}><option value="byte">Byte-bigram baseline (CPU smoke test)</option><option value="transformer">Conventional Transformers evaluator</option><option value="blank">Custom architecture / trainer</option></select></label>
-      <button className="btn" disabled={saving || !name.trim()} onClick={() => act(async () => { const p = await api.researchCreate(name, template); await refreshProjects(); setFile("main.py"); setPid(p.id); setCreating(false); setStage("prepare"); setConfig(JSON.stringify(template === "byte" ? { smoothing: 1, reps: 3 } : template === "transformer" ? { checkpoint: "", eval: "eval.txt", reps: 3 } : {}, null, 2)); })}>Create project</button>
+      <button className="btn" disabled={saving || !name.trim()} onClick={() => act(async () => { const p = await api.researchCreate(name, template); setCreated((c) => [...c, p.id]); await onCreate?.(p.id); await refreshProjects(); setFile("main.py"); setPid(p.id); setCreating(false); setStage("prepare"); setConfig(JSON.stringify(template === "byte" ? { smoothing: 1, reps: 3 } : template === "transformer" ? { checkpoint: "", eval: "eval.txt", reps: 3 } : {}, null, 2)); })}>Create project</button>
     </div><p className="row-sub">The byte example runs on CPU without downloads and uses tiny smoke-test data. It is not BLT. The Transformers starter requires a local checkpoint and an ML environment.</p></div>}
     {!!pid && <>
       <Tabs value={stage} onChange={setStage} tabs={[{ id: "prepare", label: "1 · Prepare" }, { id: "code", label: "2 · Implementation" }, { id: "run", label: "3 · Run" }, { id: "results", label: "4 · Results", badge: jobs.length }, { id: "compare", label: "Compare methods", badge: compareIds.length }]} />

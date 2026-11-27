@@ -3,8 +3,8 @@
 Research projects add custom Python programs and command-line jobs alongside Experiments, fine-tuning, the weight
 workshop, and the existing model servers. Existing features and stored results keep their own workflows.
 
-Open **Research projects** in the sidebar (`#/projects`). Create a byte baseline, conventional Transformers evaluator,
-or blank project. Edit files in the page or open the displayed workspace path in your editor.
+Inside a project, open **Build → Your own code**; on its own it is **All tools → Your code** (`#/code`). Create a byte
+baseline, conventional Transformers evaluator, or blank workspace. Edit files in the page or open the displayed workspace path in your editor.
 
 ## Run an experiment
 

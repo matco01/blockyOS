@@ -811,7 +811,9 @@ function Telemetry({ run }: { run: ExpRun }) {
 
 type ReportStage = "overview" | "setup" | "compare" | "validate" | "hardware" | "all";
 
-export default function ExperimentsPage({ status }: { status: Status | null }) {
+/** The measurement hub. Inside a project (`projectId`), it lists only that project's experiments, puts new ones in it,
+ *  and leaves the page title to the project. */
+export default function ExperimentsPage({ status, projectId, openExp, onChanged }: { status: Status | null; projectId?: number; openExp?: number | null; onChanged?: () => void }) {
   const mode = useMode();
   const pageRef = useRef<HTMLDivElement>(null);
   const [stage, setStage] = useState<ReportStage>(() => {
@@ -837,11 +839,13 @@ export default function ExperimentsPage({ status }: { status: Status | null }) {
   const setTab = (t: "report" | "canvas") => { setTabState(t); try { localStorage.setItem("blocky.exp.tab", t); } catch { /* private mode */ } };
   const [err, setErr] = useState<string | null>(null);
 
-  const loadList = useCallback(() => api.experiments().then((l) => {
+  const loadList = useCallback(() => api.experiments().then((all) => {
+    const l = projectId == null ? all : all.filter((e) => e.project_id === projectId);
     setList(l); setListReady(true);
-    const linked = Number(window.location.hash.match(/[?&]exp=(\d+)/)?.[1]);
+    const linked = openExp ?? Number(window.location.hash.match(/[?&]exp=(\d+)/)?.[1]);
     setId((cur) => l.some((e) => e.id === cur) ? cur : l.some((e) => e.id === linked) ? linked : l[0]?.id ?? null);
-  }).catch((e) => setErr(e.message)).finally(() => setListLoading(false)), []);
+  }).catch((e) => setErr(e.message)).finally(() => setListLoading(false)), [projectId, openExp]);
+  useEffect(() => { if (openExp != null) setId(openExp); }, [openExp]);
   const loadChoices = useCallback(async () => {
     setChoicesLoading(true);
     const results = await Promise.allSettled([api.researchMethods(), api.models()]);
@@ -882,8 +886,8 @@ export default function ExperimentsPage({ status }: { status: Status | null }) {
     setErr(null); setPending(true);
     try {
       const m = models.find((x) => x.file === newModel);
-      const { id: nid } = await api.experimentCreate(`${methods.find((m) => `method:${m.id}` === newModel)?.name ?? (m ? modelTitle(m) : newModel)}`, newModel);
-      setCreating(false); setId(nid); setStage("overview"); setTab("report"); loadList();
+      const { id: nid } = await api.experimentCreate(`${methods.find((m) => `method:${m.id}` === newModel)?.name ?? (m ? modelTitle(m) : newModel)}`, newModel, projectId);
+      setCreating(false); setId(nid); setStage("overview"); setTab("report"); loadList(); onChanged?.();
     } catch (e) { setErr((e as Error).message); } finally { setPending(false); }
   };
   const runProfile = async (label: string, cfg: Partial<ExpConfig>) => {
@@ -907,10 +911,12 @@ export default function ExperimentsPage({ status }: { status: Status | null }) {
   const queued = runs.filter((r) => r.status === "queued");
 
   return (
-    <div className="page" ref={pageRef}>
-      <div className={`page-inner wide ${tab === "canvas" ? "xfull" : ""}`}>
-        <h1 className="page-title">Experiments</h1>
-        <p className="page-sub">Start from a baseline, branch a change, and compare models or registered research methods. Inspect measurement contracts and uncertainty before drawing conclusions.</p>
+    <div className={projectId == null ? "page" : "embedded"} ref={pageRef}>
+      <div className={`${projectId == null ? "page-inner wide" : ""} ${tab === "canvas" ? "xfull" : ""}`}>
+        {projectId == null && <>
+          <h1 className="page-title">Experiments</h1>
+          <p className="page-sub">Start from a baseline, branch a change, and compare models or registered research methods. Inspect measurement contracts and uncertainty before drawing conclusions.</p>
+        </>}
 
         <div className="xbar">
           <select className="field select" value={id ?? ""} aria-label="Experiment" onChange={(e) => { setId(Number(e.target.value)); setFocus(null); }} disabled={list.length === 0}>
@@ -923,7 +929,7 @@ export default function ExperimentsPage({ status }: { status: Status | null }) {
             <a className="btn small ghost" href={`/api/experiments/${exp.id}/export.csv`}><Download /> CSV</a>
             <a className="btn small ghost" href={`/api/experiments/${exp.id}/export.json`} title="Everything, including hardware: import it on another Blocky device to compare"><Download /> JSON</a>
             <a className="btn small ghost" href={`/api/experiments/${exp.id}/bundle.zip`} title="Reproducibility bundle: experiment, provenance, commands, raw outputs, instrument checks, protocol document and a script that re-runs everything on another Blocky and compares"><Download /> Bundle</a>
-            <button className="icon-btn danger" title="Delete experiment" onClick={() => { if (confirm(`Delete "${exp.name}" and all its runs?`)) api.experimentDelete(exp.id).then(() => { setId(null); setExp(null); loadList(); }); }}><Trash2 /></button>
+            <button className="icon-btn danger" title="Delete experiment" onClick={() => { if (confirm(`Delete "${exp.name}" and all its runs?`)) api.experimentDelete(exp.id).then(() => { setId(null); setExp(null); loadList(); onChanged?.(); }); }}><Trash2 /></button>
           </>}
           <ImportRuns exp={exp} onDone={(nid) => { loadList(); if (nid !== exp?.id) setId(nid); else load(); }} />
           {exp && <RemoteRuns exp={exp} onImported={load} />}
@@ -942,7 +948,7 @@ export default function ExperimentsPage({ status }: { status: Status | null }) {
               </select>
               <button className="btn" disabled={pending || choicesLoading || !newModel} onClick={create}><FlaskConical /> Start experiment</button>
             </div>
-            {!choicesLoading && choicesReady && models.length === 0 && methods.length === 0 && <p>No models or registered methods are available. <a href="#/models">Add a model</a> or <a href="#/projects">develop and test a method</a> first.</p>}
+            {!choicesLoading && choicesReady && models.length === 0 && methods.length === 0 && <p>No models or registered methods are available. <a href="#/models">Add a model</a> or <a href="#/code">develop and test a method</a> first.</p>}
           </div>
         )}
         {listLoading && <p role="status">Loading experiments...</p>}

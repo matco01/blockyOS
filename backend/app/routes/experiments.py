@@ -86,12 +86,19 @@ def experiments_list():
 class ExperimentIn(BaseModel):
     name: str = ""
     model: str
+    project_id: int | None = Field(None, description="Project to put the new experiment in")
 
 
 @router.post("/api/experiments")
 def experiments_create(body: ExperimentIn):
+    from .. import projects
     try:
-        return {"id": profile.create_experiment(body.name, body.model)}
+        if body.project_id is not None and not projects.get(body.project_id):
+            raise ValueError("Project not found")
+        eid = profile.create_experiment(body.name, body.model)
+        if body.project_id is not None:
+            projects.assign("experiment", eid, body.project_id)
+        return {"id": eid}
     except ValueError as e:
         _bad(e)
 

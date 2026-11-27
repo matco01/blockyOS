@@ -187,7 +187,7 @@ export type CanvasNote ={ id: string; x: number; y: number; text: string };
 export type CanvasState = { pos: Record<string, { x: number; y: number }>; notes: CanvasNote[]; view?: { x: number; y: number; k: number }; devices?: number[] };
 export type Experiment = {
   validations?: ValidationBatch[];
-  id: number; created_at: number; name: string; model: string; seed: number; runs?: number; canvas?: CanvasState | null;
+  id: number; created_at: number; name: string; model: string; seed: number; runs?: number; canvas?: CanvasState | null; project_id?: number | null;
   protocol?: { lm_eval?: { tasks: string; limit: number }; kernels?: boolean; mmlu_per_category?: number; ruler?: { samples: number }; ppl_chunks?: number;
     fidelity_text?: string; equivalence_margin_pts?: number; lock_clocks_mhz?: number; cooldown_s?: number } | null;
   preregistrations?: Preregistration[];
@@ -292,6 +292,18 @@ export type Settings = { memory_enabled: boolean; anthropic_api_key_set?: boolea
 
 export type SearchHit = { conversation_id: number; title: string; role: string; snippet: string };
 
+/** A project: what someone is making, holding its experiments (model lines) and code. */
+export type ProjectResults = { mmlu: number | null; tg: number | null; ppl: number | null };
+export type ProjectExperiment = {
+  id: number; name: string; model: string; created_at: number; runs: number; done: number; active: number; last_run: number | null;
+  baseline: { label: string; results: ProjectResults | null } | null; latest: { label: string; results: ProjectResults | null } | null;
+};
+export type ProjectCode = { id: number; name: string; created_at: number };
+export type Project = {
+  id: number; name: string; goal: string; created_at: number; updated_at: number; last_activity: number;
+  experiments: ProjectExperiment[]; code: ProjectCode[];
+};
+
 const send = (method: string, body?: unknown): RequestInit => ({
   method,
   headers: { "Content-Type": "application/json" },
@@ -366,7 +378,13 @@ export const api = {
   instrumentCheck: (id: number) => json<InstrumentReport>(`/api/experiments/${id}/instrument-check`),
   experimentValidate: (id: number, body: { reference_id: number; candidate_id: number; pairs: number; metric: string; min_effect_pct: number }) => json<{ id: number; run_ids: number[] }>(`/api/experiments/${id}/validate`, send("POST", body)),
   validationCancel: (id: number, vid: number) => json(`/api/experiments/${id}/validations/${vid}/cancel`, send("POST", {})),
-  experimentCreate: (name: string, model: string) => json<{ id: number }>("/api/experiments", send("POST", { name, model })),
+  experimentCreate: (name: string, model: string, projectId?: number) => json<{ id: number }>("/api/experiments", send("POST", { name, model, project_id: projectId ?? null })),
+  projects: () => json<{ projects: Project[]; unassigned: { experiments: ProjectExperiment[]; code: ProjectCode[] } }>("/api/projects"),
+  project: (id: number) => json<Project>(`/api/projects/${id}`),
+  projectCreate: (name: string, goal: string) => json<{ id: number }>("/api/projects", send("POST", { name, goal })),
+  projectUpdate: (id: number, body: { name?: string; goal?: string }) => json<Project>(`/api/projects/${id}`, send("PATCH", body)),
+  projectDelete: (id: number) => json(`/api/projects/${id}`, { method: "DELETE" }),
+  projectAssign: (kind: "experiment" | "code", id: number, projectId: number | null) => json("/api/projects/assign", send("PUT", { kind, id, project_id: projectId })),
   experimentDelete: (id: number) => json(`/api/experiments/${id}`, { method: "DELETE" }),
   experimentRun: (id: number, label: string, config: Partial<ExpConfig>, parentId?: number | null) =>
     json<{ id: number }>(`/api/experiments/${id}/runs`, send("POST", { label, config, parent_id: parentId ?? null })),

@@ -73,10 +73,10 @@ def http_client():
 @pytest.fixture
 def fresh_db():
     """An empty database with every table Blocky creates."""
-    from app import aiaccess, arena, config, db, engines, evals, jobstore, profile, quantlab, research_jobs, scans, tools, torchlab, weights
+    from app import aiaccess, arena, config, db, engines, evals, jobstore, profile, projects, quantlab, research_jobs, scans, tools, torchlab, weights
     if config.DB_PATH.exists():
         config.DB_PATH.unlink()
     db.init()
-    for module in (aiaccess, jobstore, arena, evals, quantlab, tools, profile, weights, engines, scans, torchlab, research_jobs):
+    for module in (aiaccess, jobstore, arena, evals, quantlab, tools, profile, weights, engines, scans, torchlab, research_jobs, projects):
         module.init()
     return db

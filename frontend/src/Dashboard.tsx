@@ -103,7 +103,7 @@ export default function Dashboard({ status, go }: { status: Status | null; go: (
         <div className="flow-intents">
           <button onClick={() => go("models")}><Brain /><b>Use a model</b><span>Choose a local model, check that it fits, and start chatting.</span><em>Choose a model →</em></button>
           <button onClick={() => go("experiments")}><Gauge /><b>Improve a model</b><span>Measure a baseline, change one setting, and compare the evidence.</span><em>Open experiments →</em></button>
-          <button onClick={() => go("projects")}><FlaskConical /><b>Develop a method</b><span>Build your own evaluator or architecture, test it, and bring the result into Experiments.</span><em>Open research projects →</em></button>
+          <button onClick={() => go("code")}><FlaskConical /><b>Develop a method</b><span>Build your own evaluator or architecture, test it, and bring the result into Experiments.</span><em>Open research projects →</em></button>
         </div>
         <div className="group-label">Your device at a glance</div>
         <div className="hero-grid">

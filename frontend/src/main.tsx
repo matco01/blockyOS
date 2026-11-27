@@ -13,6 +13,7 @@ import "./tests.css";
 import "./ux.css";
 import "./experiments.css";
 import "./flow.css";
+import "./projects.css";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

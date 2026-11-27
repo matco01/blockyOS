@@ -19,14 +19,14 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from mcp.server.transport_security import TransportSecuritySettings
 
-from . import agent, aiaccess, arena, benchmarks, config, db, engines, evals, jobstore, lab, mcp_server, profile, quantlab, remote, research_jobs, scans
+from . import agent, aiaccess, arena, benchmarks, config, db, engines, evals, jobstore, lab, mcp_server, profile, projects, quantlab, remote, research_jobs, scans
 from . import rpcworker, tools, torchlab, weights
 from .routes import (agent as agent_routes, aiaccess as aiaccess_routes, arena as arena_routes, bench, chat, common, devices, engines as engine_routes, evals as eval_routes,
-                     experiments, models, openai, quantlab as quantlab_routes, research, settings, system, torch)
+                     experiments, models, openai, projects as project_routes, quantlab as quantlab_routes, research, settings, system, torch)
 
 # Include order matters only where two paths could match the same URL; it follows the order these routes always had.
 ROUTERS = (aiaccess_routes, research, chat, settings, agent_routes, devices, system, models, bench, openai, eval_routes, quantlab_routes, experiments,
-           engine_routes, torch, arena_routes)
+           engine_routes, torch, arena_routes, project_routes)
 
 
 @asynccontextmanager
@@ -45,6 +45,7 @@ async def lifespan(app: FastAPI):
     remote.init()
     agent.init()
     research_jobs.init()
+    projects.init()  # after experiments and research projects: it adds a column to both
     rpcworker.init()
     aiaccess.init()
     for name, jobs in (("downloads", lab.downloads), ("benchmark-downloads", benchmarks.downloads),

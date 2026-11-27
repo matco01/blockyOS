@@ -419,19 +419,23 @@ function Checkpoints({ status, reload }: { status: TorchStatus | null; reload: (
   );
 }
 
-export default function InternalsPage() {
+/** The PyTorch side. Inside a project (`embedded`), it opens on the given tool and leaves the title to the project. */
+export default function InternalsPage({ initialTab, embedded }: { initialTab?: string; embedded?: boolean } = {}) {
   const [status, setStatus] = useState<TorchStatus | null>(null);
-  const [tab, setTab] = useState("act");
+  const [tab, setTab] = useState(initialTab ?? "act");
+  useEffect(() => { if (initialTab) setTab(initialTab); }, [initialTab]);
   const load = () => api.torchStatus().then(setStatus).catch(() => {});
   useEffect(() => { load(); }, []);
   return (
-    <div className="page">
-      <div className="page-inner wide">
-        <h1 className="page-title">Internals</h1>
-        <p className="page-sub">The PyTorch side of the lab: look inside a model's layers, fine-tune it (LoRA or every weight) or pretrain one, then measure the result like any other weights.</p>
+    <div className={embedded ? "embedded" : "page"}>
+      <div className={embedded ? "" : "page-inner wide"}>
+        {!embedded && <>
+          <h1 className="page-title">Internals</h1>
+          <p className="page-sub">The PyTorch side of the lab: look inside a model's layers, fine-tune it (LoRA or every weight) or pretrain one, then measure the result like any other weights.</p>
+        </>}
         {status && !status.installed && <div className="group pad"><b>The PyTorch environment isn't installed.</b> <span className="row-sub">On the box: bash scripts/setup-ml.sh (a few GB).</span></div>}
         {status?.installed && <div className="row-sub ft-env"><Brain size={14} /> PyTorch {status.torch} · CUDA {status.cuda ? "on" : "off"} · transformers {status.transformers} · peft {status.peft}</div>}
-        <Tabs value={tab} onChange={setTab} tabs={[{ id: "act", label: "Activations" }, { id: "ft", label: "Fine-tune (LoRA)" }, { id: "train", label: "Full training" }, { id: "play", label: "Technique playground" }, { id: "ckpt", label: "Checkpoints" }]} />
+        {!embedded && <Tabs value={tab} onChange={setTab} tabs={[{ id: "act", label: "Activations" }, { id: "ft", label: "Fine-tune (LoRA)" }, { id: "train", label: "Full training" }, { id: "play", label: "Technique playground" }, { id: "ckpt", label: "Checkpoints" }]} />}
         <div className="group pad">
           {tab === "act" && <Activations status={status} />}
           {tab === "ft" && <FineTune status={status} />}

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Activity, BookOpen, Bot, Boxes, Compass, Gauge, Brain, ClipboardCheck, FlaskConical, LayoutDashboard, Microscope, PanelLeft, Swords, Plus, Search, Settings as SettingsIcon, SlidersHorizontal, Trash2 } from "lucide-react";
+import { Activity, BookOpen, Bot, Boxes, Code, Compass, FolderKanban, Gauge, Brain, ClipboardCheck, FlaskConical, LayoutDashboard, Microscope, PanelLeft, Swords, Plus, Search, Settings as SettingsIcon, SlidersHorizontal, Trash2, Wrench } from "lucide-react";
 import { api, Conversation, MessageStats, Sampling, SearchHit, Status } from "./api";
 import AgentPage from "./AgentPage";
 import ArenaPage from "./ArenaPage";
@@ -12,6 +12,7 @@ import ExperimentsPage from "./ExperimentsPage";
 import NotebooksPage from "./NotebooksPage";
 import InternalsPage from "./InternalsPage";
 import ResearchPage from "./ResearchPage";
+import ProjectsPage from "./ProjectsPage";
 import GuidePage from "./GuidePage";
 import { Mode, ModeContext } from "./ui";
 import ModelsPage from "./ModelsPage";
@@ -21,13 +22,14 @@ import SettingsPage from "./SettingsPage";
 import Logo from "./Logo";
 import { Accent, BLOCK_COLORS, Theme, useSetting } from "./settings";
 
-export type Page = "chat" | "agent" | "home" | "experiments" | "projects" | "notebooks" | "internals" | "guide" | "models" | "arena" | "tests" | "bench" | "memory" | "system" | "settings";
+export type Page = "chat" | "agent" | "home" | "experiments" | "projects" | "code" | "notebooks" | "internals" | "guide" | "models" | "arena" | "tests" | "bench" | "memory" | "system" | "settings";
 
 const PAGES = [
+  { id: "projects", label: "Projects", icon: FolderKanban },
   { id: "agent", label: "Agent", icon: Bot },
   { id: "experiments", label: "Experiments", icon: FlaskConical },
-  { id: "projects", label: "Research projects", icon: Microscope },
-  { id: "home", label: "Start here", icon: LayoutDashboard },
+  { id: "code", label: "Your code", icon: Code },
+  { id: "home", label: "Overview", icon: LayoutDashboard },
   { id: "internals", label: "Internals", icon: Microscope },
   { id: "notebooks", label: "Notebooks", icon: BookOpen },
   { id: "models", label: "Models", icon: Boxes },
@@ -40,13 +42,12 @@ const PAGES = [
   { id: "guide", label: "Guide", icon: Compass },
 ] as const;
 
-/** Sidebar groups: what you do with models, then the device itself. */
+/** Sidebar: projects and chat first, then the device and help. Every tool stays reachable under "All tools". */
 const NAV_GROUPS: { label: string; ids: readonly Page[] }[] = [
-  { label: "Use a model", ids: ["home", "models"] },
-  { label: "Improve a model", ids: ["experiments", "tests", "bench", "arena"] },
-  { label: "Develop a method", ids: ["projects", "internals", "notebooks", "agent"] },
-  { label: "Device", ids: ["memory", "system", "settings", "guide"] },
+  { label: "Device", ids: ["home", "system", "settings"] },
+  { label: "Help", ids: ["guide"] },
 ];
+const ALL_TOOLS: readonly Page[] = ["experiments", "models", "tests", "bench", "arena", "code", "internals", "notebooks", "agent", "memory"];
 
 /** Renders a search snippet, highlighting the [matched] words. */
 function Snippet({ text }: { text: string }) {
@@ -59,13 +60,14 @@ function Snippet({ text }: { text: string }) {
   );
 }
 
-/** URL hash <-> view: #/chat/5, #/memory, #/system, #/settings. Enables back button & bookmarks. */
-function parseHash(): { page: Page; id: number | null } {
+/** URL hash <-> view: #/projects/3, #/chat/5, #/system, #/settings. Enables back button & bookmarks. */
+function parseHash(): { page: Page; id: number | null; project: number | null } {
   const [, rawP, id] = window.location.hash.split("?")[0].split("/");
   const p = rawP ?? "";
-  if (!p) return { page: "home", id: null };
-  if (PAGES.some((x) => x.id === p)) return { page: p as Page, id: null };
-  return { page: "chat", id: p === "chat" && id ? Number(id) || null : null };
+  if (!p) return { page: "projects", id: null, project: null };
+  if (p === "projects") return { page: "projects", id: null, project: id ? Number(id) || null : null };
+  if (PAGES.some((x) => x.id === p)) return { page: p as Page, id: null, project: null };
+  return { page: "chat", id: p === "chat" && id ? Number(id) || null : null, project: null };
 }
 
 export default function App() {
@@ -73,6 +75,7 @@ export default function App() {
   const [page, setPage] = useState<Page>(initial.page);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeId, setActiveId] = useState<number | null>(initial.id);
+  const [projectId, setProjectId] = useState<number | null>(initial.project);
   const [status, setStatus] = useState<Status | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [chatKey, setChatKey] = useState(0); // bumps only when the user switches chats
@@ -122,18 +125,20 @@ export default function App() {
 
   // Keep the URL in sync, and follow it when the user presses back/forward.
   useEffect(() => {
-    const want = page === "chat" ? (activeId != null ? `#/chat/${activeId}` : "#/chat") : `#/${page}`;
+    const want = page === "chat" ? (activeId != null ? `#/chat/${activeId}` : "#/chat")
+      : page === "projects" && projectId != null ? `#/projects/${projectId}` : `#/${page}`;
     const current = window.location.hash.split("?")[0];
     if (current !== want && !(want === "#/" && current === "")) {
       // Pages with their own query (#/bench?compare=…, #/arena?match=…) manage it themselves.
       window.history.pushState(null, "", want);
     }
-  }, [page, activeId]);
+  }, [page, activeId, projectId]);
 
   useEffect(() => {
     const onPop = () => {
       const h = parseHash();
       setPage(h.page);
+      setProjectId(h.project);
       setActiveId((cur) => {
         if (h.page === "chat" && h.id !== cur) setChatKey((k) => k + 1);
         return h.id;
@@ -143,7 +148,8 @@ export default function App() {
     return () => window.removeEventListener("popstate", onPop);
   }, []);
 
-  const go = (p: Page) => { setPage(p); setSidebarOpen(false); };
+  const go = (p: Page) => { setPage(p); setSidebarOpen(false); if (p === "projects") setProjectId(null); };
+  const openProject = (id: number | null) => { setProjectId(id); setPage("projects"); setSidebarOpen(false); };
 
   const open = (id: number | null) => {
     setActiveId(id);
@@ -172,9 +178,14 @@ export default function App() {
             <span className="brand-name">Blocky</span>
           </div>
 
-          <button className={`side-btn new-chat-btn ${page === "chat" && activeId == null ? "active" : ""}`} onClick={() => open(null)}>
-            <Plus /> New chat
-          </button>
+          <div className="side-nav side-primary">
+            <button className={`side-btn ${page === "projects" ? "active" : ""}`} onClick={() => go("projects")}>
+              <FolderKanban /> Projects
+            </button>
+            <button className={`side-btn ${page === "chat" && activeId == null ? "active" : ""}`} onClick={() => open(null)}>
+              <Plus /> New chat
+            </button>
+          </div>
 
           {NAV_GROUPS.map((g) => (
             <div className="side-nav" key={g.label}>
@@ -189,6 +200,18 @@ export default function App() {
               })}
             </div>
           ))}
+
+          <details className="side-nav all-tools" open={ALL_TOOLS.includes(page) || undefined}>
+            <summary className="section-label"><Wrench /> All tools</summary>
+            {ALL_TOOLS.map((id) => {
+              const p = PAGES.find((x) => x.id === id)!;
+              return (
+                <button key={id} className={`side-btn ${page === id ? "active" : ""}`} onClick={() => go(id)}>
+                  <p.icon /> {p.label}
+                </button>
+              );
+            })}
+          </details>
 
           <details className="conversation-drawer" open={page === "chat" || undefined}><summary>Conversations</summary>
           <div className="section-label">{hits !== null ? "Search results" : "Chats"}</div>
@@ -304,7 +327,8 @@ export default function App() {
           {page === "notebooks" && <NotebooksPage />}
           {page === "agent" && <AgentPage />}
           {page === "internals" && <InternalsPage />}
-          {page === "projects" && <ResearchPage />}
+          {page === "projects" && <ProjectsPage projectId={projectId} status={status} open={openProject} />}
+          {page === "code" && <ResearchPage />}
           {page === "guide" && <GuidePage />}
           {page === "models" && <ModelsPage status={status} />}
           {page === "arena" && <ArenaPage status={status} />}
