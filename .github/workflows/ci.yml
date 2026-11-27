@@ -61,7 +61,13 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
-      - run: docker build --build-arg BASE=ubuntu:24.04 -t blockyos:ci .
+      - name: Build the image (CPU)
+        run: |
+          set -o pipefail
+          docker build --progress=plain --build-arg BASE=ubuntu:24.04 -t blockyos:ci . 2>&1 | tee build.log || {
+            echo "::error title=docker build::$(grep -iE 'error|failed|not found|cannot' build.log | tail -20 | tr '\n' ' ' | cut -c1-3500)"
+            exit 1
+          }
       - run: docker run -d --name blocky --network host blockyos:ci
       - name: Serves the API and the UI
         run: |
