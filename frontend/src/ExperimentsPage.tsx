@@ -813,7 +813,7 @@ type ReportStage = "overview" | "setup" | "compare" | "validate" | "hardware" | 
 
 /** The measurement hub. Inside a project (`projectId`), it lists only that project's experiments, puts new ones in it,
  *  and leaves the page title to the project. */
-export default function ExperimentsPage({ status, projectId, openExp, onChanged }: { status: Status | null; projectId?: number; openExp?: number | null; onChanged?: () => void }) {
+export default function ExperimentsPage({ status, projectId, openExp, onChanged, view }: { status: Status | null; projectId?: number; openExp?: number | null; onChanged?: () => void; view?: "report" | "canvas" }) {
   const mode = useMode();
   const pageRef = useRef<HTMLDivElement>(null);
   const [stage, setStage] = useState<ReportStage>(() => {
@@ -835,7 +835,7 @@ export default function ExperimentsPage({ status, projectId, openExp, onChanged 
   const [creating, setCreating] = useState(false);
   const [focus, setFocus] = useState<number | null>(null);
   const [metric, setMetric] = useState("tg");
-  const [tab, setTabState] = useState<"report" | "canvas">(() => { if (window.location.hash.includes("view=canvas")) return "canvas"; if (window.location.hash.includes("stage=")) return "report"; try { return localStorage.getItem("blocky.exp.tab") === "canvas" ? "canvas" : "report"; } catch { return "report"; } });
+  const [tab, setTabState] = useState<"report" | "canvas">(() => { if (view) return view; if (window.location.hash.includes("view=canvas")) return "canvas"; if (window.location.hash.includes("stage=")) return "report"; try { return localStorage.getItem("blocky.exp.tab") === "canvas" ? "canvas" : "report"; } catch { return "report"; } });
   const setTab = (t: "report" | "canvas") => { setTabState(t); try { localStorage.setItem("blocky.exp.tab", t); } catch { /* private mode */ } };
   const [err, setErr] = useState<string | null>(null);
 
@@ -976,13 +976,13 @@ export default function ExperimentsPage({ status, projectId, openExp, onChanged 
             )}
 
             {exp.model.startsWith("method:") ? <details className="flow-advanced" open={mode === "pro" || undefined}><summary>Evaluator measurement contract</summary><p className="row-sub">Registered methods use their own evaluator contracts. Native profile phases are unavailable unless a compatible evaluator explicitly supplies them.</p></details> : <details className="flow-advanced" open={mode === "pro" || undefined}><summary>Measurement protocol and test settings</summary><TestProtocol exp={exp} onSaved={load} /></details>}
-            <div className="xviewbar">
+            {view ? <span className="row-sub">{view === "report" ? "Measure, compare and validate: follow the steps below, or open the full report for every detail." : "The map of everything tried and what it led to. Click a card to branch a change; drag, zoom and annotate."}</span> : <div className="xviewbar">
               <div className="segmented">
                 <button className={tab === "report" ? "on" : ""} onClick={() => setTab("report")}>Report</button>
                 <button className={tab === "canvas" ? "on" : ""} onClick={() => setTab("canvas")}>Canvas</button>
               </div>
               <span className="row-sub">{tab === "report" ? "Follow the steps below, or open the full report for every detail." : "The map of this experiment: what was tried, what it led to. Drag, zoom, annotate."}</span>
-            </div>
+            </div>}
 
             {tab === "canvas" ? <ResearchCanvas key={exp.id} exp={exp} runs={runs} branchPanel={branchPanel} onChanged={load}
               onRepeat={(r) => api.experimentRun(exp.id, "", r.config, r.parent_id ?? null).then(load).catch((e) => setErr((e as Error).message))}

@@ -1,5 +1,5 @@
 """Projects: name a piece of work, then keep its experiments and code together."""
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from .. import projects
@@ -67,4 +67,41 @@ def projects_update(pid: int, body: ProjectPatch):
 def projects_delete(pid: int):
     """Removes the project only: its experiments and code stay, outside any project."""
     projects.delete(pid)
+    return {"ok": True}
+
+
+def _project(pid: int) -> None:
+    if not projects.get(pid):
+        raise HTTPException(404, "Project not found")
+
+
+@router.get("/api/projects/{pid}/data")
+def projects_data(pid: int):
+    """This project's training and test files (.jsonl, .txt), with their paths for the training forms."""
+    from .. import imports
+    _project(pid)
+    return {"datasets": imports.datasets(pid)}
+
+
+@router.put("/api/projects/{pid}/data")
+async def projects_data_upload(pid: int, request: Request, name: str):
+    """A .jsonl or .txt file from your computer: the raw file is the request body."""
+    from .. import imports
+    from .models import _size
+    _project(pid)
+    try:
+        return await imports.dataset(request.stream(), pid, name, _size(request))
+    except ValueError as e:
+        _bad(e)
+
+
+@router.delete("/api/projects/{pid}/data")
+def projects_data_delete(pid: int, name: str):
+    """Deletes one uploaded data file of this project (the owner's explicit choice)."""
+    from .. import imports
+    _project(pid)
+    try:
+        imports.delete_dataset(pid, name)
+    except ValueError as e:
+        _bad(e)
     return {"ok": True}

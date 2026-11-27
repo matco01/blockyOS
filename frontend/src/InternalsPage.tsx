@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { AlertCircle, Brain, Download, FlaskRound, Loader2, Play, Square, Wand2 } from "lucide-react";
-import { api, TorchJob, TorchStatus } from "./api";
+import { api, Dataset, TorchJob, TorchStatus } from "./api";
 import { LineChart, Tabs } from "./ui";
 
 /** The PyTorch side: original Hugging Face checkpoints, activations inside the network, LoRA fine-tuning back to GGUF. */
@@ -157,7 +157,19 @@ function Knockout({ k }: { k: NonNullable<ActResult["knockout"]> }) {
   );
 }
 
-function FineTune({ status }: { status: TorchStatus | null }) {
+/** Inside a project: pick one of its uploaded data files instead of typing a path. */
+function ProjectData({ datasets, value, onChange }: { datasets?: Dataset[]; value: string; onChange: (v: string) => void }) {
+  if (!datasets) return null;
+  return (
+    <label><span>Your data (from this project's Data tab)</span>
+      <select className="field select" value={datasets.some((d) => d.path === value) ? value : ""} onChange={(e) => { if (e.target.value) onChange(e.target.value); }}>
+        <option value="">{datasets.length ? "Choose an uploaded file" : "No uploaded files yet: add them on the Data tab"}</option>
+        {datasets.map((d) => <option key={d.path} value={d.path}>{d.name}{d.rows != null ? ` · ${d.rows.toLocaleString()} rows` : ""}</option>)}
+      </select></label>
+  );
+}
+
+function FineTune({ status, datasets }: { status: TorchStatus | null; datasets?: Dataset[] }) {
   const [jobs, setJobs] = useJobs("lora");
   const [f, setF] = useState({ checkpoint: "", data: "yahma/alpaca-cleaned", split: "train", rows: 2000, steps: 200, lr: 0.0002, rank: 16, batch: 4, max_len: 512, outtype: "q8_0", name: "", qlora: false });
   const [sel, setSel] = useState<number | null>(null);
@@ -176,7 +188,8 @@ function FineTune({ status }: { status: TorchStatus | null }) {
       <div className="ws-grid">
         <label><span>Checkpoint</span><select className="field select" value={f.checkpoint} onChange={(e) => set("checkpoint", e.target.value)}>
           {(status?.checkpoints ?? []).map((c) => <option key={c.id} value={c.id}>{c.repo}</option>)}</select></label>
-        <label><span>Dataset (Hugging Face id or id:config)</span><input className="field" value={f.data} onChange={(e) => set("data", e.target.value)} />
+        <ProjectData datasets={datasets?.filter((d) => d.kind === "jsonl")} value={f.data} onChange={(v) => set("data", v)} />
+        <label><span>{datasets ? "Or a Hugging Face dataset id (id:config)" : "Dataset (Hugging Face id or id:config)"}</span><input className="field" value={f.data} onChange={(e) => set("data", e.target.value)} />
           <em>Columns recognised: instruction/output, prompt/response, question/answer or chat messages.</em></label>
         <label><span>Rows · steps · batch</span><div className="ft-row">
           <input className="field" type="number" value={f.rows} onChange={(e) => set("rows", Number(e.target.value))} />
@@ -208,7 +221,7 @@ function FineTune({ status }: { status: TorchStatus | null }) {
 
 type TrainEval = { step: number; eval_loss: number; eval_ppl: number };
 
-function FullTraining({ status }: { status: TorchStatus | null }) {
+function FullTraining({ status, datasets }: { status: TorchStatus | null; datasets?: Dataset[] }) {
   const [jobs, setJobs] = useJobs("train");
   const [f, setF] = useState({ checkpoint: "", mode: "finetune", data: "wikitext:wikitext-2-raw-v1", split: "train", rows: 5000, steps: 500, lr: 0, batch: 4,
     accum: 1, max_len: 1024, eval_frac: 0.02, eval_every: 100, layers: 0, gpus: 1, nnodes: 1, master_addr: "", to_gguf: false, outtype: "q8_0", name: "" });
@@ -238,7 +251,8 @@ function FullTraining({ status }: { status: TorchStatus | null }) {
         <label><span>Mode</span><select className="field select" value={f.mode} onChange={(e) => set("mode", e.target.value)}>
           <option value="finetune">Fine-tune all weights</option><option value="pretrain">Pretrain from scratch (same architecture)</option></select>
           {f.mode === "pretrain" && <em>Random weights; the checkpoint provides only the architecture and tokenizer.</em>}</label>
-        <label><span>Data (Hugging Face id or id:config, or an absolute .txt / .jsonl path)</span><input className="field" value={f.data} onChange={(e) => set("data", e.target.value)} />
+        <ProjectData datasets={datasets} value={f.data} onChange={(v) => set("data", v)} />
+        <label><span>{datasets ? "Or a Hugging Face dataset id, or a .txt / .jsonl path" : "Data (Hugging Face id or id:config, or an absolute .txt / .jsonl path)"}</span><input className="field" value={f.data} onChange={(e) => set("data", e.target.value)} />
           <em>Text rows are packed into max-length blocks; chat-style rows (instruction/output, messages…) train on answers only.</em></label>
         <label><span>Rows · steps · max length</span><div className="ft-row">
           <input className="field" type="number" value={f.rows} onChange={(e) => set("rows", Number(e.target.value))} />
@@ -420,7 +434,7 @@ function Checkpoints({ status, reload }: { status: TorchStatus | null; reload: (
 }
 
 /** The PyTorch side. Inside a project (`embedded`), it opens on the given tool and leaves the title to the project. */
-export default function InternalsPage({ initialTab, embedded }: { initialTab?: string; embedded?: boolean } = {}) {
+export default function InternalsPage({ initialTab, embedded, datasets }: { initialTab?: string; embedded?: boolean; datasets?: Dataset[] } = {}) {
   const [status, setStatus] = useState<TorchStatus | null>(null);
   const [tab, setTab] = useState(initialTab ?? "act");
   useEffect(() => { if (initialTab) setTab(initialTab); }, [initialTab]);
@@ -436,10 +450,11 @@ export default function InternalsPage({ initialTab, embedded }: { initialTab?: s
         {status && !status.installed && <div className="group pad"><b>The PyTorch environment isn't installed.</b> <span className="row-sub">On the box: bash scripts/setup-ml.sh (a few GB).</span></div>}
         {status?.installed && <div className="row-sub ft-env"><Brain size={14} /> PyTorch {status.torch} · CUDA {status.cuda ? "on" : "off"} · transformers {status.transformers} · peft {status.peft}</div>}
         {!embedded && <Tabs value={tab} onChange={setTab} tabs={[{ id: "act", label: "Activations" }, { id: "ft", label: "Fine-tune (LoRA)" }, { id: "train", label: "Full training" }, { id: "play", label: "Technique playground" }, { id: "ckpt", label: "Checkpoints" }]} />}
+        {embedded && (initialTab === "ft" || initialTab === "train") && <p className="row-sub">{tab === "ckpt" ? <button className="link" onClick={() => setTab(initialTab)}>← Back to training</button> : <>Training needs a model in Hugging Face format (a checkpoint). <button className="link" onClick={() => setTab("ckpt")}>Download or manage checkpoints</button></>}</p>}
         <div className="group pad">
           {tab === "act" && <Activations status={status} />}
-          {tab === "ft" && <FineTune status={status} />}
-          {tab === "train" && <FullTraining status={status} />}
+          {tab === "ft" && <FineTune status={status} datasets={datasets} />}
+          {tab === "train" && <FullTraining status={status} datasets={datasets} />}
           {tab === "play" && <Playground status={status} />}
           {tab === "ckpt" && <Checkpoints status={status} reload={load} />}
         </div>

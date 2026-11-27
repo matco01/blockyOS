@@ -1,7 +1,7 @@
 """Research projects: custom programs, jobs, registered methods."""
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 
 from .. import methods, research_jobs, torchlab
@@ -113,3 +113,35 @@ def research_compare(ids: str):
 @router.get("/api/research/profile-runs")
 def research_profile_runs():
     return research_jobs.profile_runs()
+
+
+@router.put("/api/research/projects/{pid}/upload")
+async def research_upload(pid: int, request: Request, path: str):
+    """One file of your code at `path` inside the workspace (folders are created). The raw file is the request body."""
+    from .. import imports
+    from .models import _size
+    try:
+        return await imports.code_file(request.stream(), pid, path, _size(request))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.put("/api/research/projects/{pid}/import-zip")
+async def research_import_zip(pid: int, request: Request):
+    """A .zip of your code, unpacked into the workspace. The raw archive is the request body."""
+    from .. import imports
+    from .models import _size
+    try:
+        return await imports.code_zip(request.stream(), pid, _size(request))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.get("/api/research/projects/{pid}/entries")
+def research_entries(pid: int):
+    """Python files that could start the program, most likely first."""
+    from .. import imports
+    try:
+        return {"entries": imports.entry_candidates(pid)}
+    except ValueError as e:
+        raise HTTPException(400, str(e))

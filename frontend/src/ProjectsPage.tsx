@@ -1,7 +1,8 @@
 /* Projects: the front door. A project is what you are making; everything you do happens inside one. */
 import { useCallback, useEffect, useState } from "react";
-import { ArrowLeft, Boxes, Brain, Code, Download, FolderKanban, GitBranch, Hammer, Layers, Pencil, Play, Plus, Rocket, Sparkles, Trash2, Wand2 } from "lucide-react";
-import { api, ExpRun, ModelFile, Project, ProjectCode, ProjectExperiment, ProjectResults, Status } from "./api";
+import { ArrowLeft, Boxes, Brain, Code, Database, Download, FileText, FolderKanban, GitBranch, Hammer, Layers, Pencil, Play, Plus, Rocket, Sparkles, Trash2, Wand2 } from "lucide-react";
+import { api, Dataset, ExpRun, ModelFile, Project, ProjectCode, ProjectExperiment, ProjectResults, Status } from "./api";
+import { DropZone, FilePick, fmtBytes, ProgressBar } from "./Upload";
 import ExperimentsPage from "./ExperimentsPage";
 import InternalsPage from "./InternalsPage";
 import ResearchPage from "./ResearchPage";
@@ -9,7 +10,8 @@ import WeightsWorkshop from "./WeightsWorkshop";
 import { Tabs } from "./ui";
 import { modelTitle } from "./workflow";
 
-type Tab = "overview" | "build" | "versions" | "ship";
+type Tab = "overview" | "build" | "data" | "canvas" | "tests" | "ship";
+const TABS: Tab[] = ["overview", "build", "data", "canvas", "tests", "ship"];
 type Recipe = "finetune" | "train" | "smaller" | "code" | "method";
 
 function ago(t: number) {
@@ -145,20 +147,23 @@ function ProjectView({ id, status, back }: { id: number; status: Status | null; 
   const [err, setErr] = useState("");
   const [tab, setTabState] = useState<Tab>(() => {
     const t = new URLSearchParams(window.location.hash.split("?")[1] ?? "").get("tab");
-    return (["overview", "build", "versions", "ship"] as const).includes(t as Tab) ? t as Tab : "overview";
+    if (t === "versions") return "tests";
+    return TABS.includes(t as Tab) ? t as Tab : "overview";
   });
   const [recipe, setRecipe] = useState<Recipe | null>(null);
   const [openExp, setOpenExp] = useState<number | null>(null);
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(""), [goal, setGoal] = useState("");
+  const [datasets, setDatasets] = useState<Dataset[]>([]);
 
   const load = useCallback(() => api.project(id).then((x) => { setP(x); setErr(""); }).catch((e) => setErr((e as Error).message)), [id]);
-  useEffect(() => { load(); const t = setInterval(load, 10000); return () => clearInterval(t); }, [load]);
+  const loadData = useCallback(() => api.projectData(id).then((d) => setDatasets(d.datasets)).catch(() => {}), [id]);
+  useEffect(() => { load(); loadData(); const t = setInterval(load, 10000); return () => clearInterval(t); }, [load, loadData]);
   const setTab = (t: Tab) => {
     setTabState(t);
     window.history.replaceState(null, "", `#/projects/${id}${t === "overview" ? "" : `?tab=${t}`}`);
   };
-  const openVersions = (eid: number | null) => { setOpenExp(eid); setTab("versions"); };
+  const openVersions = (eid: number | null, view: "tests" | "canvas" = "tests") => { setOpenExp(eid); setTab(view); };
   const build = (r: Recipe) => { setRecipe(r); setTab("build"); };
 
   if (err && !p) return <div className="page"><div className="page-inner"><p className="error">{err}</p><button className="btn ghost" onClick={back}><ArrowLeft /> All projects</button></div></div>;
@@ -197,17 +202,23 @@ function ProjectView({ id, status, back }: { id: number; status: Status | null; 
       <Tabs value={tab} onChange={setTab} tabs={[
         { id: "overview", label: "Overview" },
         { id: "build", label: "Build" },
-        { id: "versions", label: "Versions", badge: versions || null },
+        { id: "data", label: "Data", badge: datasets.length || null },
+        { id: "canvas", label: "Canvas" },
+        { id: "tests", label: "Tests", badge: versions || null },
         { id: "ship", label: "Ship" },
       ]} />
 
       {tab === "overview" && (empty
         ? <Begin project={p} onStarted={(eid) => { load(); openVersions(eid); }} build={build} />
         : <Overview project={p} openVersions={openVersions} build={build} onChanged={load} />)}
-      {tab === "build" && <Build project={p} recipe={recipe} setRecipe={setRecipe} onChanged={load} openVersions={openVersions} />}
-      {tab === "versions" && (p.experiments.length === 0
-        ? <div className="group pad pj-empty"><b>No models in this project yet.</b><p>Add a starting model on the Overview tab, or build one, and its measured versions appear here.</p><button className="btn" onClick={() => setTab("overview")}>Go to Overview</button></div>
-        : <ExperimentsPage status={status} projectId={p.id} openExp={openExp} onChanged={load} />)}
+      {tab === "build" && <Build project={p} recipe={recipe} setRecipe={setRecipe} onChanged={load} openVersions={openVersions} datasets={datasets} goData={() => setTab("data")} />}
+      {tab === "data" && <DataTab project={p} datasets={datasets} reload={loadData} build={build} />}
+      {(tab === "tests" || tab === "canvas") && p.experiments.length === 0 && (
+        <div className="group pad pj-empty"><b>No models in this project yet.</b>
+          <p>{tab === "canvas" ? "The canvas maps every version you try and what it led to." : "Tests measure each version: quality, speed, memory and energy, with their spread."} Add a starting model on the Overview tab first.</p>
+          <button className="btn" onClick={() => setTab("overview")}>Go to Overview</button></div>)}
+      {tab === "tests" && p.experiments.length > 0 && <ExperimentsPage status={status} projectId={p.id} openExp={openExp} onChanged={load} view="report" />}
+      {tab === "canvas" && p.experiments.length > 0 && <ExperimentsPage status={status} projectId={p.id} openExp={openExp} onChanged={load} view="canvas" />}
       {tab === "ship" && <Ship project={p} openVersions={openVersions} />}
     </div></div>
   );
@@ -217,7 +228,16 @@ function ProjectView({ id, status, back }: { id: number; status: Status | null; 
 function Begin({ project, onStarted, build }: { project: Project; onStarted: (eid: number) => void; build: (r: Recipe) => void }) {
   const [models, setModels] = useState<ModelFile[] | null>(null);
   const [pick, setPick] = useState(""), [busy, setBusy] = useState(false), [err, setErr] = useState("");
-  useEffect(() => { api.models().then((d) => { setModels(d.models); setPick(d.models[0]?.file ?? ""); }).catch((e) => setErr((e as Error).message)); }, []);
+  const [progress, setProgress] = useState<number | null>(null);
+  const loadModels = (select?: string) => api.models().then((d) => { setModels(d.models); setPick(select ?? d.models[0]?.file ?? ""); }).catch((e) => setErr((e as Error).message));
+  useEffect(() => { loadModels(); }, []);
+  const uploadModel = async (files: File[]) => {
+    const f = files[0];
+    if (!f || busy) return;
+    setBusy(true); setErr(""); setProgress(0);
+    try { const r = await api.modelUpload(f, setProgress); await loadModels(r.file); }
+    catch (e) { setErr((e as Error).message); } finally { setBusy(false); setProgress(null); }
+  };
   const start = async () => {
     const m = models?.find((x) => x.file === pick);
     if (!m || busy) return;
@@ -235,15 +255,19 @@ function Begin({ project, onStarted, build }: { project: Project; onStarted: (ei
           <span className="pj-way-icon"><Boxes /></span>
           <b>Start from an existing model</b>
           <span>Build on a model that is already good, then change it until it fits your goal.</span>
-          {models === null ? <span className="muted">Loading models…</span> : models.length === 0
-            ? <a className="btn small" href="#/models">Download a model first</a>
-            : <>
+          {models === null ? <span className="muted">Loading models…</span> : <>
+            {models.length > 0 && <>
               <select className="field select" value={pick} onChange={(e) => setPick(e.target.value)} aria-label="Starting model">
                 {models.map((m) => <option key={m.file} value={m.file}>{modelTitle(m)} · {m.quant} · {m.size_label}</option>)}
               </select>
               <button className="btn" disabled={!pick || busy} onClick={start}><Plus /> Use this model</button>
-              <a className="row-sub" href="#/models">Download another model</a>
             </>}
+            {progress !== null && <ProgressBar value={progress} label="Uploading the model" />}
+            <span className="pj-way-more">
+              {models.length === 0 ? "Get a model: " : "Or get another: "}
+              <a href="#/models">download one</a> · <FilePick label="upload a .gguf file" accept=".gguf" ghost disabled={busy} onFiles={uploadModel} />
+            </span>
+          </>}
         </div>
         <button className="pj-way" onClick={() => build("train")}>
           <span className="pj-way-icon"><Brain /></span>
@@ -263,7 +287,7 @@ function Begin({ project, onStarted, build }: { project: Project; onStarted: (ei
 }
 
 /** A project with work in it: where each model stands, and what to do next. */
-function Overview({ project, openVersions, build, onChanged }: { project: Project; openVersions: (eid: number | null) => void; build: (r: Recipe) => void; onChanged: () => void }) {
+function Overview({ project, openVersions, build, onChanged }: { project: Project; openVersions: (eid: number | null, view?: "tests" | "canvas") => void; build: (r: Recipe) => void; onChanged: () => void }) {
   const [adding, setAdding] = useState(false);
   const unmeasured = project.experiments.find((e) => e.done === 0 && e.active === 0);
   const measured = project.experiments.find((e) => e.done > 0);
@@ -286,7 +310,7 @@ function Overview({ project, openVersions, build, onChanged }: { project: Projec
           <div className="group pad pj-line" key={e.id}>
             <div className="pj-line-head">
               <span><b>{e.name}</b><span className="muted"> · {e.model}</span></span>
-              <button className="btn small ghost" onClick={() => openVersions(e.id)}><GitBranch /> Versions</button>
+              <span className="flow-toolbar"><button className="btn small ghost" onClick={() => openVersions(e.id, "canvas")}><GitBranch /> Canvas</button><button className="btn small ghost" onClick={() => openVersions(e.id)}><Play /> Tests</button></span>
             </div>
             <div className="pj-line-body">
               <div><span className="pj-k">Starting point</span>{e.baseline ? <KeyNumbers r={e.baseline.results} /> : <span className="muted">not measured yet</span>}</div>
@@ -317,7 +341,7 @@ const RECIPES: { id: Recipe; icon: typeof Hammer; title: string; what: string }[
 ];
 
 /** Build: every way to make a new version, in one place. */
-function Build({ project, recipe, setRecipe, onChanged, openVersions }: { project: Project; recipe: Recipe | null; setRecipe: (r: Recipe | null) => void; onChanged: () => void; openVersions: (eid: number | null) => void }) {
+function Build({ project, recipe, setRecipe, onChanged, openVersions, datasets, goData }: { project: Project; recipe: Recipe | null; setRecipe: (r: Recipe | null) => void; onChanged: () => void; openVersions: (eid: number | null) => void; datasets: Dataset[]; goData: () => void }) {
   const ggufs = Array.from(new Set(project.experiments.map((e) => e.model).filter((m) => m.endsWith(".gguf"))));
   const [model, setModel] = useState(ggufs[0] ?? "");
   const [built, setBuilt] = useState(false);
@@ -339,8 +363,8 @@ function Build({ project, recipe, setRecipe, onChanged, openVersions }: { projec
           <WeightsWorkshop model={model} onBuilt={() => setBuilt(true)} />
           {built && <p className="pj-hint">Built. To measure it, open <button className="link" onClick={() => openVersions(project.experiments.find((e) => e.model === model)?.id ?? null)}>Versions</button> and choose <i>Change → Weights</i>.</p>}
         </div>)}
-      {recipe === "finetune" && <InternalsPage embedded initialTab="ft" />}
-      {recipe === "train" && <InternalsPage embedded initialTab="train" />}
+      {recipe === "finetune" && <><DataHint datasets={datasets} goData={goData} /><InternalsPage embedded initialTab="ft" datasets={datasets} /></>}
+      {recipe === "train" && <><DataHint datasets={datasets} goData={goData} /><InternalsPage embedded initialTab="train" datasets={datasets} /></>}
       {recipe === "method" && <InternalsPage embedded initialTab="play" />}
       {recipe === "code" && <ResearchPage codeIds={project.code.map((c) => c.id)} onCreate={(cid) => api.projectAssign("code", cid, project.id).then(onChanged)} />}
     </div>
@@ -391,6 +415,77 @@ function Ship({ project, openVersions }: { project: Project; openVersions: (eid:
         </div>
       ))}
       <p className="row-sub">Coming next: publish to Hugging Face (private or public) with a model card generated from these measurements, export a package, and Ollama.</p>
+    </div>
+  );
+}
+
+/** Above the training forms: where the data comes from. */
+function DataHint({ datasets, goData }: { datasets: Dataset[]; goData: () => void }) {
+  return (
+    <p className="pj-hint">
+      {datasets.length > 0
+        ? <>Choose one of your {datasets.length} uploaded file{datasets.length === 1 ? "" : "s"} under <b>Your data</b> below, or <button className="link" onClick={goData}>upload more on the Data tab</button>.</>
+        : <>Training needs examples of what the model should learn. <button className="link" onClick={goData}>Upload them on the Data tab</button>, or use a Hugging Face dataset below.</>}
+    </p>
+  );
+}
+
+const EXAMPLE_CHAT = `{"instruction": "How do I reset my password?", "output": "Open Settings, choose Account, then Reset password."}
+{"instruction": "Do you ship to Slovakia?", "output": "Yes, delivery takes 2 to 4 working days."}`;
+const EXAMPLE_MESSAGES = `{"messages": [{"role": "user", "content": "Hi!"}, {"role": "assistant", "content": "Hello, how can I help?"}]}`;
+
+/** Data: the files this project trains and tests on, uploaded from your computer. */
+function DataTab({ project, datasets, reload, build }: { project: Project; datasets: Dataset[]; reload: () => void; build: (r: Recipe) => void }) {
+  const [progress, setProgress] = useState<{ value: number; label: string } | null>(null);
+  const [err, setErr] = useState(""), [msg, setMsg] = useState("");
+  const send = async (files: File[]) => {
+    setErr(""); setMsg("");
+    for (const f of files) {
+      try {
+        setProgress({ value: 0, label: `Uploading ${f.name}` });
+        await api.projectDataUpload(project.id, f, (value) => setProgress({ value, label: `Uploading ${f.name}` }));
+        setMsg(`${f.name} is ready to train on.`);
+      } catch (e) { setErr(`${f.name}: ${(e as Error).message}`); }
+    }
+    setProgress(null); reload();
+  };
+  const remove = async (d: Dataset) => {
+    if (!confirm(`Delete ${d.name} from this project? This removes the file from the device.`)) return;
+    await api.projectDataDelete(project.id, d.name); reload();
+  };
+  return (
+    <div className="pj-data">
+      <DropZone accept={[".jsonl", ".txt"]} onFiles={send}>
+        <Database />
+        <b>Drop training files here</b>
+        <span>.jsonl (examples of questions and answers) or .txt (plain text)</span>
+        <FilePick label="Choose files" accept=".jsonl,.txt" multiple onFiles={send} disabled={!!progress} />
+      </DropZone>
+      {progress && <ProgressBar value={progress.value} label={progress.label} />}
+      {err && <p className="error" role="alert">{err}</p>}
+      {msg && <p role="status" className="pj-hint">{msg} <button className="link" onClick={() => build("finetune")}>Fine-tune with it</button></p>}
+
+      {datasets.length > 0 && (
+        <div className="group pad">
+          {datasets.map((d) => (
+            <div className="pj-loose-row" key={d.name}>
+              <FileText />
+              <span><b>{d.name}</b><span className="muted"> · {fmtBytes(d.bytes)}{d.rows != null ? ` · ${d.rows.toLocaleString()} ${d.kind === "jsonl" ? "examples" : "lines"}` : ""}</span></span>
+              <button className="icon-btn danger" title={`Delete ${d.name}`} onClick={() => remove(d)}><Trash2 /></button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <details className="group pad pj-formats" open={datasets.length === 0 || undefined}>
+        <summary>What should the files look like?</summary>
+        <p><b>To teach a task</b> (fine-tuning): a <code>.jsonl</code> file, one example per line, each with what someone asks and the answer you want.</p>
+        <pre className="rp-output">{EXAMPLE_CHAT}</pre>
+        <p className="row-sub">Also accepted per line: <code>prompt</code>/<code>response</code>, <code>question</code>/<code>answer</code>, or whole conversations:</p>
+        <pre className="rp-output">{EXAMPLE_MESSAGES}</pre>
+        <p><b>To teach a language or a field</b> (training from scratch or continued training): a <code>.txt</code> file of plain text, or a <code>.jsonl</code> with a <code>text</code> field per line.</p>
+        <p className="row-sub">A few hundred good examples already change a model's behaviour. Keep some examples out of training to test with: put them in a second file.</p>
+      </details>
     </div>
   );
 }

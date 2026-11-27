@@ -304,6 +304,26 @@ export type Project = {
   experiments: ProjectExperiment[]; code: ProjectCode[];
 };
 
+/** Sends a file as the raw request body (PUT), reporting progress from 0 to 1. Large files stream to disk on the box. */
+export function upload<T>(url: string, file: Blob, onProgress?: (fraction: number) => void): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const x = new XMLHttpRequest();
+    x.open("PUT", url);
+    x.setRequestHeader("Content-Type", "application/octet-stream");
+    x.upload.onprogress = (e) => { if (e.lengthComputable && e.total > 0) onProgress?.(e.loaded / e.total); };
+    x.onload = () => {
+      if (x.status >= 200 && x.status < 300) { resolve(JSON.parse(x.responseText || "{}") as T); return; }
+      let detail = `${x.status} ${x.statusText}`;
+      try { detail = JSON.parse(x.responseText).detail ?? detail; } catch { /* not JSON */ }
+      reject(new Error(detail));
+    };
+    x.onerror = () => reject(new Error("The upload was interrupted. Check that Blocky is running and try again."));
+    x.send(file);
+  });
+}
+
+export type Dataset = { name: string; path: string; bytes: number; rows: number | null; kind: "jsonl" | "txt" };
+
 const send = (method: string, body?: unknown): RequestInit => ({
   method,
   headers: { "Content-Type": "application/json" },
@@ -385,6 +405,17 @@ export const api = {
   projectUpdate: (id: number, body: { name?: string; goal?: string }) => json<Project>(`/api/projects/${id}`, send("PATCH", body)),
   projectDelete: (id: number) => json(`/api/projects/${id}`, { method: "DELETE" }),
   projectAssign: (kind: "experiment" | "code", id: number, projectId: number | null) => json("/api/projects/assign", send("PUT", { kind, id, project_id: projectId })),
+  projectData: (id: number) => json<{ datasets: Dataset[] }>(`/api/projects/${id}/data`),
+  projectDataUpload: (id: number, file: File, onProgress?: (f: number) => void) =>
+    upload<{ name: string; path: string }>(`/api/projects/${id}/data?name=${encodeURIComponent(file.name)}`, file, onProgress),
+  projectDataDelete: (id: number, name: string) => json(`/api/projects/${id}/data?name=${encodeURIComponent(name)}`, { method: "DELETE" }),
+  modelUpload: (file: File, onProgress?: (f: number) => void) =>
+    upload<{ file: string; bytes: number }>(`/api/models/upload?name=${encodeURIComponent(file.name)}`, file, onProgress),
+  researchUpload: (rid: number, path: string, file: Blob) =>
+    upload<{ path: string }>(`/api/research/projects/${rid}/upload?path=${encodeURIComponent(path)}`, file),
+  researchImportZip: (rid: number, file: File, onProgress?: (f: number) => void) =>
+    upload<{ files: number; entry_candidates: string[] }>(`/api/research/projects/${rid}/import-zip`, file, onProgress),
+  researchEntries: (rid: number) => json<{ entries: string[] }>(`/api/research/projects/${rid}/entries`),
   experimentDelete: (id: number) => json(`/api/experiments/${id}`, { method: "DELETE" }),
   experimentRun: (id: number, label: string, config: Partial<ExpConfig>, parentId?: number | null) =>
     json<{ id: number }>(`/api/experiments/${id}/runs`, send("POST", { label, config, parent_id: parentId ?? null })),

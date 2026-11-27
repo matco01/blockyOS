@@ -2,7 +2,7 @@
 from pathlib import Path
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from .. import lab
@@ -84,3 +84,20 @@ def cancel_download(dl_id: str):
     if dl_id in lab.downloads and lab.downloads[dl_id]["status"] == "downloading":
         lab.downloads[dl_id]["status"] = "cancelled"
     return {"ok": True}
+
+
+def _size(request) -> int | None:
+    try:
+        return int(request.headers.get("content-length") or "") or None
+    except ValueError:
+        return None
+
+
+@router.put("/api/models/upload")
+async def models_upload(request: Request, name: str):
+    """A .gguf model file from your computer: the raw file is the request body (streamed to disk)."""
+    from .. import imports
+    try:
+        return await imports.model(request.stream(), name, _size(request))
+    except ValueError as e:
+        _bad(e)

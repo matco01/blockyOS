@@ -67,12 +67,15 @@ def projects():
 
 
 def create(name, template="byte"):
-    if template not in ("byte", "transformer", "blank"):
+    """A code workspace from a template, or empty (`import`) for code uploaded from your computer."""
+    if template not in ("byte", "transformer", "blank", "import"):
         raise ValueError("Unknown template")
     with db.connect() as c:
         pid = c.execute("INSERT INTO research_projects (name,created_at) VALUES (?,?)", (str(name or "").strip()[:100] or "Research project", time.time())).lastrowid
     source = ROOT / str(pid) / "source"
     source.mkdir(parents=True)
+    if template == "import":
+        return {"id": pid, "path": str(source)}
     templates = Path(__file__).resolve().parents[1] / "research_templates"
     shutil.copy(templates / (template + ".py"), source / "main.py")
     # Deliberately tiny, identified inputs for checking the pipeline, not a benchmark dataset.

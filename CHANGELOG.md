@@ -13,6 +13,10 @@ with each release. Results are only comparable within one protocol version.
   project's models) and Ship (use a version on this device, reproducibility bundle, results CSV). Existing experiments
   and code appear under "Not in a project yet" and can be moved in; deleting a project never deletes them. The sidebar
   is now Projects, Chat, Device and Help, with every earlier page under "All tools". API: `/api/projects`.
+- **Bring your own files, from the browser.** A project has Data, Canvas and Tests tabs. Upload a `.gguf` model file
+  (streamed to disk, checked as GGUF, never overwrites), training data (`.jsonl` checked line by line, or `.txt`;
+  picked from a list in the training forms), and your code as a folder or a `.zip` (a GitHub "Download ZIP" works as
+  is; archives can't write outside the workspace). After an upload, a "Start file" choice sets what runs.
 - AI assistants over MCP with full access: ChatGPT and Claude (web, desktop and phone) connect through the owner's HTTPS
   tunnel with OAuth 2.1 sign-in (dynamic client registration, PKCE, rotating refresh tokens, reuse detection). The owner
   approves each one with a one-time pairing code and chooses its access level (read, write, full); connections can be
