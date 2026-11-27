@@ -185,7 +185,7 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
                 r["state"] = "measuring speed"
                 _save(run_id, results=results, log="\n".join(log))
                 out = await _proc([str(lab.LLAMA_BIN / "llama-bench"), "-m", str(path), "-p", "512", "-n", "128", "-r", "2",
-                                   "-fitt", "512", "-o", "jsonl"], log, run_id, timeout=600)
+                                   "-fitt", str(await asyncio.to_thread(lab.fit_margin_mb)), "-o", "jsonl"], log, run_id, timeout=600)
                 for line in out.splitlines():
                     if line.startswith("{"):
                         x = json.loads(line)

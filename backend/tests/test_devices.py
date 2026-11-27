@@ -54,6 +54,40 @@ def test_cpu_only_command_line_and_pinning():
     assert profile._pin(["llama-server"], {"cores": None}) == ["llama-server"]
 
 
+def test_one_layout_per_run():
+    cfg = {"device": "gpu", "ngl": "auto", "cores": None, "threads": None, "vram_limit_mb": None}
+    # The server fits with the margin; the tools get the layer count it chose and don't fit again.
+    assert profile._placement_args(cfg, 8192, margin_mb=2048) == ["--fit-target", "2048"]
+    assert profile._placement_args(cfg, 8192, bench=True, margin_mb=2048) == ["-fitt", "2048"]
+    assert profile._placement_args(cfg, 8192, bench=True, margin_mb=2048, gpu_layers=30) == ["-ngl", "30"]
+    # A simulated smaller GPU never leaves less free than the margin.
+    small = {**cfg, "vram_limit_mb": 4096}
+    assert profile._placement_args(small, 8192, margin_mb=2048) == ["--fit-target", "4096"]
+    assert profile._placement_args({**cfg, "vram_limit_mb": 7680}, 8192, margin_mb=2048) == ["--fit-target", "2048"]
+    # An explicit layer count is the setup itself.
+    assert profile._placement_args({**cfg, "ngl": 20}, 8192, margin_mb=2048, gpu_layers=30) == ["-ngl", "20"]
+
+
+def test_display_reserve(monkeypatch):
+    from app import lab
+
+    class Out:
+        stdout = "Enabled\n"
+    monkeypatch.setattr(lab.subprocess, "run", lambda *a, **k: Out)
+    monkeypatch.setattr(lab, "_display", (0.0, False))
+    assert lab.display_active() and lab.fit_margin_mb() == lab.FIT_MARGIN_MB + lab.DISPLAY_RESERVE_MB
+    Out.stdout = "Disabled\n"
+    monkeypatch.setattr(lab, "_display", (0.0, True))
+    assert not lab.display_active() and lab.fit_margin_mb() == lab.FIT_MARGIN_MB
+
+
+def test_different_memory_margin_is_a_mismatch():
+    def run(i, margin):
+        return {"id": i, "config": {}, "results": {"provenance": {"placement": {"fit_margin_mb": margin}}}}
+    assert "GPU memory margin" in profile.compare(run(1, 1024), run(2, 2048))["env_mismatch"]
+    assert "GPU memory margin" not in profile.compare(run(1, 2048), run(2, 2048))["env_mismatch"]
+
+
 def test_cpu_only_analysis_and_projection(exp, monkeypatch):
     monkeypatch.setattr(profile, "_weights", lambda path: {"bytes": 2e9, "params": 3e9, "embedding_bytes": 0.2e9})
     cfg = {**profile.normalize_config(exp, {"preset": "minipc-16gb"}), "ctx": 8192}

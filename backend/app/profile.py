@@ -667,7 +667,13 @@ def describe_change(base: dict, cfg: dict) -> str:
 
 # ---------- Running a profile ----------
 
-def _placement_args(cfg: dict, vram_total: float, bench: bool = False) -> list[str]:
+def _placement_args(cfg: dict, vram_total: float, bench: bool = False, margin_mb: int = lab.FIT_MARGIN_MB,
+                    gpu_layers: int | None = None) -> list[str]:
+    """Placement flags for llama.cpp tools.
+
+    The run's server fits the model with `margin_mb` of GPU memory left free; the other tools then get the layer count
+    it chose (`gpu_layers`), so speed, perplexity and the memory analysis all describe the same layout.
+    """
     threads = cfg.get("threads") or cfg.get("cores")
     if cfg.get("device") == "cpu":
         # No GPU at all (not even for prompt processing, which -ngl 0 alone would still offload).
@@ -675,10 +681,15 @@ def _placement_args(cfg: dict, vram_total: float, bench: bool = False) -> list[s
     args = []
     if str(cfg["ngl"]) != "auto":
         args += ["-ngl", str(cfg["ngl"])]
-    if cfg.get("vram_limit_mb") and vram_total:
-        args += ["-fitt" if bench else "--fit-target", str(max(0, int(vram_total - cfg["vram_limit_mb"])))]
+    elif gpu_layers is not None:
+        args += ["-ngl", str(gpu_layers)]
+    fit = "-fitt" if bench else "--fit-target"
+    if gpu_layers is not None and str(cfg["ngl"]) == "auto":
+        pass  # the layout is already decided
+    elif cfg.get("vram_limit_mb") and vram_total:
+        args += [fit, str(max(margin_mb, int(vram_total - cfg["vram_limit_mb"])))]
     elif str(cfg["ngl"]) == "auto":
-        args += ["-fitt", "512"] if bench else ["--fit", "on"]
+        args += [fit, str(margin_mb)]
     if threads:
         args += ["-t", str(threads)]
     if cfg.get("split_mode"):
@@ -1285,7 +1296,7 @@ def equivalence(a: str, b: str, margin_pts: float | None = None) -> dict | None:
 
 # ---------- Provenance: everything needed to reproduce (or question) a run ----------
 
-PROTOCOL = "blocky-profile/3 (MMLU-Pro option logprobs · llama-bench p512 n128 d0,4096 r5 · PPL/KLD WikiText-2 c512 x32 · serving/energy: actual usage, full request interval)"
+PROTOCOL = "blocky-profile/4 (MMLU-Pro option logprobs · llama-bench p512 n128 d0,4096 r5 · PPL/KLD WikiText-2 c512 x32 · serving/energy: actual usage, full request interval · one layout per run: server fit, tools reuse its GPU layers)"
 REPO = Path(__file__).resolve().parents[2]
 
 
@@ -1404,9 +1415,9 @@ def _cmdline(cmd: list[str]) -> str:
     return " ".join(shlex.quote(c) for c in cmd)
 
 
-async def _bench(cfg: dict, vram_total: float, run_id: int, log: list[str], cmds: dict | None = None) -> dict:
+async def _bench(cfg: dict, vram_total: float, run_id: int, log: list[str], cmds: dict | None = None, **placement) -> dict:
     cmd = [str(engines.bin_dir(cfg.get("engine")) / "llama-bench"), "-m", str(lab.MODELS_DIR / cfg["model"]), "-p", "512", "-n", "128",
-           "-d", "0,4096", "-r", "5", "-ctk", cfg["kv"], "-ctv", cfg["kv"], "-fa", cfg["fa"], "-o", "jsonl"] + _placement_args(cfg, vram_total, bench=True)
+           "-d", "0,4096", "-r", "5", "-ctk", cfg["kv"], "-ctv", cfg["kv"], "-fa", cfg["fa"], "-o", "jsonl"] + _placement_args(cfg, vram_total, bench=True, **placement)
     cmd = _pin(cmd, cfg)
     if cmds is not None:
         cmds["speed"] = _cmdline(cmd)
@@ -1614,6 +1625,10 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
             await lab.llm_service("stop")
             await asyncio.sleep(1)
             res["provenance"]["noise_controls"] = await noise_controls_on(exp, cfg)
+            display = await asyncio.to_thread(lab.display_active)
+            margin = lab.FIT_MARGIN_MB + (lab.DISPLAY_RESERVE_MB if display else 0)
+            res["provenance"]["placement"] = {"fit_margin_mb": margin, "display_active": display}
+            placement = {"margin_mb": margin}
             sampler.start()
 
             # 1) Load: start a server with exactly this configuration, time it, read the memory layout.
@@ -1643,7 +1658,7 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
                        "--jinja", "--no-webui", "-lv", "4",
                        # Non-thinking protocol by default: answers land in the reply (not a hidden reasoning field), which
                        # outside harnesses like lm-eval grade. Requests can still turn thinking on explicitly.
-                       "--chat-template-kwargs", '{"enable_thinking": false}'] + _placement_args(cfg, vram_total)
+                       "--chat-template-kwargs", '{"enable_thinking": false}'] + _placement_args(cfg, vram_total, **placement)
                 env = {**os.environ, "LD_LIBRARY_PATH": str(ebin)}
             cmd = _pin(cmd, cfg)
             cmds["load_and_quality"] = _cmdline(cmd)
@@ -1731,21 +1746,30 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
                                         f"{engines.CHECKPOINT_FRAMEWORKS[fw]} runs; compare with the serving speed, MMLU-Pro, long-context and lm-eval results.")
                 raise _SkipRest
 
+            # The other tools reuse the layer split the server's fit chose, so every phase measures the same layout.
+            # Mixture-of-experts models are fitted by moving experts, which a layer count can't reproduce: those keep
+            # fitting with the same margin.
+            layers = (res.get("memory") or {}).get("layers")
+            moe = bool(gguf.metadata(model_path(cfg["model"])).get("experts"))
+            if layers and not moe and str(cfg["ngl"]) == "auto" and cfg.get("device") != "cpu":
+                placement["gpu_layers"] = layers["gpu"]
+            res["provenance"]["placement"]["tool_gpu_layers"] = placement.get("gpu_layers")
+
             # 3) Speed: llama-bench with the same setup.
             phase("speed")
-            res["speed"] = await _bench(cfg, vram_total, run_id, log, cmds)
+            res["speed"] = await _bench(cfg, vram_total, run_id, log, cmds, **placement)
 
             # 3b) Optional: GPU kernel profile (Nsight Systems), if this experiment asked for it.
             if (exp.get("protocol") or {}).get("kernels") and cfg.get("device") != "cpu":
                 phase("kernels")
-                kargs = ["-ctk", cfg["kv"], "-ctv", cfg["kv"], "-fa", cfg["fa"]] + _placement_args(cfg, vram_total, bench=True)
+                kargs = ["-ctk", cfg["kv"], "-ctv", cfg["kv"], "-fa", cfg["fa"]] + _placement_args(cfg, vram_total, bench=True, **placement)
                 res["kernels"] = await kernels.profile(ebin / "llama-bench", model_path(cfg["model"]), kargs, exp_dir / f"run{run_id}-kernels", log, run_id)
 
             # 4) Fidelity: perplexity, and KL divergence vs the experiment's baseline.
             phase("fidelity")
             text = await fidelity_text(exp)
             pcmd = [str(ebin / "llama-perplexity"), "-m", str(lab.MODELS_DIR / cfg["model"]), "-f", str(text), "-c", "512",
-                    "--chunks", str(ppl_chunks(exp)), "-ctk", cfg["kv"], "-ctv", cfg["kv"], "-fa", cfg["fa"]] + _placement_args(cfg, vram_total)
+                    "--chunks", str(ppl_chunks(exp)), "-ctk", cfg["kv"], "-ctv", cfg["kv"], "-fa", cfg["fa"]] + _placement_args(cfg, vram_total, **placement)
             pcmd = _pin(pcmd, cfg)
             base_run = next((r for r in exp["runs_list"] if r["status"] == "done" and r["id"] != run_id and not r["config"]["model"].startswith(methods.PREFIX)), None)
             same_tok = is_baseline or not base_run or (
@@ -1975,6 +1999,8 @@ def compare(base: dict | None, run: dict, margin_pts: float | None = None) -> di
             out["env_mismatch"].append("perplexity/KLD text")
         if _get(pa, ("noise_controls", "clock_lock_mhz")) != _get(pb, ("noise_controls", "clock_lock_mhz")):
             out["env_mismatch"].append("GPU clock lock")
+        if _get(pa, ("placement", "fit_margin_mb")) != _get(pb, ("placement", "fit_margin_mb")):
+            out["env_mismatch"].append("GPU memory margin")
     if a.get("answers") and b.get("answers") and not out.get("env_mismatch"):
         out["mmlu_p"] = mcnemar_p(a["answers"], b["answers"])
         out["mmlu_diff"] = paired_diff_ci(a["answers"], b["answers"])

@@ -175,7 +175,7 @@ async def _speculative(run_id: int, p: dict, log: list[str]) -> list[dict]:
     results = []
     for mode in ("without draft", "with draft"):
         cmd = [str(lab.LLAMA_BIN / "llama-server"), "-m", str(lab.MODELS_DIR / p["model"]), "--host", "127.0.0.1",
-               "--port", str(arena.TEMP_PORT), "-c", "4096", "-np", "1", "--fit", "on", "-fa", "auto", "--jinja", "--no-webui"]
+               "--port", str(arena.TEMP_PORT), "-c", "4096", "-np", "1", "--fit-target", str(lab.fit_margin_mb()), "-fa", "auto", "--jinja", "--no-webui"]
         if mode == "with draft":
             cmd += ["-md", str(lab.MODELS_DIR / p["draft"]), "-ngld", "999", "--spec-draft-n-max", str(p["draft_max"]), "--spec-draft-n-min", "1"]
         proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,

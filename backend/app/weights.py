@@ -173,7 +173,7 @@ async def _imatrix(job: dict, src: Path, log: list[str]) -> Path:
     calib = await ensure_calibration()
     job["step"] = "importance matrix"
     cmd = [str(lab.LLAMA_BIN / "llama-imatrix"), "-m", str(src), "-f", str(calib), "-o", str(out.with_suffix(".part")),
-           "--chunks", str(IMATRIX_CHUNKS), "-c", "512", "--fit", "on", "-ofreq", "1000"]
+           "--chunks", str(IMATRIX_CHUNKS), "-c", "512", "--fit-target", str(lab.fit_margin_mb()), "-ofreq", "1000"]
     job["commands"].append(" ".join(cmd))
     await quantlab._proc(cmd, log, _pid(job["id"]), timeout=3600)
     part = out.with_suffix(".part")

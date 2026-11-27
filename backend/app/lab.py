@@ -30,6 +30,37 @@ LLAMA_BIN = Path(os.environ.get("BLOCKY_LLAMA_BIN", "/opt/blocky/llama.cpp/bin")
 RUNTIME_FILE = config.DATA_DIR / "llm.env"   # read by blocky-llm.service
 
 KV_TYPES = ("f16", "q8_0", "q4_0")
+
+# GPU memory llama.cpp's --fit leaves free per device. 1024 MiB is llama.cpp's own server default. When the GPU also
+# drives a display (a desktop PC, WSL), the desktop shares that memory and can grow while a model runs; filling the GPU
+# then freezes the screen or the whole computer. Such GPUs keep an extra reserve (0 turns it off).
+FIT_MARGIN_MB = 1024
+DISPLAY_RESERVE_MB = max(0, int(os.environ.get("BLOCKY_DISPLAY_RESERVE_MB", "1024")))
+
+
+_display: tuple[float, bool] = (0.0, False)
+
+
+def display_active() -> bool:
+    """True when an NVIDIA GPU of this device drives a display (checked at most once a minute)."""
+    global _display
+    if time.monotonic() - _display[0] < 60:
+        return _display[1]
+    try:
+        out = subprocess.run(["nvidia-smi", "--query-gpu=display_active", "--format=csv,noheader"],
+                             capture_output=True, text=True, timeout=10).stdout
+        active = any(line.strip().lower() == "enabled" for line in out.splitlines())
+    except (OSError, subprocess.SubprocessError):
+        active = False
+    _display = (time.monotonic(), active)
+    return active
+
+
+def fit_margin_mb() -> int:
+    """Free GPU memory to leave when llama.cpp fits a model to this device."""
+    return FIT_MARGIN_MB + (DISPLAY_RESERVE_MB if display_active() else 0)
+
+
 RUNTIME_DEFAULTS = {"model": None, "ctx": 16384, "kv": "q8_0", "ngl": "auto", "threads": "auto"}
 
 # Curated starting points. Sizes are the Q4 files; fit is computed per machine.
@@ -415,7 +446,7 @@ def bench_command(p: dict) -> tuple[list[str], str]:
     cmd += ["-fa", fa]
     ngl = str(p.get("ngl", "auto"))
     if ngl == "auto":
-        cmd += ["-fitt", "512"]
+        cmd += ["-fitt", str(fit_margin_mb())]
     elif ngl.isdigit():
         cmd += ["-ngl", ngl]
     else:

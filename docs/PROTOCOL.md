@@ -3,7 +3,7 @@
 This document specifies how blockyOS measures every number it reports, for the protocol version
 
 ```
-blocky-profile/3 (MMLU-Pro option logprobs · llama-bench p512 n128 d0,4096 r5 · PPL/KLD WikiText-2 c512 x32 · serving/energy: actual usage, full request interval)
+blocky-profile/4 (MMLU-Pro option logprobs · llama-bench p512 n128 d0,4096 r5 · PPL/KLD WikiText-2 c512 x32 · serving/energy: actual usage, full request interval · one layout per run: server fit, tools reuse its GPU layers)
 ```
 
 The string is the `PROTOCOL` constant in `backend/app/profile.py` and is recorded in every run's provenance. Results
@@ -62,6 +62,7 @@ Recorded per run (`results.provenance`), and compared between any two runs befor
 - test settings: MMLU-Pro question count, perplexity chunk count, needle and RULER settings, lm-eval tasks and limit
 - noise controls: cool-down, requested and applied GPU clock lock (or the error if locking failed), GPU temperature at
   the start
+- placement: the GPU memory margin, whether the GPU drives a display, and the GPU layer count the tools reused (section 4)
 - other machines taking part (RPC workers, pipeline stages)
 - the exact command line of every phase (`results.commands`)
 
@@ -69,7 +70,7 @@ Raw evaluator output (llama-bench JSON lines, llama-perplexity output, the run l
 be inspected per metric ("evidence") and exported in the reproducibility bundle.
 
 **Comparability rules.** Statistics between two runs are reported only when protocol, dataset hashes, MMLU seed and
-question count, perplexity chunk count and text, GPU clock lock, llama.cpp commit (unless the engine is the variable
+question count, perplexity chunk count and text, GPU clock lock, GPU memory margin, llama.cpp commit (unless the engine is the variable
 being changed), GPU driver and CUDA versions match. Otherwise the comparison lists the mismatched conditions and shows no
 significance. A changed model file under the same name (different SHA-256) is reported explicitly. Different hardware is
 reported as information, not as a mismatch: comparing devices is a valid use.
@@ -81,9 +82,20 @@ which compile kernels on first load). If the process exits first, the run fails 
 For llama.cpp, the load log is parsed for every `<device> <kind> buffer size = <MiB>` line (model weights, KV cache,
 compute buffers per device) and the number of offloaded layers. VRAM in use is read from the telemetry 1.5 s after load.
 
+**One layout per run.** With GPU layers on `auto`, the server is started with `--fit-target <margin>`: llama.cpp fits
+the model so that `<margin>` MiB of each GPU stay free. The margin is 1024 MiB (llama.cpp's own default) plus a display
+reserve of 1024 MiB when `nvidia-smi` reports that the GPU drives a display, because a desktop shares that memory and
+can grow during the run; filling such a GPU can freeze the computer. `BLOCKY_DISPLAY_RESERVE_MB` changes the reserve.
+llama-bench, llama-perplexity and the kernel profile then get the layer count the server's load log reports
+(`-ngl <n>`), so speed, fidelity and the memory analysis (section 10) describe the same layout. Mixture-of-experts
+models are fitted by moving expert tensors, which a layer count can't reproduce; their tools fit again with the same
+margin, so their layouts can differ slightly from the server's. Up to `blocky-profile/3`, llama-bench fitted on its own
+with a 512 MiB margin, so for models that did not fit entirely on the GPU its speed could come from a different layout
+than the one analysed.
+
 **RAM limit simulation:** the model's host-side buffers plus 700 MB for a minimal operating system must fit the limit,
 otherwise the run fails ("doesn't fit"). **VRAM limit simulation** uses llama.cpp's `--fit-target` to leave the
-difference to the real VRAM unused.
+difference to the real VRAM unused (at least the margin above).
 
 ## 5. Quality
 

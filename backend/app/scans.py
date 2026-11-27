@@ -98,7 +98,7 @@ def _source_type(src: Path) -> str:
 
 
 async def _kld(src_model: Path, base: Path, text: Path, log: list[str], pid: int, make_base: bool = False) -> dict:
-    cmd = [str(lab.LLAMA_BIN / "llama-perplexity"), "-m", str(src_model), "-f", str(text), "-c", "512", "--chunks", str(CHUNKS), "--fit", "on"]
+    cmd = [str(lab.LLAMA_BIN / "llama-perplexity"), "-m", str(src_model), "-f", str(text), "-c", "512", "--chunks", str(CHUNKS), "--fit-target", str(lab.fit_margin_mb())]
     cmd += ["--kl-divergence-base", str(base)] + ([] if make_base else ["--kl-divergence"])
     out = await quantlab._proc(cmd, log, pid, timeout=1800)
     if make_base:

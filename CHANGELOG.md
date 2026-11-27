@@ -21,6 +21,16 @@ with each release. Results are only comparable within one protocol version.
 - Requests that arrive through a tunnel or proxy on this machine (forwarding headers) are no longer treated as coming
   from the device itself.
 
+### Changed
+- **Measurement protocol `blocky-profile/4`: one GPU layout per run.** llama-bench used its own fit with 512 MiB free,
+  while the server and the memory analysis used another, so for models that didn't fit entirely on the GPU the speed
+  came from a different layout than the one analysed (seen as decode speed above the bandwidth limit). Now the server
+  fits once and llama-bench, llama-perplexity and kernel profiles reuse its GPU layer count (mixture-of-experts models
+  fit again with the same margin). Results from `blocky-profile/3` are not comparable with new ones; start a new
+  experiment and baseline. docs/PROTOCOL.md section 4.
+- GPUs that drive a display keep 1 GiB more free memory (`BLOCKY_DISPLAY_RESERVE_MB`) in every llama.cpp tool Blocky
+  starts. On a desktop PC, an experiment with a model close to the VRAM size froze the whole computer.
+
 ### Fixed
 - GPU clock lock helper (`blocky-gpu-clocks`) also finds `nvidia-smi` where WSL installs it; re-run `scripts/install.sh`.
 - Speed: a llama-bench repetition with a negative duration (the clock stepped backwards, seen under WSL) is now dropped

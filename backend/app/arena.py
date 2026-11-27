@@ -176,7 +176,7 @@ def leaderboard() -> list[dict]:
 
 async def _start_temp_server(model: str, kv: str) -> asyncio.subprocess.Process:
     cmd = [str(lab.LLAMA_BIN / "llama-server"), "-m", str(lab.MODELS_DIR / model), "--host", "127.0.0.1",
-           "--port", str(TEMP_PORT), "-c", "8192", "--fit", "on", "-fa", "auto", "-ctk", kv, "-ctv", kv,
+           "--port", str(TEMP_PORT), "-c", "8192", "--fit-target", str(lab.fit_margin_mb()), "-fa", "auto", "-ctk", kv, "-ctv", kv,
            "--jinja", "--no-webui", "-np", "1"]
     return await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
                                                 env={**os.environ, "LD_LIBRARY_PATH": str(lab.LLAMA_BIN)})

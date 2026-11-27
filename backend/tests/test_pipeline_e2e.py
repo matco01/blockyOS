@@ -83,6 +83,12 @@ def test_full_experiment_end_to_end(lab_env):
     assert {"load_and_quality", "speed", "fidelity"} <= set(r["commands"])
     # Load log parsed into the memory layout.
     assert r["memory"]["gpu"]["model"] == 3000 and r["memory"]["layers"] == {"gpu": 33, "total": 33}
+    # One layout per run: the server fits with the margin, the other tools reuse its layer count.
+    pl = r["provenance"]["placement"]
+    assert pl["fit_margin_mb"] >= 1024 and pl["tool_gpu_layers"] == 33
+    assert f"--fit-target {pl['fit_margin_mb']}" in r["commands"]["load_and_quality"]
+    assert "-ngl 33" in r["commands"]["speed"] and "-fitt" not in r["commands"]["speed"]
+    assert "-ngl 33" in r["commands"]["fidelity"]
     # MMLU-Pro: 560 paired answers, accuracy near the fake model's true rate, with a Wilson interval around it.
     m = r["mmlu"]
     assert m["n"] == 560 and len(m["answers"]) == 560
