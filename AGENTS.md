@@ -13,6 +13,9 @@ editing code. This file is for changing Blocky itself.
 | `backend/app/main.py` | FastAPI app wiring: lifespan (DB init, workers, MCP session manager), access control (loopback, Host, Origin), router order |
 | `backend/app/routes/` | REST endpoints, one module per area (`experiments.py`, `chat.py`, `torch.py`, …); `common.py` holds shared helpers and app state |
 | `backend/app/projects.py` | Projects: group experiments and code (research projects) by what is being made; never owns or deletes them |
+| `backend/app/gpuguard.py` | GPU safety: stops GPU work on overheating or a lost GPU, pauses after a crash, cool-down before queued runs. New GPU job types must call `gpuguard.check_start()` and be listed in `_JOB_TABLES` |
+| `backend/app/imports.py`, `envs.py` | Bringing files in (model, data, code uploads; Git links; model folders) and per-workspace Python environments |
+| `backend/app/publish.py` | Ship: model cards written from measurements, license check, Hugging Face publishing (owner-only, not via MCP) |
 | `backend/app/jobstore.py` | Saves in-memory background jobs (downloads, weight builds, quantizations, remote-device jobs) so they survive restarts |
 | `backend/app/rpcworker.py` | This device as a llama.cpp RPC worker (multi-machine runs); off and localhost-only by default |
 | `backend/torch_tools/train.py` | Full training (all weights, or pretraining) with a held-out evaluation; FSDP under torchrun |
@@ -26,8 +29,9 @@ editing code. This file is for changing Blocky itself.
 | `backend/torch_tools/` | Scripts that run inside the ML venv (activations, LoRA/QLoRA) |
 | `backend/tests/` | pytest suite (no GPU or models needed) |
 | `frontend/src/` | React + TypeScript UI (Vite). `ProjectsPage.tsx` (front door), `ExperimentsPage.tsx`, `ResearchCanvas.tsx`, `expmetrics.ts`, `GuidePage.tsx` |
-| `client/blocky.py` | Python client used in notebooks |
-| `scripts/` | Install and setup scripts (`install.sh`, `setup-ml.sh`, `setup-vllm.sh`, `setup-sglang.sh`, `setup-trtllm.sh`, `setup-notebooks.sh`) |
+| `client/blocky.py`, `blocky_cli.py` | Python client used in notebooks, and the `blocky` command (`blocky measure …`) |
+| `scripts/` | Install and setup scripts (`get.sh` one-command install/update, `install.sh`, `setup-ml.sh`, `setup-vllm.sh`, `setup-sglang.sh`, `setup-trtllm.sh`, `setup-notebooks.sh`) |
+| `Dockerfile`, `docker-compose.yml` | Container image; without systemd Blocky supervises the chat model itself (`BLOCKY_SUPERVISE_LLM=1`) |
 
 ## Checks before you finish
 
