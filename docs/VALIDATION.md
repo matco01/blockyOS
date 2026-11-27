@@ -104,7 +104,84 @@ for the same hardware.
 
 ## Studies on real hardware
 
-### 1. Qwen3.5-0.8B, RTX 2080 Super (2026-11-25)
+### Current: protocol v4, Qwen3.5-0.8B and Qwen3.5-9B, RTX 2080 Super (2026-11-27)
+
+Data: 0.8B [CSV](validation/2026-11-27-rtx2080super-qwen3.5-0.8b-v4.csv) ·
+[instrument checks](validation/2026-11-27-rtx2080super-qwen3.5-0.8b-v4-instrument-checks.json); 9B
+[CSV](validation/2026-11-27-rtx2080super-qwen3.5-9b-v4.csv) ·
+[instrument checks](validation/2026-11-27-rtx2080super-qwen3.5-9b-v4-instrument-checks.json). Experiments 13 and 14.
+
+**Setup.** RTX 2080 Super 8 GB (driver 610.88), the GPU that also drives the desktop, under WSL2 on a Ryzen 5 5600G;
+llama.cpp 0.9.0-dev (`956591f`); protocol `blocky-profile/4`; blockyOS `114347f` with no local changes in every run.
+GPU memory margin 2048 MiB (display reserve on); the tools reused the server's GPU layer count in every completed run.
+Perplexity/KLD on 128 chunks of 512 tokens; 60 s cool-down before each run; GPU clocks not locked.
+
+- **0.8B:** baseline Qwen3.5-0.8B F16 (SHA-256 `838810d3…`). Q6_K, Q4_K_M, Q3_K_M, Q2_K built from that F16 with the
+  weights workshop (no importance matrix); Q8_0 is a downloaded file. Every layer on the GPU in every run.
+- **9B:** baseline Qwen3.5-9B Q8_0 (SHA-256 `80962657…`, downloaded). Q6_K and Q2_K requantized from that Q8_0 (so they
+  lose slightly more than files made from full precision); Q4_K_M and Q3_K_M are downloaded files. The model does not fit
+  in the GPU memory left free: the baseline ran 18 of 33 layers on the GPU, Q6_K 24, Q4_K_M 32.
+
+**Instrument checks: all 5 that can run pass in both studies, 0 warnings, 0 failures.**
+
+| Check | 0.8B | 9B |
+|---|---|---|
+| Baseline vs itself | pass: KLD −0.000016, same top token 100% (2 reruns) | pass: KLD ≈ 0, same top token 99.997% (1 rerun) |
+| Same answers | pass: 560/560 identical | pass: 560/560 identical |
+| Speed repeatability | pass: 1.6% | pass: 1.2% |
+| Quantization order | pass: Spearman ρ = −1.00 (5 files) | pass: Spearman ρ = −1.00 (3 files) |
+| Bandwidth limit | pass: at most 32% | pass: at most 67% |
+| Cited values | not run: no usable published reference | not run |
+
+**0.8B results.** Decode = llama-bench at depth 0, median of 5 repetitions ± 1.4826 × MAD. Perplexity ± its standard
+error. MMLU-Pro differences paired against the baseline (McNemar, Holm-corrected within the experiment).
+
+| Weights | Decode tok/s | Perplexity | Mean KLD | KLD p99 | Same top token | MMLU-Pro | Δ vs F16 (p, Holm) | Needle |
+|---|---|---|---|---|---|---|---|---|
+| F16 (baseline / repeats) | 151.99 ± 1.26 / 149.60 ± 2.51 / 150.60 ± 1.50 | 18.393 ± 0.314 | 0 | 0 | 100% | 21.61% | — | 10/10 |
+| Q8_0 | 223.99 ± 7.47 | 18.425 ± 0.315 | 0.00148 | 0.0071 | 97.86% | 21.79% | +0.18 pts (1.0) | 10/10 |
+| Q6_K | 241.06 ± 11.54 | 18.540 ± 0.317 | 0.00624 | 0.031 | 95.52% | 21.61% | 0.00 pts (1.0) | 10/10 |
+| Q4_K_M | 256.50 ± 7.34 | 18.919 ± 0.322 | 0.0604 | 0.318 | 87.32% | 18.75% | **−2.86 pts (0.035)** | 10/10 |
+| Q2_K | 265.04 ± 10.02 | 105.93 ± 2.15 | 1.71 | 6.85 | 44.00% | 11.96% | **−9.64 pts (< 0.001)** | 0/10 |
+
+Q3_K_M has no result (see incidents). Only Q4_K_M and Q2_K differ significantly from F16 on MMLU-Pro.
+
+**9B results.** Same columns. Speed differences here mostly reflect how many layers fit on the GPU with the margin
+(18, 24, 32 of 33), not the formats themselves: on a GPU with more free memory the order and the gaps would differ.
+
+| Weights | GPU layers | Decode tok/s | Perplexity | Mean KLD | KLD p99 | Same top token | MMLU-Pro | Δ vs Q8_0 (p, Holm) | Needle |
+|---|---|---|---|---|---|---|---|---|---|
+| Q8_0 (baseline / repeat) | 18/33 | 7.49 ± 0.50 / 7.40 ± 0.42 | 7.783 ± 0.110 | 0 / ≈0 | 0 / 0.00004 | 100% / 99.997% | 59.64% | — | 10/10 |
+| Q6_K | 24/33 | 15.42 ± 0.31 | 7.834 ± 0.111 | 0.00612 | 0.034 | 96.81% | 60.89% | +1.25 pts (0.69) | 10/10 |
+| Q4_K_M | 32/33 | 50.32 ± 1.33 | 7.887 ± 0.112 | 0.0162 | 0.125 | 94.46% | 58.93% | −0.71 pts (1.0) | 10/10 |
+
+No MMLU-Pro difference is significant for the 9B. Q3_K_M, Q2_K and the second repeat have no result (see incidents),
+so the 9B quantization-order check rests on three files and the repeatability checks on one rerun.
+
+**Repeatability across sessions.** The 0.8B quality numbers are identical to the protocol-v3 study two days earlier on
+the same files: perplexity (e.g. 18.393088 for F16), KLD, same-top-token rate and MMLU-Pro accuracy for every variant
+completed in both. Speed is not
+compared across the two studies: the protocol changed how runs are placed on the GPU.
+
+**Incidents.**
+- **The GPU hung twice under sustained 9B load** (2026-11-25 and 2026-11-27). Both times the GPU temperature had risen
+  to 85–88 °C over about 45 minutes of back-to-back runs. Then the GPU stopped responding: WSL lost it (`dxg` ioctl
+  errors, NVML unavailable) and the computer had to be reset. Windows logged no driver recovery. During the 9B Q4_K_M
+  run the GPU reached 88 °C and only cooled to 75 °C during the idle phase. The 0.8B runs stayed below 64 °C. This
+  points to this card's cooling rather than to the measurements, but it means the 9B study is incomplete. Runs 71
+  (Q3_K_M) and 72 (Q2_K) failed; run 72 also started after the GPU was gone, and its provenance records no display
+  (margin 1024), because the display check could not reach the GPU.
+- **0.8B Q3_K_M (run 64)** failed 45 s into the serving test: llama-server shut down cleanly ("cleaning up before exit")
+  with no out-of-memory error and the GPU at a normal temperature. The cause has not been found. A retry was queued and
+  then cancelled with the rest of the queue after the second hang.
+
+**Still open:** published reference values (cited-values check); the missing 9B runs; a second device (cross-device
+reproduction with the bundles); the cause of run 64.
+
+### Earlier: protocol v3, Qwen3.5-0.8B, RTX 2080 Super (2026-11-25), superseded
+
+Kept for the record. It found the two defects fixed since (negative llama-bench durations; separate GPU layouts for speed
+and analysis). Use the protocol-v4 study above.
 
 Data: [CSV of every run](validation/2026-11-25-rtx2080super-qwen3.5-0.8b.csv) ·
 [instrument-check report](validation/2026-11-25-rtx2080super-qwen3.5-0.8b-instrument-checks.json).

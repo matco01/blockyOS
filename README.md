@@ -245,9 +245,10 @@ blockyOS is **0.2.0, early research software**. Here is what has been verified s
   - 205 backend tests;
   - 26 frontend tests;
   - CI on Python 3.12 and 3.13.
-- **Not yet published:** a validation study on real GPUs, which compares blockyOS against published reference values
-  and against itself across repeated sessions. Until it exists, run the instrument checks on your own machine before
-  relying on results. The procedure is in [docs/VALIDATION.md](docs/VALIDATION.md).
+- **First real-GPU validation** (one consumer GPU, two models, protocol v4): every instrument check that can run
+  passes. See [docs/VALIDATION.md](docs/VALIDATION.md#studies-on-real-hardware).
+- **Not yet done:** a comparison against published reference values, and a reproduction on a second device. Until
+  then, run the instrument checks on your own machine before relying on results.
 
 Measurement-protocol versions are listed in the [CHANGELOG](CHANGELOG.md). Results are only comparable within one
 protocol version.
