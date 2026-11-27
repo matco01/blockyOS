@@ -19,6 +19,7 @@ import ModelsPage from "./ModelsPage";
 import MemoryPage from "./MemoryPage";
 import SystemPage from "./SystemPage";
 import SettingsPage from "./SettingsPage";
+import { GpuPauseBanner } from "./GpuSafety";
 import Logo from "./Logo";
 import { Accent, BLOCK_COLORS, Theme, useSetting } from "./settings";
 
@@ -284,7 +285,8 @@ export default function App() {
             <button className={`status-pill ${status?.model_ready && !status.busy ? "ready" : ""}`} onClick={() => go("home")}
               title={status?.context_size ? `${status.context_size.toLocaleString()} token context · click to manage models` : "Manage models"}>
               <span className="dot" />
-              {status?.busy === "benchmark" ? "Benchmarking…" : status?.busy === "switching" ? "Switching model…"
+              {status?.gpu_waiting ? `Cooling GPU · ${status.gpu_waiting.temp_c} → ${status.gpu_waiting.target_c} °C`
+                : status?.busy === "benchmark" ? "Benchmarking…" : status?.busy === "switching" ? "Switching model…"
                 : status?.busy === "arena" ? "Arena match…"
                 : status?.busy === "eval" ? "Running tests…"
                 : status?.busy === "experiment" ? "Profiling…"
@@ -298,6 +300,7 @@ export default function App() {
               </button>
             )}
           </header>
+          <GpuPauseBanner status={status} onResumed={() => api.status().then(setStatus).catch(() => {})} />
 
           {page === "chat" && (
             <div className="chat-split">

@@ -388,7 +388,8 @@ async def export_quantization(simulation_job_id: int, gguf_type: str = "Q4_0") -
 # ---------- General tools: every endpoint and all stored data ----------
 
 APP = None  # the FastAPI app; main.py sets it
-BLOCKED = ("/api/ai-access", "/api/remote-access", "/api/agent/key", "/mcp", "/oauth", "/.well-known", "/docs", "/redoc", "/openapi.json")
+BLOCKED = ("/api/ai-access", "/api/remote-access", "/api/agent/key", "/mcp", "/oauth", "/.well-known", "/docs", "/redoc", "/openapi.json",
+           "/api/gpu-safety/resume", "/api/publish")  # owner-only: resuming after a safety stop; sending a model off the device
 SECRET_KEYS = frozenset({"remote_token", "anthropic_api_key", "ai_pairing_code", "api_key", "password", "access_token", "refresh_token"})
 MAX_CHARS = 60_000
 API_TIMEOUT_S = 120

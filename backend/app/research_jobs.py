@@ -356,7 +356,11 @@ async def worker(llm):
             with db.connect() as c:
                 # Existing profile queues keep priority.
                 profile_waiting = c.execute("SELECT 1 FROM exp_runs WHERE status IN ('queued','running') LIMIT 1").fetchone()
-                row = c.execute("SELECT id FROM research_jobs WHERE status='queued' AND json_extract(spec,'$.profile_run_id') IS NULL ORDER BY id LIMIT 1").fetchone()
+                from . import gpuguard
+                # While GPU work is paused (overheating, a lost GPU, a crash), only CPU jobs start.
+                only_cpu = " AND NOT json_extract(spec,'$.gpu')" if gpuguard.paused() else ""
+                row = c.execute("SELECT id FROM research_jobs WHERE status='queued' AND json_extract(spec,'$.profile_run_id') IS NULL"
+                                + only_cpu + " ORDER BY id LIMIT 1").fetchone()
             if row and not profile_waiting and not lab.busy and not lab._lock.locked():
                 await execute(row[0], llm)
         except asyncio.CancelledError:

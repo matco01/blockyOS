@@ -95,6 +95,10 @@ DEFAULT_SETTINGS = {
     "agent_model": "claude-opus-5-5",         # set = other devices may control this one with this token (Settings → Remote access)
     "ai_access": {"local_level": "full", "public_enabled": False, "public_url": ""},  # AI assistants over MCP (aiaccess.py)
     "ai_pairing_code": "",      # one-time code that approves a cloud assistant; only GET /api/ai-access shows it
+    # GPU safety (gpuguard.py): stop GPU work above the limit, wait for the resume temperature before queued runs.
+    "gpu_guard": True,
+    "gpu_max_temp_c": None,     # None = from the GPU (3 °C under its maximum operating temperature)
+    "gpu_resume_temp_c": None,  # None = 15 °C under the limit
 }
 
 

@@ -13,14 +13,15 @@ jobs:
       matrix:
         python: ["3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
       - run: pip install -r backend/requirements-dev.txt
       # Includes end-to-end experiments through the whole measurement pipeline with a fake llama.cpp (tests/fake_llama.py).
+      # Failing tests become annotations (pytest-github-actions-annotate-failures), readable without signing in.
       - run: python -m pytest -q backend/tests --cov --cov-report=term --cov-report=xml
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: matrix.python == '3.12'
         with:
           name: coverage
@@ -30,8 +31,8 @@ jobs:
     name: Lint
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: pip install ruff==0.17.5
@@ -45,8 +46,8 @@ jobs:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm

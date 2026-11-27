@@ -74,10 +74,12 @@ def test_display_reserve(monkeypatch):
     class Out:
         stdout = "Enabled\n"
     monkeypatch.setattr(lab.subprocess, "run", lambda *a, **k: Out)
-    monkeypatch.setattr(lab, "_display", (0.0, False))
+    monkeypatch.setattr(lab, "_display", None)
+    # A freshly booted machine (CI runners) has a small monotonic clock: "never checked" must still mean "check now".
+    monkeypatch.setattr(lab.time, "monotonic", lambda: 5.0)
     assert lab.display_active() and lab.fit_margin_mb() == lab.FIT_MARGIN_MB + lab.DISPLAY_RESERVE_MB
     Out.stdout = "Disabled\n"
-    monkeypatch.setattr(lab, "_display", (0.0, True))
+    monkeypatch.setattr(lab, "_display", None)
     assert not lab.display_active() and lab.fit_margin_mb() == lab.FIT_MARGIN_MB
 
 

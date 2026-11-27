@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Bot, Code2, Info, Lock, Network, Palette, PlugZap, Server, Trash2 } from "lucide-react";
 import { AiAccess, AiLevel, api, Device, RpcWorker, Settings, Status } from "./api";
+import { GpuSafetySettings } from "./GpuSafety";
 import { Accent, ACCENTS, Theme } from "./settings";
 
 const THEMES: { id: Theme; label: string }[] = [
@@ -47,6 +48,7 @@ export default function SettingsPage({ status, theme, setTheme, accent, setAccen
           </div>
         </div>
 
+        <GpuSafetySettings />
         <AgentSettings />
         <AiAssistantSettings />
         <EnergySettings />

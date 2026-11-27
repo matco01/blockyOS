@@ -94,6 +94,8 @@ def _clean(c: dict) -> dict:
 
 
 def create(body: dict) -> int:
+    from . import gpuguard
+    gpuguard.check_start("An arena match")
     prompt = (body.get("prompt") or "").strip()
     if not prompt or len(prompt) > 20_000:
         raise ValueError("Write a prompt (up to 20,000 characters)")

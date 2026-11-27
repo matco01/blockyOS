@@ -487,6 +487,8 @@ def _save(run_id: int, **fields) -> None:
 
 
 def create(body: dict) -> int:
+    from . import gpuguard
+    gpuguard.check_start("A quality test")
     model = Path(str(body.get("model") or "")).name
     if not (lab.MODELS_DIR / model).is_file():
         raise ValueError("Model not found")

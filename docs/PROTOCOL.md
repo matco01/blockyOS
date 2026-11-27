@@ -261,6 +261,13 @@ Per run, from stored data, against the hardware snapshot taken during that run. 
 
 Both are recorded per run; runs with a different clock lock are not compared.
 
+**GPU safety** (always on unless the owner turns it off; not a measurement setting): before a queued run, Blocky waits
+until the GPU is at or below its resume temperature (`safety_wait_s` in the run's noise controls; the start temperature
+is recorded as before). It doesn't change how any metric is measured. If the GPU stays above its limit during GPU work,
+or stops responding, the running work is stopped and GPU work pauses until the owner resumes; Blocky also pauses when it
+restarts after GPU work was interrupted. A run stopped this way is an error, never a result. Defaults come from the GPU
+(3 °C below its maximum operating temperature; resume 15 °C lower) and can be changed in Settings → GPU safety.
+
 ## 12. Repeated validation of a speed or energy difference
 
 A batch re-measures two completed setups *A* and *B* in 3–12 pairs, in counterbalanced order (A B, B A, A B, …;

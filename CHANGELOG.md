@@ -23,6 +23,12 @@ with each release. Results are only comparable within one protocol version.
   A Hugging Face-format model folder (config.json + safetensors) can be uploaded for fine-tuning, and a `.gguf` can be
   downloaded on the device from any https link.
 
+- **GPU safety.** A monitor stops all running GPU work (experiments, training, code runs, benchmarks, scans, …) when
+  the GPU stays above its limit or stops responding, and pauses GPU work until the owner resumes. Blocky also pauses
+  when it restarts after GPU work was interrupted, so a crash or power loss never restarts heavy work by itself. Queued
+  runs wait until the GPU has cooled. Limits come from the GPU (3 °C below its maximum operating temperature) or
+  Settings → GPU safety; a banner shows the pause everywhere. AI assistants can't resume.
+
 ### Changed
 - Research runs: snapshots hold up to 20,000 files / 200 GB. Files of 1 MB and more are hard-linked instead of copied
   (no extra space or time) and their hashes are cached; source files are always replaced, never edited in place, so a
@@ -52,6 +58,9 @@ with each release. Results are only comparable within one protocol version.
   starts. On a desktop PC, an experiment with a model close to the VRAM size froze the whole computer.
 
 ### Fixed
+- CI failed at random: the display check's cache treated "never checked" as checked at boot time, so on a freshly
+  booted machine (CI runners) it skipped the check for its first minute. Failing tests now also appear as annotations,
+  and the workflow uses current action versions.
 - GPU clock lock helper (`blocky-gpu-clocks`) also finds `nvidia-smi` where WSL installs it; re-run `scripts/install.sh`.
 - Speed: a llama-bench repetition with a negative duration (the clock stepped backwards, seen under WSL) is now dropped
   like other invalid samples. Before, it counted as a near-zero rate and pulled the median down. Protocol unchanged:

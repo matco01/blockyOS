@@ -436,6 +436,11 @@ async def worker(llm: httpx.AsyncClient) -> None:
             await asyncio.sleep(2)
             if lab.busy or lab._lock.locked():
                 continue
+            from . import gpuguard
+            if gpuguard.paused():  # after overheating, a lost GPU or a crash: wait for the owner
+                if _chat_down:
+                    await _restore_chat(llm)
+                continue
             with db.connect() as c:
                 row = c.execute("SELECT id FROM exp_runs WHERE status = 'queued' ORDER BY id LIMIT 1").fetchone()
             if row:
@@ -1543,13 +1548,20 @@ async def _stop_server(proc: asyncio.subprocess.Process | None) -> None:
 GPU_CLOCKS = "/usr/local/sbin/blocky-gpu-clocks"  # root-owned helper allowed by sudoers (install.sh): lock <MHz> | reset
 
 
-async def noise_controls_on(exp: dict, cfg: dict) -> dict:
+async def noise_controls_on(exp: dict, cfg: dict, should_stop=lambda: False) -> dict:
     """Optional, per experiment: wait for the GPU to cool down, then lock its clock so boost behavior doesn't add noise.
 
     Both are recorded in the run's provenance; a run whose clock lock failed says so (and doesn't compare with locked runs).
+    Independently, GPU safety (gpuguard) holds the run until the GPU is at or below its resume temperature; the wait is
+    recorded too (`safety_wait_s`). It doesn't change how anything is measured.
     """
     proto = exp.get("protocol") or {}
     out: dict = {"cooldown_s": proto.get("cooldown_s"), "clock_lock_requested_mhz": proto.get("lock_clocks_mhz"), "clock_lock_mhz": None}
+    if cfg.get("device") != "cpu":
+        from . import gpuguard
+        waited = await gpuguard.wait_until_cool(should_stop)
+        if waited:
+            out["safety_wait_s"] = waited
     if proto.get("cooldown_s"):
         await asyncio.sleep(proto["cooldown_s"])
     code, temp = await lab._run("nvidia-smi", "--query-gpu=temperature.gpu", "--format=csv,noheader,nounits", timeout=10)
@@ -1624,7 +1636,7 @@ async def run(run_id: int, llm: httpx.AsyncClient) -> None:
             res["commands"] = cmds
             await lab.llm_service("stop")
             await asyncio.sleep(1)
-            res["provenance"]["noise_controls"] = await noise_controls_on(exp, cfg)
+            res["provenance"]["noise_controls"] = await noise_controls_on(exp, cfg, lambda: run_id in _cancel)
             display = await asyncio.to_thread(lab.display_active)
             margin = lab.FIT_MARGIN_MB + (lab.DISPLAY_RESERVE_MB if display else 0)
             res["provenance"]["placement"] = {"fit_margin_mb": margin, "display_active": display}

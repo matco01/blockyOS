@@ -63,6 +63,8 @@ def _save(scan_id: int, **f) -> None:
 
 
 def start(body: dict) -> int:
+    from . import gpuguard
+    gpuguard.check_start("A layer scan")
     model = Path(str(body.get("model") or "")).name
     if not (lab.MODELS_DIR / model).is_file():
         raise ValueError("Model not found")

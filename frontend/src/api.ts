@@ -22,6 +22,15 @@ export type TokenProb = { t: string; p: number; alts: [string, number][] };
 export type Status = {
   model_ready: boolean; model: string | null; context_size: number | null;
   busy: "switching" | "benchmark" | "arena" | "eval" | "quantlab" | "throughput" | "experiment" | string | null; switch_error: string | null;
+  gpu_pause?: GpuPause | null; gpu_waiting?: { temp_c: number; target_c: number; since: number } | null;
+};
+
+/** GPU safety: why GPU work is paused (overheating, a lost GPU, a restart after a crash). */
+export type GpuPause = { reason: string; kind: "heat" | "lost" | "restart" | "manual"; since: number };
+export type GpuSafety = {
+  enabled: boolean; limit_c: number; resume_c: number; temp_c: number | null; gpu_seen: boolean;
+  auto: { limit_c: number; resume_c: number; max_operating_c: number | null; slowdown_c: number | null };
+  waiting: { temp_c: number; target_c: number } | null; paused: GpuPause | null; events: { at: number; kind: string; text: string }[];
 };
 
 export type Contestant = { model: string; think: boolean; sampling: { temperature?: number; top_p?: number; top_k?: number; min_p?: number }; system_prompt?: string; max_tokens?: number; seed?: number };
@@ -287,7 +296,7 @@ export type Memory = {
   updated_at: number;
 };
 
-export type Settings = { memory_enabled: boolean; anthropic_api_key_set?: boolean; agent_model?: string; power_meter_url: string; power_meter_field: string; device_price: number | null;
+export type Settings = { memory_enabled: boolean; gpu_guard?: boolean; gpu_max_temp_c?: number | null; gpu_resume_temp_c?: number | null; anthropic_api_key_set?: boolean; agent_model?: string; power_meter_url: string; power_meter_field: string; device_price: number | null;
   electricity_price_kwh: number | null; currency: string };
 
 export type SearchHit = { conversation_id: number; title: string; role: string; snippet: string };
@@ -366,6 +375,8 @@ export const api = {
 
   settings: () => json<Settings>("/api/settings"),
   updateSettings: (s: Partial<Settings>) => json<Settings>("/api/settings", send("PATCH", s)),
+  gpuSafety: () => json<GpuSafety>("/api/gpu-safety"),
+  gpuResume: () => json<GpuSafety>("/api/gpu-safety/resume", send("POST", {})),
   testPowerMeter: (power_meter_url: string, power_meter_field: string) => json<{ watts: number }>("/api/power/test", send("POST", { power_meter_url, power_meter_field })),
 
   models: () => json<{ models: ModelFile[]; runtime: Runtime; catalog: CatalogItem[]; hardware: Hardware; kv_types: string[] }>("/api/models"),

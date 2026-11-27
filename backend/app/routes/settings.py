@@ -40,6 +40,24 @@ def update_settings(body: dict):
                 body[k] = str(body[k] or "")[:40]
     except (TypeError, ValueError) as e:
         raise HTTPException(400, str(e) if "URL" in str(e) else "Prices must be non-negative numbers")
+    if "gpu_guard" in body:
+        body["gpu_guard"] = bool(body["gpu_guard"])
+    for k in ("gpu_max_temp_c", "gpu_resume_temp_c"):
+        if k in body:
+            if body[k] in (None, ""):
+                body[k] = None
+                continue
+            try:
+                body[k] = int(body[k])
+            except (TypeError, ValueError):
+                raise HTTPException(400, "Temperatures must be whole numbers of °C") from None
+            if not 40 <= body[k] <= 100:
+                raise HTTPException(400, "Temperatures must be between 40 and 100 °C")
+    current = db.get_settings()
+    limit = body.get("gpu_max_temp_c", current.get("gpu_max_temp_c"))
+    resume = body.get("gpu_resume_temp_c", current.get("gpu_resume_temp_c"))
+    if limit and resume and resume >= limit:
+        raise HTTPException(400, "The resume temperature must be below the limit")
     return db.update_settings(body)
 
 

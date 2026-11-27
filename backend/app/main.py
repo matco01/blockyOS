@@ -19,7 +19,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from mcp.server.transport_security import TransportSecuritySettings
 
-from . import agent, aiaccess, arena, benchmarks, config, db, engines, evals, jobstore, lab, mcp_server, profile, projects, quantlab, remote, research_jobs, scans
+from . import agent, aiaccess, arena, benchmarks, config, db, engines, evals, gpuguard, jobstore, lab, mcp_server, profile, projects, quantlab, remote, research_jobs, scans
 from . import rpcworker, tools, torchlab, weights
 from .routes import (agent as agent_routes, aiaccess as aiaccess_routes, arena as arena_routes, bench, chat, common, devices, engines as engine_routes, evals as eval_routes,
                      experiments, models, openai, projects as project_routes, quantlab as quantlab_routes, research, settings, system, torch)
@@ -32,6 +32,7 @@ ROUTERS = (aiaccess_routes, research, chat, settings, agent_routes, devices, sys
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init()
+    gpuguard.init()  # before the job modules reset interrupted work: a crash mid-run pauses GPU work
     jobstore.init()
     arena.init()
     evals.init()
@@ -61,9 +62,12 @@ async def lifespan(app: FastAPI):
     app.state.background.add(research_worker)
     saver = asyncio.create_task(jobstore.saver())
     app.state.background.add(saver)
+    guard = asyncio.create_task(gpuguard.monitor())
+    app.state.background.add(guard)
     async with mcp_server.server.session_manager.run():
         yield
     saver.cancel()
+    guard.cancel()
     jobstore.save()
     worker.cancel()
     research_worker.cancel()

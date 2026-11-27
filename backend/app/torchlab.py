@@ -109,6 +109,9 @@ def _save(job_id: int, **f) -> None:
 
 
 def _new(kind: str, params: dict) -> int:
+    from . import gpuguard
+    if kind != "download":  # downloads don't use the GPU
+        gpuguard.check_start("This job")
     if not PY.is_file():
         raise ValueError("The PyTorch environment isn't installed yet (scripts/setup-ml.sh)")
     with db.connect() as c:

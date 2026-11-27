@@ -146,6 +146,8 @@ def _validate(spec: dict) -> dict:
 
 
 def start(spec: dict) -> str:
+    from . import gpuguard
+    gpuguard.check_start("Building weights")
     s = _validate(spec)
     job_id = str(int(time.time() * 1000))
     jobs[job_id] = {"id": job_id, **s, "status": "queued", "step": None, "progress": None, "log": [], "error": None, "started": time.time()}

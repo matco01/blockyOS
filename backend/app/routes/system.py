@@ -20,7 +20,9 @@ def system_stats():
 @router.get("/api/status")
 async def status():
     """Is the model loaded, and which one? Also reports Lab activity."""
-    base = {"busy": lab.busy, "switch_error": lab.last_switch_error}
+    from .. import gpuguard
+    base = {"busy": lab.busy, "switch_error": lab.last_switch_error, "gpu_pause": gpuguard.paused(),
+            "gpu_waiting": gpuguard.state["waiting"]}
     try:
         r = await state.llm.get("/props", timeout=2)
         props = r.json()
@@ -93,3 +95,18 @@ async def logs(lines: int = 300):
 @router.get("/api/mcp")
 async def mcp_info():
     return {"url": "http://localhost:8000/mcp", "tools": [{"name": t.name, "description": t.description} for t in await mcp_server.server.list_tools()]}
+
+
+@router.get("/api/gpu-safety")
+def gpu_safety():
+    """GPU safety: current temperature, the limits in use, whether GPU work is paused and why, recent events."""
+    from .. import gpuguard
+    return gpuguard.report()
+
+
+@router.post("/api/gpu-safety/resume")
+def gpu_safety_resume():
+    """Lets GPU work start again after a safety pause (owner only: not available to AI assistants)."""
+    from .. import gpuguard
+    gpuguard.resume()
+    return gpuguard.report()

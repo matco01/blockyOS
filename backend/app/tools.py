@@ -82,6 +82,8 @@ def _model(name) -> str:
 
 
 def create(kind: str, body: dict) -> int:
+    from . import gpuguard
+    gpuguard.check_start("This measurement")
     if kind == "throughput":
         users = sorted({max(1, min(64, int(u))) for u in (body.get("users") or [1, 2, 4, 8, 16])})
         params = {"model": _model(body.get("model")), "users": users,

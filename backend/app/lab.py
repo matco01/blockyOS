@@ -38,13 +38,13 @@ FIT_MARGIN_MB = 1024
 DISPLAY_RESERVE_MB = max(0, int(os.environ.get("BLOCKY_DISPLAY_RESERVE_MB", "1024")))
 
 
-_display: tuple[float, bool] = (0.0, False)
+_display: tuple[float, bool] | None = None  # (when checked, answer); None = never checked
 
 
 def display_active() -> bool:
     """True when an NVIDIA GPU of this device drives a display (checked at most once a minute)."""
     global _display
-    if time.monotonic() - _display[0] < 60:
+    if _display is not None and time.monotonic() - _display[0] < 60:
         return _display[1]
     try:
         out = subprocess.run(["nvidia-smi", "--query-gpu=display_active", "--format=csv,noheader"],
@@ -491,6 +491,8 @@ def _bench_update(run_id: int, **fields) -> None:
 
 
 def create_bench(params: dict) -> int:
+    from . import gpuguard
+    gpuguard.check_start("A benchmark")
     cmd, model = bench_command(params)  # validates
     with db.connect() as c:
         cur = c.execute(

@@ -105,6 +105,8 @@ async def ensure_text() -> Path:
 # ---------- Running ----------
 
 def create(body: dict) -> int:
+    from . import gpuguard
+    gpuguard.check_start("A quality comparison")
     files = [Path(str(f)).name for f in body.get("models") or []]
     files = [f for f in dict.fromkeys(files) if (lab.MODELS_DIR / f).is_file()]
     if len(files) < 2:
