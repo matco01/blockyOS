@@ -17,6 +17,16 @@ with each release. Results are only comparable within one protocol version.
   (streamed to disk, checked as GGUF, never overwrites), training data (`.jsonl` checked line by line, or `.txt`;
   picked from a list in the training forms), and your code as a folder or a `.zip` (a GitHub "Download ZIP" works as
   is; archives can't write outside the workspace). After an upload, a "Start file" choice sets what runs.
+- **Your own AI, end to end.** Code from a public Git link (shallow clone; Git LFS files are reported, not fetched).
+  Each code workspace gets its own Python environment: one button installs `requirements.txt` (or the
+  `pyproject.toml`/`setup.py` package), reusing the device's PyTorch and Transformers when the Python versions match.
+  A Hugging Face-format model folder (config.json + safetensors) can be uploaded for fine-tuning, and a `.gguf` can be
+  downloaded on the device from any https link.
+
+### Changed
+- Research runs: snapshots hold up to 20,000 files / 200 GB. Files of 1 MB and more are hard-linked instead of copied
+  (no extra space or time) and their hashes are cached; source files are always replaced, never edited in place, so a
+  run's snapshot keeps the content it was hashed with.
 - AI assistants over MCP with full access: ChatGPT and Claude (web, desktop and phone) connect through the owner's HTTPS
   tunnel with OAuth 2.1 sign-in (dynamic client registration, PKCE, rotating refresh tokens, reuse detection). The owner
   approves each one with a one-time pairing code and chooses its access level (read, write, full); connections can be

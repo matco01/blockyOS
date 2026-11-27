@@ -145,3 +145,45 @@ def research_entries(pid: int):
         return {"entries": imports.entry_candidates(pid)}
     except ValueError as e:
         raise HTTPException(400, str(e))
+
+
+@router.post("/api/research/projects/{pid}/import-git")
+async def research_import_git(pid: int, body: dict):
+    """Your code from a public Git repository link (shallow clone, no history; Git LFS files are not downloaded)."""
+    from .. import imports
+    try:
+        return await imports.code_git(pid, str(body.get("url") or ""), str(body.get("ref") or ""))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.get("/api/research/projects/{pid}/env")
+def research_env(pid: int):
+    """This workspace's own Python environment: whether it exists, what the code asks for, the install log."""
+    from .. import envs
+    try:
+        return envs.status(pid)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.post("/api/research/projects/{pid}/env/install")
+async def research_env_install(pid: int, body: dict | None = None):  # async: starts a background task
+    """Creates the environment if needed and installs requirements.txt (or the pyproject/setup.py package).
+    Downloads from the Python package index; only when the owner asks."""
+    from .. import envs
+    try:
+        return envs.install(pid, bool((body or {}).get("reuse_ml", True)))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.delete("/api/research/projects/{pid}/env")
+def research_env_delete(pid: int):
+    """Deletes this workspace's environment; the code is untouched."""
+    from .. import envs
+    try:
+        envs.remove(pid)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True}

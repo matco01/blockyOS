@@ -71,7 +71,7 @@ def checkpoints() -> list[dict]:
     out = []
     for d in sorted(HF.iterdir()) if HF.is_dir() else []:
         cfg = d / "config.json"
-        if d.is_dir() and cfg.is_file():
+        if d.is_dir() and cfg.is_file() and not d.name.startswith("."):  # ".upload-*": an upload still in progress
             c = json.loads(cfg.read_text())
             size = sum(f.stat().st_size for f in d.glob("*.safetensors"))
             out.append({"id": d.name, "repo": d.name.replace("--", "/", 1), "architecture": (c.get("architectures") or ["?"])[0],

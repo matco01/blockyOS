@@ -3,7 +3,7 @@ import { api, ResearchComparison, ResearchJob, ResearchProject } from "./api";
 import { Tabs, useMode } from "./ui";
 import ConfigFields from "./ConfigFields";
 import { configObject } from "./workflow";
-import { FilePick, ProgressBar, uploadCode } from "./Upload";
+import { EnvPanel, FilePick, ProgressBar, uploadCode } from "./Upload";
 
 /** The script a run starts, read from the command (`["{python}", "train.py", ...]`). */
 const entryOf = (argv: string) => { try { const a = JSON.parse(argv); return Array.isArray(a) && typeof a[1] === "string" ? a[1] : ""; } catch { return ""; } };
@@ -29,6 +29,7 @@ export default function ResearchPage({ codeIds, onCreate }: { codeIds?: number[]
   useEffect(() => { if (codeIds && pid && !projects.some((p) => p.id === pid)) setPid(projects[0]?.id ?? 0); }, [codeIds, pid, projects]);
   const [name, setName] = useState(codeIds ? "My code" : "New research project"), [template, setTemplate] = useState(codeIds ? "import" : "byte");
   const [importFiles, setImportFiles] = useState<File[]>([]);
+  const [gitUrl, setGitUrl] = useState(""), [gitRef, setGitRef] = useState("");
   const [progress, setProgress] = useState<{ value: number; label: string } | null>(null);
   const [files, setFiles] = useState<string[]>([]), [file, setFile] = useState("main.py"), [code, setCode] = useState("");
   const [python, setPython] = useState(""), [argv, setArgv] = useState('["{python}", "main.py"]'), [config, setConfig] = useState("{}");
@@ -87,7 +88,7 @@ export default function ResearchPage({ codeIds, onCreate }: { codeIds?: number[]
     {loading ? <p role="status">Loading projects…</p> : <div className="flow-toolbar"><label>Workspace<select className="field select" value={pid} onChange={(e) => { if (code === savedCode || confirm("Discard unsaved source edits?")) { try { sessionStorage.removeItem(`blocky.source.${pid}.${file}`); } catch { /* storage may be disabled */ } setPid(Number(e.target.value)); setConfig("{}"); setParent(null); setMethodName(""); setFile("main.py"); setStage("prepare"); } }}><option value={0}>Choose a project</option>{projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label><button className="btn" onClick={() => setCreating(!creating)}>New project</button></div>}
     {!loading && projectsReady && (creating || projects.length === 0) && <div className="group pad flow-create"><h2>Where is your code?</h2><p>Upload the code you already have, or start from an example.</p><div className="rp-controls">
       <label>Name<input className="field" value={name} onChange={(e) => setName(e.target.value)} /></label>
-      <label>Starting code<select className="field select" value={template} onChange={(e) => setTemplate(e.target.value)}><option value="import">My own code (upload a folder or .zip)</option><option value="byte">Example: byte-bigram baseline (CPU smoke test)</option><option value="transformer">Example: Transformers evaluator</option><option value="blank">Empty custom architecture / trainer</option></select></label>
+      <label>Starting code<select className="field select" value={template} onChange={(e) => setTemplate(e.target.value)}><option value="import">My own code (a folder, a .zip or a Git link)</option><option value="byte">Example: byte-bigram baseline (CPU smoke test)</option><option value="transformer">Example: Transformers evaluator</option><option value="blank">Empty custom architecture / trainer</option></select></label>
     </div>
       {template === "import" && <div className="rp-import">
         <div className="flow-toolbar">
@@ -95,17 +96,27 @@ export default function ResearchPage({ codeIds, onCreate }: { codeIds?: number[]
           <FilePick label="Choose a .zip" accept=".zip" ghost onFiles={setImportFiles} />
           {importFiles.length > 0 && <span className="row-sub">{importFiles.length === 1 ? importFiles[0].name : `${importFiles.length} files selected`}</span>}
         </div>
-        <p className="row-sub">Your files are copied onto this device. Environments and caches (<code>.git</code>, <code>.venv</code>, <code>__pycache__</code>, <code>node_modules</code>) are left out. A .zip from GitHub (“Download ZIP”) works as it is.</p>
+        <label className="rp-git">Or a link to a public Git repository (GitHub, GitLab…)
+          <span className="xc-btns"><input className="field" value={gitUrl} placeholder="https://github.com/owner/project" onChange={(e) => { setGitUrl(e.target.value); if (e.target.value) setImportFiles([]); }} />
+            <input className="field rp-branch" value={gitRef} placeholder="branch (optional)" onChange={(e) => setGitRef(e.target.value)} aria-label="Branch or tag" /></span></label>
+        <p className="row-sub">Your code is copied onto this device. Environments and caches (<code>.git</code>, <code>.venv</code>, <code>__pycache__</code>, <code>node_modules</code>) are left out. Next you can install the packages it needs.</p>
       </div>}
       {progress && <ProgressBar value={progress.value} label={progress.label} />}
-      <button className="btn" disabled={saving || !name.trim() || (template === "import" && importFiles.length === 0)} onClick={() => act(async () => {
+      <button className="btn" disabled={saving || !name.trim() || (template === "import" && importFiles.length === 0 && !gitUrl.trim())} onClick={() => act(async () => {
         const p = await api.researchCreate(name, template); setCreated((c) => [...c, p.id]); await onCreate?.(p.id);
         let entry = "main.py";
         if (template === "import") {
-          const entries = await uploadCode(p.id, importFiles, (value, label) => setProgress({ value, label }));
-          entry = entries[0] ?? ""; setImportFiles([]); setProgress(null);
+          let entries: string[];
+          if (importFiles.length > 0) entries = await uploadCode(p.id, importFiles, (value, label) => setProgress({ value, label }));
+          else {
+            setProgress({ value: 0.5, label: `Getting ${gitUrl.trim()} (large repositories take a while)` });
+            const r = await api.researchImportGit(p.id, gitUrl, gitRef);
+            entries = r.entry_candidates;
+            if (r.lfs_pointers) setMessage(`${r.lfs_pointers} large file${r.lfs_pointers === 1 ? " is" : "s are"} stored with Git LFS and weren't downloaded; upload them separately if your code needs them.`);
+          }
+          entry = entries[0] ?? ""; setImportFiles([]); setGitUrl(""); setGitRef(""); setProgress(null);
           setArgv(JSON.stringify(["{python}", entry || "main.py"]));
-          setMessage(entries.length ? `Code uploaded. It starts with ${entry}; change that under Run if needed.` : "Code uploaded. No Python file was found; set the command under Run → Advanced.");
+          setMessage((m) => (entries.length ? `Code imported. It starts with ${entry}; change that below if needed. Install its packages before the first run.` : "Code imported. No Python file was found; set the command under Advanced.") + (m ? ` ${m}` : ""));
         }
         await refreshProjects(); setFile(entry); setPid(p.id); setCreating(false); setStage(template === "import" ? "run" : "prepare");
         setConfig(JSON.stringify(template === "byte" ? { smoothing: 1, reps: 3 } : template === "transformer" ? { checkpoint: "", eval: "eval.txt", reps: 3 } : {}, null, 2));
@@ -120,11 +131,13 @@ export default function ResearchPage({ codeIds, onCreate }: { codeIds?: number[]
           <FilePick label="Upload a .zip" accept=".zip" ghost disabled={saving} onFiles={(f) => act(async () => { await uploadCode(pid, f, (value, label) => setProgress({ value, label })); setProgress(null); setFiles(await api.researchFiles(pid)); setSourceRevision((v) => v + 1); setMessage("Archive unpacked. Files with the same name were replaced."); })} /></div>
         {progress && <ProgressBar value={progress.value} label={progress.label} />}
         {sourceLoading ? <p role="status">Loading source…</p> : !sourceReady ? <p>Source unavailable. <button className="btn small ghost" onClick={() => setSourceRevision((v) => v + 1)}>Retry loading source</button></p> : <textarea aria-label="Research source code" className="field rp-code" spellCheck={false} value={code} onChange={(e) => { setCode(e.target.value); try { sessionStorage.setItem(`blocky.source.${pid}.${file}`, e.target.value); } catch { /* storage may be disabled */ } }} />}<p className="row-sub">{!sourceReady ? "" : code === savedCode ? "Source saved." : "Unsaved edits (a draft is kept in this browser tab). Starting a run saves this file first."}</p></section>
-        <section hidden={stage !== "run"}><h2>{parent ? `Branch from run #${parent}` : "Configure a run"}</h2><ConfigFields value={config} onChange={setConfig} />
+        <section hidden={stage !== "run"}><h2>{parent ? `Branch from run #${parent}` : "Configure a run"}</h2>
+        {stage === "run" && <EnvPanel rid={pid} python={python} setPython={setPython} />}
+        <ConfigFields value={config} onChange={setConfig} />
         <div className="flow-fields"><label>Start file<select className="field select" value={entryOf(argv)} onChange={(e) => { try { const a = JSON.parse(argv); setArgv(JSON.stringify(Array.isArray(a) && a.length >= 2 ? [a[0], e.target.value, ...a.slice(2)] : ["{python}", e.target.value])); } catch { setArgv(JSON.stringify(["{python}", e.target.value])); } }}>
           {!files.includes(entryOf(argv)) && <option value={entryOf(argv)}>{entryOf(argv) || "Choose the file that starts your program"}</option>}
           {files.filter((f) => f.endsWith(".py")).map((f) => <option key={f} value={f}>{f}</option>)}</select></label>
-          <label>Environment<select className="field select" value={environments.some((e) => e.python === python) ? python : "custom"} onChange={(e) => { if (e.target.value === "custom") setPython(""); else setPython(e.target.value); }}>{environments.map((e) => <option key={e.python} value={e.python}>{e.label}</option>)}<option value="custom">Custom environment (set path below)</option></select></label><label className="flow-check"><input type="checkbox" checked={gpu} onChange={(e) => setGpu(e.target.checked)} /> Reserve GPU and pause chat</label></div>
+          <label>Environment<select className="field select" value={environments.some((e) => e.python === python) || python.endsWith("/env/bin/python") ? python : "custom"} onChange={(e) => { if (e.target.value === "custom") setPython(""); else setPython(e.target.value); }}>{python.endsWith("/env/bin/python") && <option value={python}>This code's own environment (its packages)</option>}{environments.map((e) => <option key={e.python} value={e.python}>{e.label}</option>)}<option value="custom">Custom environment (set path below)</option></select></label><label className="flow-check"><input type="checkbox" checked={gpu} onChange={(e) => setGpu(e.target.checked)} /> Reserve GPU and pause chat</label></div>
         <details className="flow-advanced" open={mode === "pro" || !python || undefined}><summary>Advanced execution and JSON settings</summary><div className="rp-controls">
           <label>Python interpreter<input className="field" value={python} onChange={(e) => setPython(e.target.value)} /></label>
           <label>Command arguments (JSON array)<input className="field" value={argv} onChange={(e) => setArgv(e.target.value)} /></label>

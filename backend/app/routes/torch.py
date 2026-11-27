@@ -1,7 +1,7 @@
 """PyTorch lab, layer scans and the weights workshop."""
 import asyncio
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from .. import scans, torchlab, weights
 from .common import _bad
@@ -140,3 +140,24 @@ def weights_jobs():
 def weights_cancel(job_id: str):
     weights.cancel(job_id)
     return {"ok": True}
+
+
+@router.put("/api/torch/checkpoints/upload")
+async def torch_checkpoint_upload(request: Request, name: str, path: str):
+    """One file of a Hugging Face-format model folder from your computer (raw body). Call finish when all are sent."""
+    from .. import imports
+    from .models import _size
+    try:
+        return await imports.checkpoint_file(request.stream(), name, path, _size(request))
+    except ValueError as e:
+        _bad(e)
+
+
+@router.post("/api/torch/checkpoints/finish")
+def torch_checkpoint_finish(body: dict):
+    """Checks the uploaded folder (config.json and weights) and adds it to the trainable models."""
+    from .. import imports
+    try:
+        return imports.checkpoint_finish(str(body.get("name") or ""))
+    except ValueError as e:
+        _bad(e)

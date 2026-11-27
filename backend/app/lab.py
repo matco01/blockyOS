@@ -377,17 +377,40 @@ def start_download(repo: str, path: str) -> str:
     dl_id = f"{int(time.time() * 1000)}"
     downloads[dl_id] = {"id": dl_id, "repo": repo, "file": name, "total": 0, "done": 0,
                         "status": "downloading", "error": None, "started": time.time(), "speed": 0}
-    asyncio.get_running_loop().create_task(_download(dl_id, repo, path))
+    asyncio.get_running_loop().create_task(_download(dl_id, f"https://huggingface.co/{repo}/resolve/main/{path}"))
     return dl_id
 
 
-async def _download(dl_id: str, repo: str, path: str) -> None:
+_URL = re.compile(r"^https://[A-Za-z0-9.-]+(:\d{1,5})?/[^\s@]*$")
+
+
+def start_url_download(url: str, name: str = "") -> str:
+    """A .gguf model file from any https link (your own storage, a release page, a Hugging Face file link)."""
+    from urllib.parse import unquote, urlparse
+    url = url.strip()
+    if not _URL.match(url):
+        raise ValueError("Use an https:// link to the file (no user name or password in the link)")
+    name = Path(name or unquote(urlparse(url).path)).name
+    name = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-.")
+    if not name.lower().endswith(".gguf"):
+        raise ValueError("The link must point to a .gguf file (or give the file a name ending in .gguf)")
+    if (MODELS_DIR / name).exists():
+        raise ValueError("You already have a model with this file name")
+    if any(d["file"] == name and d["status"] == "downloading" for d in downloads.values()):
+        raise ValueError("Already downloading")
+    dl_id = f"{int(time.time() * 1000)}"
+    downloads[dl_id] = {"id": dl_id, "repo": urlparse(url).hostname or "", "file": name, "total": 0, "done": 0,
+                        "status": "downloading", "error": None, "started": time.time(), "speed": 0}
+    asyncio.get_running_loop().create_task(_download(dl_id, url, headers={"User-Agent": HF_HEADERS.get("User-Agent", "blocky")}))
+    return dl_id
+
+
+async def _download(dl_id: str, url: str, headers: dict | None = None) -> None:
     d = downloads[dl_id]
     final = MODELS_DIR / d["file"]
     part = final.with_suffix(".gguf.part")
     try:
-        url = f"https://huggingface.co/{repo}/resolve/main/{path}"
-        async with httpx.AsyncClient(follow_redirects=True, timeout=httpx.Timeout(30, read=120), headers=HF_HEADERS) as c:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=httpx.Timeout(30, read=120), headers=headers or HF_HEADERS) as c:
             async with c.stream("GET", url) as r:
                 r.raise_for_status()
                 d["total"] = int(r.headers.get("content-length") or 0)
@@ -399,6 +422,8 @@ async def _download(dl_id: str, repo: str, path: str) -> None:
                     async for chunk in r.aiter_bytes(1 << 20):
                         if d["status"] == "cancelled":
                             raise asyncio.CancelledError
+                        if d["done"] == 0 and chunk and not chunk.startswith(b"GGUF"):
+                            raise RuntimeError("The link didn't return a GGUF model file (maybe a web page or a login screen)")
                         f.write(chunk)
                         d["done"] += len(chunk)
                         window_b += len(chunk)

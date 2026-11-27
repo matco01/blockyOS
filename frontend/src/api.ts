@@ -322,6 +322,13 @@ export function upload<T>(url: string, file: Blob, onProgress?: (fraction: numbe
   });
 }
 
+/** A code workspace's own Python environment. */
+export type EnvStatus = {
+  status: "none" | "installing" | "ready" | "error"; error: string | null; python: string | null;
+  requirements: { file: string | null; packages: string[]; sha256: string | null };
+  up_to_date: boolean; reuses_ml: boolean; ml_available: boolean; log: string;
+};
+
 export type Dataset = { name: string; path: string; bytes: number; rows: number | null; kind: "jsonl" | "txt" };
 
 const send = (method: string, body?: unknown): RequestInit => ({
@@ -416,6 +423,15 @@ export const api = {
   researchImportZip: (rid: number, file: File, onProgress?: (f: number) => void) =>
     upload<{ files: number; entry_candidates: string[] }>(`/api/research/projects/${rid}/import-zip`, file, onProgress),
   researchEntries: (rid: number) => json<{ entries: string[] }>(`/api/research/projects/${rid}/entries`),
+  researchImportGit: (rid: number, url: string, ref: string) =>
+    json<{ files: number; lfs_pointers: number; entry_candidates: string[] }>(`/api/research/projects/${rid}/import-git`, send("POST", { url, ref })),
+  researchEnv: (rid: number) => json<EnvStatus>(`/api/research/projects/${rid}/env`),
+  researchEnvInstall: (rid: number, reuseMl: boolean) => json<EnvStatus>(`/api/research/projects/${rid}/env/install`, send("POST", { reuse_ml: reuseMl })),
+  researchEnvDelete: (rid: number) => json(`/api/research/projects/${rid}/env`, { method: "DELETE" }),
+  urlDownload: (url: string, name = "") => json<{ id: string }>("/api/downloads/url", send("POST", { url, name })),
+  checkpointUpload: (name: string, path: string, file: Blob) =>
+    upload<{ path: string }>(`/api/torch/checkpoints/upload?name=${encodeURIComponent(name)}&path=${encodeURIComponent(path)}`, file),
+  checkpointFinish: (name: string) => json<{ id: string; repo: string }>("/api/torch/checkpoints/finish", send("POST", { name })),
   experimentDelete: (id: number) => json(`/api/experiments/${id}`, { method: "DELETE" }),
   experimentRun: (id: number, label: string, config: Partial<ExpConfig>, parentId?: number | null) =>
     json<{ id: number }>(`/api/experiments/${id}/runs`, send("POST", { label, config, parent_id: parentId ?? null })),

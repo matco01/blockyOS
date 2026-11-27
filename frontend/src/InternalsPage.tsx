@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { AlertCircle, Brain, Download, FlaskRound, Loader2, Play, Square, Wand2 } from "lucide-react";
 import { api, Dataset, TorchJob, TorchStatus } from "./api";
 import { LineChart, Tabs } from "./ui";
+import { CheckpointUpload } from "./Upload";
 
 /** The PyTorch side: original Hugging Face checkpoints, activations inside the network, LoRA fine-tuning back to GGUF. */
 
@@ -427,6 +428,8 @@ function Checkpoints({ status, reload }: { status: TorchStatus | null; reload: (
         <button className="btn" onClick={async () => { setErr(null); try { await api.torchDownload(repo); setJobs(await api.torchJobs("download")); } catch (e) { setErr((e as Error).message); } }}><Download /> Download</button></div>
       {err && <div className="error"><AlertCircle /> {err}</div>}
       {jobs.filter((j) => j.status !== "done").slice(0, 3).map((j) => <JobLine key={j.id} j={j} />)}
+      <div className="row-sub"><b>Your own model</b> (not on Hugging Face): upload its folder from your computer.</div>
+      <CheckpointUpload onDone={() => reload()} />
       <div className="table-wrap"><table className="data"><thead><tr><th>Checkpoint</th><th>Architecture</th><th className="r">Layers</th><th className="r">Size</th></tr></thead>
         <tbody>{(status?.checkpoints ?? []).map((c) => <tr key={c.id}><td>{c.repo}</td><td>{c.architecture}</td><td className="r">{c.layers}</td><td className="r">{(c.size_bytes / 2 ** 30).toFixed(2)} GB</td></tr>)}</tbody></table></div>
     </div>

@@ -9,6 +9,11 @@ from app import lab
 
 @pytest.fixture
 def api(http_client, fresh_db):
+    import shutil
+    from app import research_jobs
+    # A fresh database numbers code workspaces from 1 again: start from empty folders too.
+    shutil.rmtree(research_jobs.ROOT, ignore_errors=True)
+    research_jobs.ROOT.mkdir(parents=True)
     return http_client
 
 
@@ -71,3 +76,73 @@ def test_code_zip_and_folder_upload(api):
     assert api.get(f"/api/research/projects/{rid}/file", params={"name": "pkg/main.py"}).json()["content"] == "print(2)\n"
     assert api.put(f"/api/research/projects/{rid}/upload", params={"path": "../x.py"}, content=b"x").status_code == 400
     assert "pkg/main.py" in api.get(f"/api/research/projects/{rid}/entries").json()["entries"]
+
+
+def test_url_download_validation(api):
+    for bad in ("http://example.com/m.gguf", "https://user:pw@example.com/m.gguf", "https://example.com/page.html", "ftp://x/m.gguf"):
+        assert api.post("/api/downloads/url", json={"url": bad}).status_code == 400
+
+
+def test_git_import_validation(api):
+    rid = api.post("/api/research/projects", json={"name": "Git", "template": "import"}).json()["id"]
+    for url in ("http://github.com/a/b", "file:///etc", "https://github.com/a/b;rm -rf", "--upload-pack=x"):
+        assert api.post(f"/api/research/projects/{rid}/import-git", json={"url": url}).status_code == 400
+    assert api.post(f"/api/research/projects/{rid}/import-git", json={"url": "https://github.com/a/b", "ref": "--evil"}).status_code == 400
+
+
+def test_checkpoint_folder_upload(api):
+    from app import torchlab
+    files = {"my-model/config.json": b'{"architectures": ["LlamaForCausalLM"], "num_hidden_layers": 2}',
+             "my-model/model.safetensors": b"\x00" * 64, "my-model/tokenizer.json": b"{}"}
+    for path, data in files.items():
+        assert api.put("/api/torch/checkpoints/upload", params={"name": "Support Model", "path": path}, content=data).status_code == 200
+    assert "Support-Model" not in str(torchlab.checkpoints())  # not usable until finished
+    r = api.post("/api/torch/checkpoints/finish", json={"name": "Support Model"})
+    assert r.status_code == 200 and r.json() == {"id": "local--Support-Model", "repo": "local/Support-Model"}
+    assert any(c["id"] == "local--Support-Model" and c["layers"] == 2 for c in torchlab.checkpoints())
+    assert (torchlab.HF / "local--Support-Model" / "tokenizer.json").is_file()
+    # Without weights it is refused and nothing is left behind; names can't climb out of the folder.
+    api.put("/api/torch/checkpoints/upload", params={"name": "empty", "path": "config.json"}, content=b"{}")
+    assert "No weights" in api.post("/api/torch/checkpoints/finish", json={"name": "empty"}).json()["detail"]
+    assert not (torchlab.HF / ".upload-empty").exists()
+    assert api.put("/api/torch/checkpoints/upload", params={"name": "x", "path": "../../escape"}, content=b"x").status_code == 400
+
+
+def test_workspace_environment(api):
+    import time
+    rid = api.post("/api/research/projects", json={"name": "Env", "template": "import"}).json()["id"]
+    s = api.get(f"/api/research/projects/{rid}/env").json()
+    assert s["status"] == "none" and s["requirements"]["file"] is None
+    api.put(f"/api/research/projects/{rid}/upload", params={"path": "requirements.txt"}, content=b"# deps\n")
+    assert api.get(f"/api/research/projects/{rid}/env").json()["requirements"]["file"] == "requirements.txt"
+    assert api.post(f"/api/research/projects/{rid}/env/install", json={"reuse_ml": False}).json()["status"] == "installing"
+    for _ in range(120):
+        s = api.get(f"/api/research/projects/{rid}/env").json()
+        if s["status"] != "installing":
+            break
+        time.sleep(0.5)
+    assert s["status"] == "ready", s["log"]
+    assert s["python"] and s["up_to_date"]
+    # A changed requirements file means the environment is out of date until installed again.
+    api.put(f"/api/research/projects/{rid}/upload", params={"path": "requirements.txt"}, content=b"# deps\n# more\n")
+    assert api.get(f"/api/research/projects/{rid}/env").json()["up_to_date"] is False
+    assert api.delete(f"/api/research/projects/{rid}/env").status_code == 200
+    assert api.get(f"/api/research/projects/{rid}/env").json()["status"] == "none"
+
+
+def test_run_snapshot_links_large_files(api):
+    import os
+    from app import research_jobs
+    rid = api.post("/api/research/projects", json={"name": "Big", "template": "import"}).json()["id"]
+    api.put(f"/api/research/projects/{rid}/upload", params={"path": "main.py"}, content=b"print(1)\n")
+    api.put(f"/api/research/projects/{rid}/upload", params={"path": "weights.bin"}, content=b"w" * (2 << 20))
+    jid = research_jobs.queue(rid, {"argv": ["{python}", "main.py"]})["id"]
+    src = research_jobs.ROOT / str(rid) / "source"
+    snap = research_jobs.ROOT / str(rid) / "runs" / str(jid) / "source"
+    assert os.stat(snap / "weights.bin").st_ino == os.stat(src / "weights.bin").st_ino   # linked, not copied
+    assert os.stat(snap / "main.py").st_ino != os.stat(src / "main.py").st_ino          # small files are copied
+    prov = research_jobs.job(jid)["provenance"]
+    assert len(prov["files"]["weights.bin"]) == 64
+    # Saving a file from the page replaces it, so the run's snapshot keeps what ran.
+    api.put(f"/api/research/projects/{rid}/file", json={"name": "main.py", "content": "print(2)\n"})
+    assert (snap / "main.py").read_text() == "print(1)\n"

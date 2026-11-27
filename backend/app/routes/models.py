@@ -66,6 +66,20 @@ class DownloadIn(BaseModel):
     path: str
 
 
+class UrlDownloadIn(BaseModel):
+    url: str
+    name: str = ""
+
+
+@router.post("/api/downloads/url")
+async def start_url_download(body: UrlDownloadIn):  # async: starts a background task on the event loop
+    """A .gguf file from any https link; progress appears with the other downloads."""
+    try:
+        return {"id": lab.start_url_download(body.url, body.name)}
+    except ValueError as e:
+        _bad(e)
+
+
 @router.post("/api/downloads")
 async def start_download(body: DownloadIn):  # async: starts a background task on the event loop
     try:

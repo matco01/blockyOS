@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ArrowLeft, Boxes, Brain, Code, Database, Download, FileText, FolderKanban, GitBranch, Hammer, Layers, Pencil, Play, Plus, Rocket, Sparkles, Trash2, Wand2 } from "lucide-react";
 import { api, Dataset, ExpRun, ModelFile, Project, ProjectCode, ProjectExperiment, ProjectResults, Status } from "./api";
-import { DropZone, FilePick, fmtBytes, ProgressBar } from "./Upload";
+import { DropZone, FilePick, fmtBytes, LinkDownload, ProgressBar } from "./Upload";
 import ExperimentsPage from "./ExperimentsPage";
 import InternalsPage from "./InternalsPage";
 import ResearchPage from "./ResearchPage";
@@ -229,6 +229,7 @@ function Begin({ project, onStarted, build }: { project: Project; onStarted: (ei
   const [models, setModels] = useState<ModelFile[] | null>(null);
   const [pick, setPick] = useState(""), [busy, setBusy] = useState(false), [err, setErr] = useState("");
   const [progress, setProgress] = useState<number | null>(null);
+  const [byLink, setByLink] = useState(false);
   const loadModels = (select?: string) => api.models().then((d) => { setModels(d.models); setPick(select ?? d.models[0]?.file ?? ""); }).catch((e) => setErr((e as Error).message));
   useEffect(() => { loadModels(); }, []);
   const uploadModel = async (files: File[]) => {
@@ -265,8 +266,11 @@ function Begin({ project, onStarted, build }: { project: Project; onStarted: (ei
             {progress !== null && <ProgressBar value={progress} label="Uploading the model" />}
             <span className="pj-way-more">
               {models.length === 0 ? "Get a model: " : "Or get another: "}
-              <a href="#/models">download one</a> · <FilePick label="upload a .gguf file" accept=".gguf" ghost disabled={busy} onFiles={uploadModel} />
+              <a href="#/models">browse Hugging Face</a> · <FilePick label="upload a .gguf file" accept=".gguf" ghost disabled={busy} onFiles={uploadModel} />
+              · <button className="link" onClick={() => setByLink(!byLink)}>from a link</button>
             </span>
+            {byLink && <LinkDownload onDone={(file) => { setByLink(false); loadModels(file); }} />}
+            <span className="row-sub">Your own architecture, or weights for fine-tuning? Use <b>Bring your own code</b>, or upload a model folder under Build → Fine-tune.</span>
           </>}
         </div>
         <button className="pj-way" onClick={() => build("train")}>
@@ -278,7 +282,7 @@ function Begin({ project, onStarted, build }: { project: Project; onStarted: (ei
         <button className="pj-way" onClick={() => build("code")}>
           <span className="pj-way-icon"><Code /></span>
           <b>Bring your own code</b>
-          <span>A new architecture, your own training loop, or a different kind of AI. Blocky runs it, records it and compares it.</span>
+          <span>A new architecture, your own training loop, or a different kind of AI: upload a folder or a .zip, or paste a GitHub link. Blocky installs its packages, runs it, records it and compares it.</span>
           <em>Open a code workspace →</em>
         </button>
       </div>

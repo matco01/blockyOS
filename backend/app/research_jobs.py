@@ -103,7 +103,10 @@ def write_file(pid, name, content):
     if not isinstance(content, str) or len(content.encode()) > 1_000_000:
         raise ValueError("Files edited here must be smaller than 1 MB")
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
+    # Replace, never edit in place: earlier run snapshots may share this file's data (hard links).
+    tmp = path.with_name(path.name + ".saving")
+    tmp.write_text(content, encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def job(jid):
@@ -154,6 +157,52 @@ def jobs(pid):
     return [job(jid) for jid in ids]
 
 
+SNAPSHOT_FILES = 20_000
+SNAPSHOT_BYTES = 200 * 2**30
+LINK_FROM = 1 << 20  # files this large are hard-linked into a run's snapshot, smaller ones copied
+
+
+def _snapshot_file(path: Path, target: Path) -> None:
+    """Copies small files; hard-links large ones (weights, data), which costs no space or time. Blocky never edits a
+    source file in place (writes replace it), so a linked snapshot keeps the content it was hashed with."""
+    if path.stat().st_size >= LINK_FROM:
+        try:
+            os.link(path, target)
+            return
+        except OSError:
+            pass  # another file system: copy instead
+    shutil.copyfile(path, target)
+
+
+def _hash_cache(source: Path) -> dict:
+    try:
+        return json.loads((source.parent / "hash-cache.json").read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_hash_cache(source: Path, cache: dict) -> None:
+    try:
+        (source.parent / "hash-cache.json").write_text(json.dumps(cache))
+    except OSError:
+        pass
+
+
+def _sha256(path: Path, cache: dict) -> str:
+    """SHA-256 of a file, streamed; large files are remembered by inode, size and time so they aren't re-read every run."""
+    st = path.stat()
+    key = f"{st.st_ino}:{st.st_size}:{st.st_mtime_ns}"
+    if st.st_size >= LINK_FROM and key in cache:
+        return cache[key]
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    if st.st_size >= LINK_FROM:
+        cache[key] = h.hexdigest()
+    return h.hexdigest()
+
+
 def queue(pid, body, *, source_root=None, profile_run_id=None):
     source = Path(source_root) if source_root is not None else folder(pid) / "source"
     argv = body.get("argv", ["{python}", "main.py"])
@@ -177,8 +226,8 @@ def queue(pid, body, *, source_root=None, profile_run_id=None):
     if profile_run_id is not None:
         spec["profile_run_id"] = profile_run_id
     candidates = [p for p in source.rglob("*") if p.is_file() and not any(x in p.relative_to(source).parts for x in (".git", ".venv", "__pycache__"))]
-    if len(candidates) > 500 or sum(p.stat().st_size for p in candidates) > 20_000_000:
-        raise ValueError("Source snapshot limit is 500 files / 20 MB. Keep datasets/checkpoints outside source and reference their absolute paths")
+    if len(candidates) > SNAPSHOT_FILES or sum(p.stat().st_size for p in candidates) > SNAPSHOT_BYTES:
+        raise ValueError(f"Source snapshot limit is {SNAPSHOT_FILES:,} files / {SNAPSHOT_BYTES // 2**30} GB. Keep large datasets and checkpoints outside the code and reference their absolute paths")
     for p in candidates:
         confined(source, str(p.relative_to(source)))
     with db.connect() as c:
@@ -188,12 +237,14 @@ def queue(pid, body, *, source_root=None, profile_run_id=None):
         snapshot = root / "source"
         snapshot.mkdir(parents=True)
         hashes = {}
+        cache = _hash_cache(source)
         for path in candidates:
             relative = path.relative_to(source)
             target = snapshot / relative
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(path, target)
-            hashes[str(relative)] = hashlib.sha256(target.read_bytes()).hexdigest()
+            _snapshot_file(path, target)
+            hashes[str(relative)] = _sha256(target, cache)
+        _save_hash_cache(source, cache)
         if source_root is None or not (snapshot / "blocky_research.py").is_file():
             shutil.copyfile(SDK / "blocky_research.py", snapshot / "blocky_research.py")
         hashes["blocky_research.py"] = hashlib.sha256((snapshot / "blocky_research.py").read_bytes()).hexdigest()

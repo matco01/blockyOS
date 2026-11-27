@@ -114,3 +114,16 @@ button.link { font: inherit; color: var(--accent); background: none; border: 0; 
 .pj-way-more { font-size: 12.5px; color: var(--text-2); display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
 .rp-import { margin: 10px 0; }
 .pj-data .pj-loose-row:first-child { border-top: 0; }
+.rp-git { display: grid; gap: 6px; font-size: 13px; margin-top: 10px; }
+.rp-git .xc-btns { display: flex; gap: 8px; }
+.rp-git .field:first-child { flex: 1; }
+.rp-branch { max-width: 170px; }
+.link-download { margin-top: 4px; }
+.link-download .xc-btns, .ckpt-upload .xc-btns { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.link-download .field { flex: 1; min-width: 0; }
+.env-panel { display: grid; gap: 8px; margin-bottom: 12px; }
+.env-head { display: flex; align-items: center; gap: 10px; }
+.env-state { font-size: 12px; padding: 2px 9px; border-radius: 99px; background: var(--surface-2); color: var(--text-2); }
+.env-state.ready { background: color-mix(in srgb, var(--success, #22a06b) 15%, transparent); color: var(--text); }
+.env-state.error { background: color-mix(in srgb, var(--danger, #e5484d) 15%, transparent); color: var(--text); }
+.env-state.installing { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--text); }
