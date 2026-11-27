@@ -15,6 +15,8 @@ pipeline works on this machine, not proof that every number is right; failing on
 """
 import json
 import math
+import re
+import time
 
 from . import config
 
@@ -83,6 +85,41 @@ def load_references() -> list[dict]:
                 and _num(r.get("value")) is not None and _num(r.get("tolerance")) is not None and str(r.get("source") or "").strip()):
             out.append(r)
     return out
+
+
+def add_reference(entry: dict) -> list[dict]:
+    """Records a value published for a byte-identical model file. Returns all references."""
+    sha = str(entry.get("model_sha256") or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", sha):
+        raise ValueError("The model's SHA-256 (64 hex characters) is needed: values only count for the identical file")
+    if entry.get("metric") not in REFERENCE_METRICS:
+        raise ValueError(f"Metric: one of {', '.join(REFERENCE_METRICS)}")
+    value, tol = _num(entry.get("value")), _num(entry.get("tolerance"))
+    if value is None or tol is None or tol < 0:
+        raise ValueError("Value and tolerance must be numbers (tolerance ≥ 0)")
+    source = " ".join(str(entry.get("source") or "").split())[:500]
+    if len(source) < 15:
+        raise ValueError("Cite the source: author, title, table or figure, and a link")
+    refs = load_references() + [{"model_sha256": sha, "metric": entry["metric"], "value": value, "tolerance": tol, "source": source,
+                                 "added_at": time.time()}]
+    _save_references(refs)
+    return refs
+
+
+def remove_reference(index: int) -> list[dict]:
+    refs = load_references()
+    if not 0 <= index < len(refs):
+        raise ValueError("No such reference value")
+    del refs[index]
+    _save_references(refs)
+    return refs
+
+
+def _save_references(refs: list[dict]) -> None:
+    REFERENCE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = REFERENCE_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(refs, indent=1), encoding="utf-8")
+    tmp.replace(REFERENCE_FILE)
 
 
 def check(exp: dict, references: list[dict] | None = None) -> dict:

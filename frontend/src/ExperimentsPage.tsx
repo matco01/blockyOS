@@ -28,6 +28,8 @@ const PHASES = [
 /* ---------- Pieces ---------- */
 
 /** Frameworks that serve Hugging Face checkpoints (not GGUF files). */
+/** "The whole text" for the perplexity/KLD sample (the backend's PPL_FULL: llama-perplexity scores every chunk the text holds). */
+const PPL_FULL = 10000;
 const isCkpt = (e?: string | null) => e === "vllm" || e === "sglang" || e === "trtllm";
 
 function Tile({ icon: Icon, color, label, value, unit, sub }: { icon: LucideIcon; color: string; label: React.ReactNode; value: string; unit?: string; sub?: string }) {
@@ -514,19 +516,25 @@ function TestProtocol({ exp, onSaved }: { exp: Experiment; onSaved: () => void }
   const extra = cur || exp.protocol?.kernels || exp.protocol?.ruler || (exp.protocol?.mmlu_per_category ?? 40) !== 40 || (exp.protocol?.ppl_chunks ?? 32) !== 32 || !!exp.protocol?.fidelity_text || !!exp.protocol?.equivalence_margin_pts || !!exp.protocol?.lock_clocks_mhz || !!exp.protocol?.cooldown_s;
   return (
     <div className="tp">
-      <span className="row-sub"><b>Every run measures:</b> memory · <b>MMLU-Pro ({(14 * (exp.protocol?.mmlu_per_category ?? 40)).toLocaleString()})</b> · long context (2k…ctx) · serving speed · llama-bench speed · perplexity & KLD ({(exp.protocol?.ppl_chunks ?? 32) * 512 >= 1000 ? `${Math.round((exp.protocol?.ppl_chunks ?? 32) * 0.512)}k` : (exp.protocol?.ppl_chunks ?? 32) * 512} tokens) · energy · telemetry
+      <span className="row-sub"><b>Every run measures:</b> memory · <b title="Blocky's fixed, paired sample (5-shot, option-letter scoring): built to compare versions with each other on this device, not to compare with leaderboard numbers">MMLU-Pro sample ({(14 * (exp.protocol?.mmlu_per_category ?? 40)).toLocaleString()} questions, paired)</b> · long context (2k…ctx) · serving speed · llama-bench speed · perplexity & KLD ({(exp.protocol?.ppl_chunks ?? 32) >= PPL_FULL ? "whole WikiText-2 test set" : `${Math.round((exp.protocol?.ppl_chunks ?? 32) * 0.512)}k tokens`}) · energy · telemetry
         {exp.protocol?.ruler ? <> · <b>long-context suite</b> ({exp.protocol.ruler.samples}/cell)</> : ""}{cur ? <> · <b>lm-eval: {cur.tasks}</b> (limit {cur.limit})</> : ""}{exp.protocol?.kernels ? <> · <b>GPU kernel profile</b></> : ""}</span>
       <button className="btn small ghost" onClick={() => setOpen(!open)}>{open ? "Close" : "Add tests"}</button>
       {open && (
         <div className="tp-edit">
+          <div className="tp-preset">
+            <div><b>Comparable with published numbers</b><span className="row-sub">Perplexity and KL divergence on the whole WikiText-2 test set (as llama.cpp's published tables), plus GSM8K and IFEval through lm-evaluation-harness on their full test sets. Numbers match published ones only for the identical model file and settings; chat templates and decoding still differ between tools.</span></div>
+            <button className="btn small" onClick={() => { setChunks(PPL_FULL); setTasks("gsm8k,ifeval"); setLimit(5000); }}>Use these settings</button>
+          </div>
           <div className="row-sub">Run <b>lm-evaluation-harness</b> tasks too, the field's standard tool, against each run's exact server (greedy, seed 0). Use generative tasks such as <code>gsm8k</code>, <code>ifeval</code>, <code>bbh_cot_fewshot</code>, <code>minerva_math</code>. Multiple-choice log-likelihood tasks need prompt log-probs, which these servers don't provide; MMLU-Pro above already covers that style. Applies to runs queued from now on.</div>
           <div className="ws-grid">
             <label><span>MMLU-Pro size</span><select className="field select" value={mmluN} onChange={(e) => setMmluN(Number(e.target.value))}>
               <option value={40}>560 questions (default)</option><option value={100}>1,400 questions</option><option value={250}>3,500 questions</option></select>
               <em>More questions detect smaller accuracy differences (see “How many runs or questions do I need?” in the results). Larger sets contain the default 560, so paired tests still work against older runs.</em></label>
             <label><span>Perplexity / KL divergence sample</span><select className="field select" value={chunks} onChange={(e) => setChunks(Number(e.target.value))}>
-              <option value={32}>32 × 512 tokens (default)</option><option value={64}>64 × 512 tokens</option><option value={128}>128 × 512 tokens</option><option value={256}>256 × 512 tokens</option></select>
-              <em>More text narrows the KL divergence and perplexity error bars, and catches rare large deviations (99th-percentile KLD). Set this before the baseline: every run must be scored on the same text, so changing it later needs a new experiment.</em></label>
+              <option value={32}>32 × 512 tokens (default)</option><option value={64}>64 × 512 tokens</option><option value={128}>128 × 512 tokens</option><option value={256}>256 × 512 tokens</option>
+              <option value={PPL_FULL}>The whole text (llama.cpp's published method)</option></select>
+              <em>More text narrows the KL divergence and perplexity error bars, and catches rare large deviations (99th-percentile KLD). Set this before the baseline: every run must be scored on the same text, so changing it later needs a new experiment.
+                {chunks === PPL_FULL && <> <b>The whole WikiText-2 test set</b> (about 570 × 512 tokens) is what published llama.cpp perplexity and KLD tables use, so your numbers can be compared with them. It takes about 4–5 times as long as 128 chunks, and the baseline's reference data for KL divergence needs about as much more disk (roughly 70 GB for a model with a large vocabulary).</>}</em></label>
             <label><span>Perplexity / KL divergence text</span><input className="field" placeholder="WikiText-2 test (default) — or /path/to/your-text.txt" value={ftext} onChange={(e) => setFtext(e.target.value)} />
               <em>Quantization damage differs by domain: score code, another language or your own data with a .txt file on this device (50 KB or more). Set before the baseline; every run is scored on the same text and its SHA-256 goes into provenance.</em></label>
             <label><span>Equivalence margin (accuracy points)</span><input className="field" type="number" min={0} step={0.5} value={margin || ""} placeholder="none" onChange={(e) => setMargin(Number(e.target.value))} />
@@ -1030,7 +1038,7 @@ export default function ExperimentsPage({ status, projectId, openExp, onChanged,
                 <section hidden={stage !== "validate" && stage !== "all"}>
                 <ValidationPanel key={exp.id} exp={exp} runs={runs} onChanged={load} />
                 <PreregPanel exp={exp} onSaved={load} />
-                {done.length > 0 && <InstrumentPanel expId={exp.id} runsKey={done.map((r) => r.id).join(",")} />}
+                {done.length > 0 && <InstrumentPanel expId={exp.id} runsKey={done.map((r) => r.id).join(",")} runs={done} />}
                 {done.length > 0 && <details className="group pad xadv">
                   <summary><b>How many runs or questions do I need?</b> <span className="row-sub">sample sizes for the differences you want to detect, from this experiment's measured noise</span></summary>
                   <Planner runs={done} />

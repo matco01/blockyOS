@@ -23,6 +23,11 @@ with each release. Results are only comparable within one protocol version.
   A Hugging Face-format model folder (config.json + safetensors) can be uploaded for fine-tuning, and a `.gguf` can be
   downloaded on the device from any https link.
 
+- **Settings comparable with published numbers.** Perplexity/KLD can be scored on the whole text (the setting of
+  published llama.cpp tables), with a warning about time and disk. One preset adds it together with lm-evaluation-harness
+  GSM8K and IFEval on their full test sets. The built-in MMLU-Pro sample is labelled as a paired sample, not a
+  leaderboard score. Published reference values are recorded from the instrument checks (or the API) instead of a
+  hand-edited JSON file; a citation is required. `blocky measure --ppl-chunks full`.
 - **The `blocky` command** (`blockyos-client` 0.3.0): `blocky measure base.gguf variant.gguf` queues a baseline,
   optional reruns and variants, waits and prints a table where every number has its spread or interval and accuracy
   differences their paired test; `results`, `check` (exit code 1 on a failed instrument check), `status`, `models`,

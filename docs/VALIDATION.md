@@ -81,7 +81,8 @@ assistants through the MCP tool `get_instrument_check`.
 ### Recording reference values
 
 Blocky ships no reference numbers: values only count when you took them from a source you can cite and the model file
-is byte-identical. Put them in `/opt/blocky/data/reference-values.json`:
+is byte-identical. Record them in Tests → Instrument checks → **Record a published value** (it fills in the file's
+SHA-256 from the run), with `POST /api/reference-values`, or directly in `/opt/blocky/data/reference-values.json`:
 
 ```json
 [

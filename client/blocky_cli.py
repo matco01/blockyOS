@@ -98,7 +98,7 @@ def cmd_measure(c: Client, a) -> int:
         body["project_id"] = _project_id(c, a.project)
     exp = Experiment(c, c.post("/api/experiments", body)["id"])
     if a.ppl_chunks:
-        c._req("PUT", f"/api/experiments/{exp.id}/protocol", {"ppl_chunks": a.ppl_chunks})
+        c._req("PUT", f"/api/experiments/{exp.id}/protocol", {"ppl_chunks": 10_000 if a.ppl_chunks == "full" else int(a.ppl_chunks)})
     base = c.post(f"/api/experiments/{exp.id}/runs", {"config": {"model": a.models[0]}})["id"]
     for _ in range(a.repeat):
         c.post(f"/api/experiments/{exp.id}/runs", {"config": {"model": a.models[0]}, "parent_id": base})
@@ -183,7 +183,8 @@ def parser() -> argparse.ArgumentParser:
     m.add_argument("--name", help="experiment name")
     m.add_argument("--project", help="put the experiment in this project (created if needed)")
     m.add_argument("--repeat", type=int, default=0, help="reruns of the baseline (for repeatability)")
-    m.add_argument("--ppl-chunks", type=int, choices=(32, 64, 128, 256), help="perplexity/KLD sample size")
+    m.add_argument("--ppl-chunks", choices=("32", "64", "128", "256", "full"),
+                   help="perplexity/KLD sample: chunks of 512 tokens, or full = the whole WikiText-2 test set (as published llama.cpp tables)")
     m.add_argument("--no-wait", action="store_true", help="queue and print the experiment id")
     m.add_argument("--poll", type=float, default=POLL_S, help=argparse.SUPPRESS)
     for name, fn_help in (("results", "an experiment's results"), ("check", "instrument checks of an experiment")):

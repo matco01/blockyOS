@@ -247,3 +247,36 @@ def experiments_cancel(run_id: int):
 def experiments_delete_run(run_id: int):
     profile.delete_run(run_id)
     return {"ok": True}
+
+
+@router.get("/api/reference-values")
+def reference_values():
+    """Values published for specific model files (by SHA-256), which the cited-values instrument check compares with."""
+    from .. import instrument
+    return {"references": instrument.load_references(), "metrics": list(instrument.REFERENCE_METRICS)}
+
+
+class ReferenceIn(_Body):
+    model_sha256: str = Field(description="SHA-256 of the exact model file the value was published for")
+    metric: str = Field(description="ppl, kld, same_top, mmlu_acc, tg or pp")
+    value: float
+    tolerance: float = Field(description="How far a measurement may be from the value and still match")
+    source: str = Field(max_length=500, description="Author, title, table or figure, link")
+
+
+@router.post("/api/reference-values")
+def reference_values_add(body: ReferenceIn):
+    from .. import instrument
+    try:
+        return {"references": instrument.add_reference(body.sent())}
+    except ValueError as e:
+        _bad(e)
+
+
+@router.delete("/api/reference-values/{index}")
+def reference_values_delete(index: int):
+    from .. import instrument
+    try:
+        return {"references": instrument.remove_reference(index)}
+    except ValueError as e:
+        _bad(e)

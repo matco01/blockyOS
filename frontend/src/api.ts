@@ -378,6 +378,8 @@ export const api = {
 
   settings: () => json<Settings>("/api/settings"),
   updateSettings: (s: Partial<Settings>) => json<Settings>("/api/settings", send("PATCH", s)),
+  referenceAdd: (body: { model_sha256: string; metric: string; value: number; tolerance: number; source: string }) =>
+    json<{ references: unknown[] }>("/api/reference-values", send("POST", body)),
   publishLicense: (eid: number, rid: number) => json<PublishLicense>(`/api/publish/license?experiment_id=${eid}&run_id=${rid}`),
   publishCardUrl: (eid: number, rid: number, license = "", baseModel = "", title = "") =>
     `/api/publish/card?experiment_id=${eid}&run_id=${rid}&license=${encodeURIComponent(license)}&base_model=${encodeURIComponent(baseModel)}&title=${encodeURIComponent(title)}`,

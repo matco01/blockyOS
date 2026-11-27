@@ -993,7 +993,8 @@ _TASKS = re.compile(r"^[a-z0-9_.-]+(,[a-z0-9_.-]+)*$")
 
 
 PPL_CHUNKS = 32                     # default: 32 × 512 tokens of WikiText-2 test (the protocol string's "c512 x32")
-PPL_CHUNK_OPTIONS = (32, 64, 128, 256)
+PPL_FULL = 10_000                   # "the whole text": llama-perplexity scores min(this, what the text holds) chunks
+PPL_CHUNK_OPTIONS = (32, 64, 128, 256, PPL_FULL)
 
 
 def ppl_chunks(exp: dict) -> int:
@@ -1055,7 +1056,7 @@ def set_protocol(exp_id: int, body: dict) -> dict:
     if int(body.get("ppl_chunks") or PPL_CHUNKS) != PPL_CHUNKS:
         n = int(body["ppl_chunks"])
         if n not in PPL_CHUNK_OPTIONS:
-            raise ValueError(f"Perplexity/KLD sample: {', '.join(str(x) for x in PPL_CHUNK_OPTIONS)} chunks of 512 tokens")
+            raise ValueError(f"Perplexity/KLD sample: 32, 64, 128 or 256 chunks of 512 tokens, or {PPL_FULL} for the whole text")
         proto["ppl_chunks"] = n
     if body.get("kernels"):
         proto["kernels"] = True  # GPU kernel profile with Nsight Systems (llama.cpp runs)

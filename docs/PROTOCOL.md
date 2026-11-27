@@ -207,7 +207,14 @@ price, cost per million output tokens. Without any power source, the run says en
 ### 9.1 Text and sample
 
 `llama-perplexity -c 512 --chunks <N>` on the WikiText-2 test split (raw), or on a `.txt` file the experiment chose
-(at least 50 KB; its SHA-256 is recorded). *N* is 32 by default, or 64, 128 or 256 chunks of 512 tokens.
+(at least 50 KB; its SHA-256 is recorded). *N* is 32 by default, or 64, 128 or 256 chunks of 512 tokens, or the whole
+text (`ppl_chunks` 10000: llama-perplexity scores every chunk the text holds, about 570 for WikiText-2 test). The whole
+text is the setting of published llama.cpp perplexity and KLD tables; it takes about 4–5 times as long as 128 chunks, and
+the baseline's reference logits grow in proportion (about 2 × vocabulary size bytes per scored token).
+
+The built-in MMLU-Pro sample (section 5.1) is a paired comparison instrument, not a leaderboard score. For numbers
+comparable with published ones, the "comparable with published numbers" preset adds the whole-text perplexity and
+lm-evaluation-harness GSM8K and IFEval on their full test sets (section 5.4).
 
 ### 9.2 Baseline and KL divergence
 

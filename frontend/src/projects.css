@@ -155,3 +155,12 @@ button.link { font: inherit; color: var(--accent); background: none; border: 0; 
 .ship-confirm { font-size: 13px; }
 .ship-job p { margin: 0; font-size: 13.5px; }
 .pj-ship-row .flow-toolbar { flex-wrap: wrap; justify-content: flex-end; }
+
+/* Standard settings and reference values */
+.tp-preset { display: flex; gap: 12px; align-items: center; padding: 12px 14px; margin-bottom: 10px; border-radius: 12px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.tp-preset > div { display: flex; flex-direction: column; gap: 3px; flex: 1; }
+.ref-form { margin-top: 8px; }
+.ref-form summary { cursor: pointer; font-size: 13px; color: var(--accent); }
+.ref-form .ws-grid { margin-top: 8px; }
+.ref-source { grid-column: 1 / -1; }
