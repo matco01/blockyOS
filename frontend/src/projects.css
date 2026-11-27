@@ -141,3 +141,17 @@ button.link { font: inherit; color: var(--accent); background: none; border: 0; 
 .gpu-safety-grid > div, .gpu-safety-grid > label { display: flex; flex-direction: column; gap: 4px; }
 .gpu-safety-grid b { font-size: 22px; font-variant-numeric: tabular-nums; }
 .gpu-events { margin: 8px 0 0; padding-left: 18px; font-size: 12.5px; }
+
+/* Ship: publish panel */
+.ship-panel { display: grid; gap: 14px; margin: 6px 0 12px; }
+.ship-step { display: grid; grid-template-columns: 26px 1fr; gap: 12px; }
+.ship-step > div { display: grid; gap: 6px; min-width: 0; }
+.ship-num { width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 600;
+  background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); }
+.ship-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; align-items: end; }
+.ship-fields label { display: grid; gap: 4px; font-size: 13px; }
+.ship-list { margin: 0; padding-left: 18px; font-size: 13px; display: grid; gap: 4px; }
+.ship-card { max-height: 360px; overflow: auto; white-space: pre-wrap; }
+.ship-confirm { font-size: 13px; }
+.ship-job p { margin: 0; font-size: 13.5px; }
+.pj-ship-row .flow-toolbar { flex-wrap: wrap; justify-content: flex-end; }

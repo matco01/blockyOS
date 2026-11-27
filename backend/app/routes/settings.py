@@ -13,6 +13,7 @@ def get_settings():
     s = db.get_settings()
     key = s.pop("anthropic_api_key", "")
     s.pop("ai_pairing_code", None)  # Settings → AI assistants shows it (GET /api/ai-access)
+    s.pop("hf_token", None)  # Hugging Face: only GET /api/publish/account says whether one is connected
     return {**s, "anthropic_api_key_set": bool(key)}  # the key itself never leaves the backend
 
 

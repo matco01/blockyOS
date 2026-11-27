@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ArrowLeft, Boxes, Brain, Code, Database, Download, FileText, FolderKanban, GitBranch, Hammer, Layers, Pencil, Play, Plus, Rocket, Sparkles, Trash2, Wand2 } from "lucide-react";
 import { api, Dataset, ExpRun, ModelFile, Project, ProjectCode, ProjectExperiment, ProjectResults, Status } from "./api";
 import { DropZone, FilePick, fmtBytes, LinkDownload, ProgressBar } from "./Upload";
+import { PublishPanel } from "./Ship";
 import ExperimentsPage from "./ExperimentsPage";
 import InternalsPage from "./InternalsPage";
 import ResearchPage from "./ResearchPage";
@@ -379,6 +380,7 @@ function Build({ project, recipe, setRecipe, onChanged, openVersions, datasets, 
 function Ship({ project, openVersions }: { project: Project; openVersions: (eid: number | null) => void }) {
   const [runs, setRuns] = useState<Record<number, ExpRun[]>>({});
   const [msg, setMsg] = useState(""), [busy, setBusy] = useState(false);
+  const [publishing, setPublishing] = useState<{ eid: number; rid: number } | null>(null);
   useEffect(() => {
     project.experiments.filter((e) => e.done > 0).forEach((e) =>
       api.experiment(e.id).then((x) => setRuns((r) => ({ ...r, [e.id]: (x.runs_list ?? []).filter((run) => run.status === "done") }))).catch(() => {}));
@@ -407,18 +409,26 @@ function Ship({ project, openVersions }: { project: Project; openVersions: (eid:
           {(runs[e.id] ?? []).filter((r, i, all) => all.findIndex((x) => x.config.model === r.config.model) === i).map((r) => {
             const file = r.config.model;
             const local = file.endsWith(".gguf");
+            const open = publishing?.eid === e.id && publishing.rid === r.id;
             return (
-              <div className="pj-ship-row" key={r.id}>
-                <span><b>{r.label}</b><span className="muted"> · {file}</span></span>
-                <KeyNumbers r={{ mmlu: r.results.mmlu?.acc ?? null, tg: r.results.speed?.tg ?? null, ppl: r.results.ppl ?? null }} />
-                {local ? <button className="btn small ghost" disabled={busy} onClick={() => use(file)}><Rocket /> Use on this device</button>
-                  : <button className="btn small ghost" onClick={() => openVersions(e.id)}>Details</button>}
+              <div key={r.id}>
+                <div className="pj-ship-row">
+                  <span><b>{r.label}</b><span className="muted"> · {file}</span></span>
+                  <KeyNumbers r={{ mmlu: r.results.mmlu?.acc ?? null, tg: r.results.speed?.tg ?? null, ppl: r.results.ppl ?? null }} />
+                  {local ? <span className="flow-toolbar">
+                    <button className="btn small ghost" disabled={busy} onClick={() => use(file)} title="Make it this device's chat model and /v1 API">Use here</button>
+                    <a className="btn small ghost" href={api.publishFileUrl(e.id, r.id)} title="The model file (.gguf)"><Download /> Model</a>
+                    <a className="btn small ghost" href={api.publishCardUrl(e.id, r.id)} download="README.md" title="Model card written from the measurements">Card</a>
+                    <button className={`btn small ${open ? "" : "ghost"}`} onClick={() => setPublishing(open ? null : { eid: e.id, rid: r.id })}><Rocket /> Publish</button>
+                  </span> : <button className="btn small ghost" onClick={() => openVersions(e.id)}>Details</button>}
+                </div>
+                {open && <PublishPanel experimentId={e.id} runId={r.id} projectName={project.name} onClose={() => setPublishing(null)} />}
               </div>
             );
           })}
         </div>
       ))}
-      <p className="row-sub">Coming next: publish to Hugging Face (private or public) with a model card generated from these measurements, export a package, and Ollama.</p>
+      <p className="row-sub">Publishing sends the files to Hugging Face only when you press Publish. Private repositories stay visible only to you until you change that on Hugging Face.</p>
     </div>
   );
 }

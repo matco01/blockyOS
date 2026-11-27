@@ -23,6 +23,12 @@ with each release. Results are only comparable within one protocol version.
   A Hugging Face-format model folder (config.json + safetensors) can be uploaded for fine-tuning, and a `.gguf` can be
   downloaded on the device from any https link.
 
+- **Ship: publish to Hugging Face with a measured model card.** Each measured version in a project can be used on the
+  device, downloaded (model file, model card), or published to a Hugging Face repository (private by default): the
+  model card is written only from the measurements (accuracy with its interval and paired test against the baseline,
+  speed and perplexity with their spread, KL divergence, recipe, hashes, hardware, protocol), optionally with the
+  reproducibility bundle. The license is detected from the file or chosen; licenses with conditions need the owner's
+  confirmation. The token is stored like other secrets and never returned; publishing is owner-only (not via MCP).
 - **GPU safety.** A monitor stops all running GPU work (experiments, training, code runs, benchmarks, scans, …) when
   the GPU stays above its limit or stops responding, and pauses GPU work until the owner resumes. Blocky also pauses
   when it restarts after GPU work was interrupted, so a crash or power loss never restarts heavy work by itself. Queued

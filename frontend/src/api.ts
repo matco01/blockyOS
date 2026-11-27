@@ -25,6 +25,9 @@ export type Status = {
   gpu_pause?: GpuPause | null; gpu_waiting?: { temp_c: number; target_c: number; since: number } | null;
 };
 
+export type PublishLicense = { detected: string | null; permissive: boolean; options: { id: string; label: string }[]; file: string; bytes: number; model_name: string | null };
+export type PublishJob = { id: string; repo: string; status: "running" | "done" | "error"; step: string; error: string | null; url: string | null; private: boolean; file: string; bytes: number; started: number };
+
 /** GPU safety: why GPU work is paused (overheating, a lost GPU, a restart after a crash). */
 export type GpuPause = { reason: string; kind: "heat" | "lost" | "restart" | "manual"; since: number };
 export type GpuSafety = {
@@ -375,6 +378,16 @@ export const api = {
 
   settings: () => json<Settings>("/api/settings"),
   updateSettings: (s: Partial<Settings>) => json<Settings>("/api/settings", send("PATCH", s)),
+  publishLicense: (eid: number, rid: number) => json<PublishLicense>(`/api/publish/license?experiment_id=${eid}&run_id=${rid}`),
+  publishCardUrl: (eid: number, rid: number, license = "", baseModel = "", title = "") =>
+    `/api/publish/card?experiment_id=${eid}&run_id=${rid}&license=${encodeURIComponent(license)}&base_model=${encodeURIComponent(baseModel)}&title=${encodeURIComponent(title)}`,
+  publishFileUrl: (eid: number, rid: number) => `/api/publish/file?experiment_id=${eid}&run_id=${rid}`,
+  publishAccount: () => json<{ connected: boolean; user: string | null }>("/api/publish/account"),
+  publishConnect: (token: string) => json<{ connected: boolean; user: string | null }>("/api/publish/account", send("POST", { token })),
+  publishDisconnect: () => json<{ connected: boolean; user: string | null }>("/api/publish/account", { method: "DELETE" }),
+  publishHf: (body: { experiment_id: number; run_id: number; repo: string; private: boolean; license: string; confirm_license: boolean; base_model: string; title: string; include_bundle: boolean }) =>
+    json<{ id: string }>("/api/publish/hf", send("POST", body)),
+  publishJobs: () => json<PublishJob[]>("/api/publish/jobs"),
   gpuSafety: () => json<GpuSafety>("/api/gpu-safety"),
   gpuResume: () => json<GpuSafety>("/api/gpu-safety/resume", send("POST", {})),
   testPowerMeter: (power_meter_url: string, power_meter_field: string) => json<{ watts: number }>("/api/power/test", send("POST", { power_meter_url, power_meter_field })),
