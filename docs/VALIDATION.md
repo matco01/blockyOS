@@ -102,6 +102,67 @@ for the same hardware.
 3. Branch three or more weight variants (e.g. Q6_K, Q4_K_M, Q3_K_M, Q2_K) from the baseline, changing nothing else.
 4. Open Instrument checks. Export the experiment (JSON) together with the report for your records.
 
+## Studies on real hardware
+
+### 1. Qwen3.5-0.8B, RTX 2080 Super (2026-11-25)
+
+Data: [CSV of every run](validation/2026-11-25-rtx2080super-qwen3.5-0.8b.csv) ·
+[instrument-check report](validation/2026-11-25-rtx2080super-qwen3.5-0.8b-instrument-checks.json).
+
+**Setup.** RTX 2080 Super 8 GB (driver 610.88) under WSL2 on a Ryzen 5 5600G; llama.cpp 0.9.0-dev; protocol
+`blocky-profile/3`. Baseline: Qwen3.5-0.8B F16 (SHA-256 `838810d3…`). Variants built from that F16 with the weights
+workshop (no importance matrix): Q6_K, Q4_K_M, Q3_K_M, Q2_K; Q8_0 is a downloaded file. Perplexity/KLD on 128 chunks of
+512 tokens; 60 s cool-down before each run; GPU clocks not locked. Queue order: baseline, repeat, Q8_0 … Q2_K, repeat
+(22 minutes in total).
+
+**Instrument checks: 4 pass, 1 warning, 0 fail, 1 not run.**
+
+| Check | Result |
+|---|---|
+| Baseline vs itself | pass: largest KLD of 2 reruns −0.000016, same top token 100% |
+| Same answers | pass: 560/560 MMLU-Pro answers identical in both reruns |
+| Speed repeatability | **warning**: 7.7% (see below) |
+| Quantization order | pass: Spearman ρ(bits per weight, KLD) = −1.00 over 6 files |
+| Bandwidth limit | pass: at most 33% of the nominal 496 GB/s |
+| Cited values | not run: no usable published reference (see below) |
+
+**Results.** Speed = llama-bench decode at depth 0, median of 5 repetitions ± 1.4826 × MAD. Perplexity ± its standard
+error over chunks. MMLU-Pro differences are paired against the baseline (McNemar, Holm-corrected over the experiment).
+
+| Weights | Decode tok/s | Perplexity | Mean KLD | KLD p99 | Same top token | MMLU-Pro | Δ vs F16 (p, Holm) | Needle |
+|---|---|---|---|---|---|---|---|---|
+| F16 (repeat 1 / 2) | 146.05 ± 2.09 / 145.88 ± 1.28 | 18.393 ± 0.314 | 0 | 0 | 100% | 21.61% | — | 10/10 |
+| Q8_0 | 223.94 ± 11.22 | 18.425 ± 0.315 | 0.00148 | 0.0071 | 97.86% | 21.79% | +0.18 pts (1.0) | 10/10 |
+| Q6_K | 233.12 ± 3.86 | 18.540 ± 0.317 | 0.00624 | 0.031 | 95.52% | 21.61% | 0.00 pts (1.0) | 10/10 |
+| Q4_K_M | 242.75 ± 10.94 | 18.919 ± 0.322 | 0.0604 | 0.318 | 87.32% | 18.75% | **−2.86 pts (0.042)** | 10/10 |
+| Q3_K_M | 250.86 ± 4.92 | 22.172 ± 0.387 | 0.208 | 1.19 | 77.27% | 20.18% | −1.43 pts (1.0) | 10/10 |
+| Q2_K | 280.80 ± 3.46 | 105.93 ± 2.15 | 1.71 | 6.85 | 44.00% | 11.96% | **−9.64 pts (< 0.001)** | 0/10 |
+
+Only Q4_K_M and Q2_K differ significantly from F16 on MMLU-Pro. Q3_K_M scoring higher than Q4_K_M is within noise (its
+difference from F16 is not significant), so it shows nothing about the two formats. These are results for one 0.8B
+model; they do not generalize to other models.
+
+**Speed repeatability.** The two reruns agree within 0.1% (146.05 vs 145.88 tok/s). The warning comes from the first
+run of the session, which started on a cold GPU (33 °C) and decoded at about 159 tok/s. Single-run speed differences
+under about 8% are therefore not trustworthy on this setup; use counterbalanced repeated validation, and give the
+baseline the same warm-up as the runs it is compared with.
+
+**Defect found and fixed.** In the baseline's decode test one repetition had a negative duration (the clock stepped
+backwards under WSL). llama-bench printed it as 18,446,744,072,840,475,146 ns and 6.9 × 10⁻⁹ tok/s, which the parser
+accepted as a valid positive rate, so the stored median is 158.13 instead of 159.28 tok/s. Such samples are dropped
+since blockyOS `7e8df8c` (see the protocol, section 7.1). The stored result of this run was not rewritten.
+
+**Provenance caveat.** blockyOS code changed during the study: runs 44–47 record commit `7fc585f` with uncommitted
+changes, runs 48–51 record `abf8c35`. The difference was the installer and the changelog only, no measurement code,
+and the repeats before and after it are identical (KLD 0, same answers). Studies should not change the checkout while
+they run.
+
+**Cited values: no usable reference found.** The protocol only accepts a published value for a byte-identical model
+file measured on the same text, context and chunk count. Candidates checked: the llama.cpp perplexity scoreboard
+(LLaMA 3 8B; reference files not distributed) and eaddario/Qwen3.5-9B-GGUF (per-file PPL/KLD with SHA-256s, but
+custom `--target-bpw` tensor mixes whose logs omit context size and chunk count, and a 17.9 GB F16 reference). This
+check stays open.
+
 ## What the tests cover
 
 Backend tests cover HTTP queueing, order, frozen settings, cancellation, incomplete or noisy samples, changed conditions,
