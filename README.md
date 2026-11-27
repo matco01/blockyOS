@@ -202,16 +202,20 @@ then needs a token. See [docs/SETUP.md](docs/SETUP.md#remote-access).
 
 ## Getting started
 
-**Requirements:** Ubuntu 24.04 (dedicated machine or WSL2), Python 3.12+, and Node.js to build the UI. An NVIDIA GPU
-is optional: CPU-only, AMD and Intel machines work through CPU or Vulkan builds.
-
-**Dedicated machine**
+**One command** on Ubuntu 24.04 (a dedicated machine, a GPU server, or WSL2):
 ```bash
-git clone https://github.com/matco01/blockyOS && cd blockyOS
-sudo ./scripts/install.sh
-cd frontend && npm install && npm run build
+curl -fsSL https://raw.githubusercontent.com/matco01/blockyOS/main/scripts/get.sh | sudo bash
 ```
-Then open `http://localhost:8000` on the machine, go to **Models**, and download a model.
+It installs what's missing (the NVIDIA driver and CUDA toolkit when there's an NVIDIA GPU, build tools, Node.js), builds
+llama.cpp for this machine's GPU, builds the web UI, starts the services and downloads a small starter model. Run it
+again to update. Then open `http://localhost:8000` on the machine. An NVIDIA GPU is optional: other machines get a CPU
+build. `BLOCKY_DRY_RUN=1` shows what it would do without changing anything.
+
+**Docker** (NVIDIA Container Toolkit): `git clone https://github.com/matco01/blockyOS && cd blockyOS && docker compose up -d`.
+Without an NVIDIA GPU: `docker build --build-arg BASE=ubuntu:24.04 -t blockyos:cpu . && docker run -d --network host blockyos:cpu`.
+
+**From the command line:** `pip install blockyos-client`, then `blocky measure base.gguf variant.gguf` measures and
+prints the comparison with its spread and significance (see [client/README.md](client/README.md)).
 
 **Windows PC (development, through WSL2):** see [docs/SETUP.md](docs/SETUP.md#a-on-a-windows-pc-development-via-wsl2).
 It covers:

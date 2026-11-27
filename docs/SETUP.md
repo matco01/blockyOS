@@ -35,11 +35,35 @@ WSL stops Linux when no terminal is attached. Keep `wsl -d blocky` open while us
 
 ## B. On a dedicated machine (Ubuntu Server 24.04)
 
-1. Install Ubuntu Server 24.04 (minimal), with the NVIDIA driver if there's an NVIDIA GPU:
-   `sudo ubuntu-drivers install` (use the **580** branch for GTX 10xx cards).
-2. Install the CUDA toolkit 12.x from NVIDIA's Ubuntu repository (as in step A3, but with the `ubuntu2404` repo instead of `wsl-ubuntu`).
-3. `git clone <this repo> && cd blockyOS && sudo ./scripts/install.sh`
-4. Build the UI (`frontend/`, needs Node.js) or copy a built `frontend/dist` over.
+Install Ubuntu Server 24.04 (minimal), then:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/matco01/blockyOS/main/scripts/get.sh | sudo bash
+```
+
+`scripts/get.sh` does every step: base packages; with an NVIDIA GPU the recommended driver (then it asks for a reboot;
+run the same command again afterwards) and the CUDA toolkit 12.9 (12.x keeps GTX 10xx cards supported); the code in
+`/opt/blocky/src`; `scripts/install.sh` with llama.cpp built only for the GPU generations in the machine; the web UI
+(Ubuntu's Node.js, built in a temporary copy); a small starter model. Running it again updates Blocky. Options:
+`BLOCKY_NO_CUDA=1` (CPU build), `BLOCKY_NO_DRIVER=1`, `BLOCKY_NO_MODEL=1`, `BLOCKY_REF=<branch or tag>`,
+`BLOCKY_DRY_RUN=1` (show the plan, change nothing). In WSL it turns on systemd if needed and asks for `wsl --shutdown`.
+
+The manual equivalent: the NVIDIA driver (`sudo ubuntu-drivers install`), the CUDA toolkit 12.x from NVIDIA's
+`ubuntu2404` repository (as in step A3), `sudo ./scripts/install.sh` in a clone, and the UI (`frontend/`, Node.js 18+).
+
+## Docker
+
+`docker compose up -d` in a clone builds the image (CUDA 12.9, llama.cpp for GTX 10xx to RTX 40xx) and starts it with
+the GPU; it needs the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/).
+Without an NVIDIA GPU: `docker build --build-arg BASE=ubuntu:24.04 -t blockyos:cpu .` and
+`docker run -d --network host -v blocky-models:/opt/blocky/models -v blocky-data:/opt/blocky/data blockyos:cpu`.
+
+- The container uses the host's network on purpose: Blocky answers only requests from the machine itself (and other
+  devices with the remote-access token), and inside a bridge network every request looks like it comes from outside.
+- There's no systemd in a container, so Blocky runs the chat model server itself (`BLOCKY_SUPERVISE_LLM=1`); its log is
+  in `/opt/blocky/data/llm.log`. Models and data live in the two volumes.
+- Not in the image yet: the GPU clock lock helper (it needs root) and the PyTorch lab (`scripts/setup-ml.sh` isn't set
+  up for containers). For training and the lab, use the full install.
 
 ## C. Optional research extras (both setups)
 

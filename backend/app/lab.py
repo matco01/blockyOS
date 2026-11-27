@@ -14,6 +14,7 @@ import os
 import platform
 import re
 import shutil
+import signal
 import subprocess
 import time
 from pathlib import Path
@@ -239,12 +240,106 @@ def has_systemd() -> bool:
     return Path("/run/systemd/system").is_dir()
 
 
+# ---------- The chat model without systemd (containers) ----------
+# With BLOCKY_SUPERVISE_LLM=1, Blocky runs scripts/start-llm.sh itself, as blocky-llm.service would: it reads the same
+# settings files, restarts the server if it exits, and writes its output to DATA_DIR/llm.log instead of the journal.
+
+SUPERVISE = os.environ.get("BLOCKY_SUPERVISE_LLM") == "1"
+START_LLM = Path(__file__).resolve().parents[2] / "scripts" / "start-llm.sh"
+LLM_LOG = config.DATA_DIR / "llm.log"
+_llm: dict = {"proc": None, "want": False, "started": None}  # started: monotonic time of the last start; None = never
+
+
+def _env_file(path: Path) -> dict:
+    """KEY=VALUE lines of a systemd EnvironmentFile (comments and blank lines skipped, quotes removed)."""
+    out = {}
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return out
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.removeprefix("export ").split("=", 1)
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key.strip()):
+            out[key.strip()] = value.strip().strip("'\"")
+    return out
+
+
+async def _llm_start() -> None:
+    p = _llm["proc"]
+    if p is not None and p.returncode is None:
+        return
+    env = dict(os.environ)
+    for f in (Path("/etc/blocky/blocky.env"), RUNTIME_FILE):  # the same order as blocky-llm.service
+        env.update(_env_file(f))
+    LLM_LOG.parent.mkdir(parents=True, exist_ok=True)
+    if LLM_LOG.is_file() and LLM_LOG.stat().st_size > 20 * 2**20:
+        LLM_LOG.replace(LLM_LOG.with_suffix(".log.1"))
+    with open(LLM_LOG, "ab") as log:
+        _llm["proc"] = await asyncio.create_subprocess_exec(str(START_LLM), env=env, stdout=log, stderr=asyncio.subprocess.STDOUT,
+                                                            start_new_session=True)
+    _llm["started"] = time.monotonic()
+
+
+async def _llm_stop() -> None:
+    p = _llm["proc"]
+    if p is None or p.returncode is not None:
+        return
+    try:
+        os.killpg(p.pid, signal.SIGTERM)
+        await asyncio.wait_for(p.wait(), 15)
+    except asyncio.TimeoutError:
+        os.killpg(p.pid, signal.SIGKILL)
+        await p.wait()
+    except ProcessLookupError:
+        pass
+
+
+async def supervise_llm() -> None:
+    """Keeps the chat model running while it should be (like systemd's Restart=always, with a back-off)."""
+    _llm["want"] = True
+    while True:
+        try:
+            p = _llm["proc"]
+            stale = _llm["started"] is None or time.monotonic() - _llm["started"] > 30
+            if _llm["want"] and (p is None or p.returncode is not None) and stale:
+                await _llm_start()
+            await asyncio.sleep(3)
+        except asyncio.CancelledError:
+            await _llm_stop()
+            raise
+        except Exception:  # noqa: BLE001 - the supervisor must never die
+            log.exception("chat model supervisor")
+            await asyncio.sleep(10)
+
+
+def _llm_log_tail(lines: int) -> str:
+    try:
+        with open(LLM_LOG, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - 400 * lines))
+            return "\n".join(f.read().decode(errors="replace").splitlines()[-lines:])
+    except OSError:
+        return ""
+
+
 async def llm_service(action: str) -> None:
     """start/stop/restart the model server (allowed via a narrow sudoers rule).
 
     Without systemd there is no blocky-llm service: no chat model runs under Blocky, so pausing it for a measurement
-    and resuming it afterwards are no-ops. Switching the chat model still needs the service and says so.
+    and resuming it afterwards are no-ops. Switching the chat model still needs the service and says so. In supervised
+    mode (containers), Blocky runs the model server itself.
     """
+    if SUPERVISE:
+        if action in ("stop", "restart"):
+            _llm["want"] = action == "restart"
+            await _llm_stop()
+        if action in ("start", "restart"):
+            _llm["want"] = True
+            await _llm_start()
+        return
     if not has_systemd():
         if action in ("stop", "start"):
             return
@@ -649,7 +744,10 @@ def _is_gpu(device: str) -> bool:
 
 
 async def memory_map() -> dict:
-    code, out = await _run("journalctl", "-u", "blocky-llm", "-n", "800", "--no-pager", "-o", "cat", timeout=10)
+    if SUPERVISE:
+        code, out = 0, _llm_log_tail(800)
+    else:
+        code, out = await _run("journalctl", "-u", "blocky-llm", "-n", "800", "--no-pager", "-o", "cat", timeout=10)
     lines = out.splitlines() if code == 0 else []
     start = max((i for i, l in enumerate(lines) if l.startswith("blocky-llm: model=")), default=-1)
     lines = lines[start + 1:] if start >= 0 else []
@@ -719,6 +817,8 @@ async def refresh_measured() -> None:
 # ---------- Logs ----------
 
 async def llm_log(lines: int = 300) -> str:
+    if SUPERVISE:
+        return _llm_log_tail(max(10, min(2000, lines))) or "No output from the model server yet."
     code, out = await _run("journalctl", "-u", "blocky-llm", "-n", str(max(10, min(2000, lines))),
                            "--no-pager", "-o", "short-iso", timeout=10)
     return out if code == 0 else f"Couldn't read the log: {out.strip()[:300]}"

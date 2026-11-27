@@ -1,0 +1,22 @@
+# blockyOS with an NVIDIA GPU: docker compose up -d, then open http://localhost:8000 on this machine.
+# Needs the NVIDIA Container Toolkit. For a machine without an NVIDIA GPU, see the CPU line at the top of the Dockerfile.
+services:
+  blocky:
+    build: .
+    image: blockyos
+    network_mode: host        # Blocky serves this machine only (127.0.0.1:8000); see docs/SETUP.md for remote access
+    restart: unless-stopped
+    volumes:
+      - models:/opt/blocky/models
+      - data:/opt/blocky/data
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  models:
+  data:

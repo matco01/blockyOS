@@ -65,10 +65,16 @@ async def lifespan(app: FastAPI):
     app.state.background.add(saver)
     guard = asyncio.create_task(gpuguard.monitor())
     app.state.background.add(guard)
+    supervisor = asyncio.create_task(lab.supervise_llm()) if lab.SUPERVISE else None  # containers: Blocky runs the chat model
+    if supervisor:
+        app.state.background.add(supervisor)
     async with mcp_server.server.session_manager.run():
         yield
     saver.cancel()
     guard.cancel()
+    if supervisor:  # stops the chat model server it started
+        supervisor.cancel()
+        await asyncio.gather(supervisor, return_exceptions=True)
     jobstore.save()
     worker.cancel()
     research_worker.cancel()

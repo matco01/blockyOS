@@ -23,6 +23,12 @@ with each release. Results are only comparable within one protocol version.
   A Hugging Face-format model folder (config.json + safetensors) can be uploaded for fine-tuning, and a `.gguf` can be
   downloaded on the device from any https link.
 
+- **One-command install and Docker.** `curl -fsSL …/scripts/get.sh | sudo bash` installs everything on Ubuntu 24.04
+  (driver and CUDA 12.9 with an NVIDIA GPU, llama.cpp for this machine's GPU only, the web UI built from a temporary
+  copy, a starter model), updates when run again, handles WSL's systemd switch and has a dry-run mode. A Dockerfile and
+  `docker-compose.yml` (host network, volumes for models and data); without systemd, Blocky now runs the chat model
+  server itself (`BLOCKY_SUPERVISE_LLM=1`, log in DATA_DIR/llm.log). CI builds the CPU image and checks that it serves
+  the API and the UI.
 - **Settings comparable with published numbers.** Perplexity/KLD can be scored on the whole text (the setting of
   published llama.cpp tables), with a warning about time and disk. One preset adds it together with lm-evaluation-harness
   GSM8K and IFEval on their full test sets. The built-in MMLU-Pro sample is labelled as a paired sample, not a
