@@ -183,6 +183,19 @@ export type TorchStatus = { installed: boolean; converter: boolean; torch?: stri
   checkpoints: { id: string; repo: string; architecture: string; layers: number | null; size_bytes: number }[] };
 export type TorchJob = { id: number; created_at: number; kind: string; status: string; step: string | null; error: string | null;
   params: Record<string, string>; results: Record<string, unknown>; log_tail?: string[] };
+export type HwChip = { kind: "analog" | "digital"; [setting: string]: unknown };
+export type HwPreset = { id: string; group: "check" | "digital" | "analog"; label: string; about: string; chip: HwChip; sources?: string[]; illustrative?: boolean };
+export type HwCatalog = { presets: HwPreset[]; analog_default: HwChip; digital_default: HwChip; weight_formats: string[]; input_formats: string[];
+  times: { label: string; seconds: number }[]; sweep_keys: { key: string; label: string; integer: boolean; min: number; max: number }[] };
+export type HwParams = { checkpoint: string; preset: string | null; preset_label: string; chip: HwChip; trials: number; chunks: number; seed: number;
+  label: string; sweep?: { id: string; key: string; label: string; value: number; n: number } };
+export type HwStat = { mean: number; sd?: number; ci95?: number; min: number; max: number; n: number };
+export type HwErr = { output_error: number | null; weight_error: number | null };
+export type HwResult = { chip: HwChip; trials: number; deterministic: boolean; seed: number;
+  per_trial: { trial: number; tokens: number; kld: number; kld_sd: number; kld_p99: number; same_top: number; ppl: number; ppl_base: number }[];
+  summary: { kld: HwStat; same_top: HwStat; ppl: HwStat }; ppl_base: number; tokens: number; output_error: number | null; weight_error: number | null;
+  per_kind: Record<string, HwErr>; per_layer: ({ layer: number | null } & HwErr)[]; on_chip: { matrices: number; weights: number }; digital: string;
+  calibration: { chunks: number; tokens: number } | null; not_modeled: string[]; device: string; seconds: number; gpu_peak_mb?: number };
 export type LayerMeasure ={ layer: number; kld: number | null; kld_p99: number | null; same_top: number | null; ppl: number | null; excess_kld: number; bytes: number; seconds: number };
 export type LayerScan = { id: number; created_at: number; model: string; mode: "quantize" | "prune"; qtype: string | null; status: string; step: string | null; error: string | null;
   results: { layers?: LayerMeasure[]; n_layers?: number; source_type?: string; control?: { kld: number | null; same_top: number | null }; reference?: { ppl: number | null };
@@ -473,6 +486,10 @@ export const api = {
   torchTrain: (body: Record<string, unknown>) => json<{ id: number }>("/api/torch/train", send("POST", body)),
   torchQuantsim: (body: Record<string, unknown>) => json<{ id: number }>("/api/torch/quantsim", send("POST", body)),
   torchQuantsimExport: (id: number, type: string) => json<{ id: number }>(`/api/torch/quantsim/${id}/export`, send("POST", { type, profile: true })),
+  hwCatalog: () => json<HwCatalog>("/api/hwlab/presets"),
+  hwRuns: () => json<TorchJob[]>("/api/hwlab/runs"),
+  hwRun: (body: Record<string, unknown>) => json<{ id: number }>("/api/hwlab/runs", send("POST", body)),
+  hwSweep: (body: Record<string, unknown>) => json<{ sweep: string; ids: number[] }>("/api/hwlab/sweeps", send("POST", body)),
   notebooks: () => json<{ installed: boolean; running: boolean; url: string | null; folder: string }>("/api/notebooks"),
   scans: (model?: string) => json<LayerScan[]>(`/api/scans${model ? `?model=${encodeURIComponent(model)}` : ""}`),
   scanStart: (model: string, mode: string, qtype: string) => json<{ id: number }>("/api/scans", send("POST", { model, mode, qtype })),

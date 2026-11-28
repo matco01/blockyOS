@@ -26,7 +26,8 @@ editing code. This file is for changing Blocky itself.
 | `backend/app/profile.py` | Experiments: run tree, config validation, the measurement protocol, statistics, analysis, import/export |
 | `backend/app/mcp_server.py` | MCP tools for AI assistants (thin wrappers over the modules below) |
 | `backend/app/engines.py`, `weights.py`, `scans.py`, `torchlab.py`, `kernels.py`, `quantlab.py` | Engine builds, weight workshop, layer scans, PyTorch jobs, nsys kernel profiles, quantization helpers |
-| `backend/torch_tools/` | Scripts that run inside the ML venv (activations, LoRA/QLoRA) |
+| `backend/torch_tools/` | Scripts that run inside the ML venv (activations, LoRA/QLoRA, the quantization playground `quantsim.py`, the hardware lab simulator `hwsim.py`) |
+| `backend/app/hwlab.py`, `torch_tools/hwsim.py` | Hardware lab: a model on a simulated chip (analog in-memory computing with device physics, or digital number formats); presets, checks, sweeps, CSV. Spec: docs/HARDWARE_LAB.md |
 | `backend/tests/` | pytest suite (no GPU or models needed) |
 | `frontend/src/` | React + TypeScript UI (Vite). `ProjectsPage.tsx` (front door), `ExperimentsPage.tsx`, `ResearchCanvas.tsx`, `expmetrics.ts`, `GuidePage.tsx` |
 | `client/blocky.py`, `blocky_cli.py` | Python client used in notebooks, and the `blocky` command (`blocky measure …`) |
@@ -46,7 +47,8 @@ ruff check backend client
 npm test && npm run build
 ```
 
-CI runs the same on every push (`.github/workflows/ci.yml`).
+CI runs the same on every push (`.github/workflows/ci.yml`). Tests that need PyTorch (`test_hwsim.py`: the simulator's
+physics and math, and a tiny model end to end) are skipped without it; CI runs them in the "PyTorch tools (CPU)" job.
 
 ## Rules
 

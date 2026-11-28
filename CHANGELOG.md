@@ -44,6 +44,14 @@ with each release. Results are only comparable within one protocol version.
   speed and perplexity with their spread, KL divergence, recipe, hashes, hardware, protocol), optionally with the
   reproducibility bundle. The license is detected from the file or chosen; licenses with conditions need the owner's
   confirmation. The token is stored like other secrets and never returned; publishing is owner-only (not via MCP).
+- **Hardware lab, level 1: run a model on a simulated chip.** Analog in-memory computing (crossbar tiles of device pairs,
+  DAC and ADC with calibrated ranges, phase-change memory programming noise, drift and read noise ported from IBM
+  AIHWKit, stuck devices, conductance levels, drift compensation) or digital number formats (INT8, INT4, FP8 E4M3,
+  MXFP4). Every decoder matrix runs on the chip; KL divergence, same top token and perplexity against the exact model,
+  per chip and with the spread over independently simulated chips; output and weight error per matrix type and layer;
+  sweeps of one setting with a chart; CSV with the chip description and seed. Two presets check the pipeline (KL
+  divergence near 0). All tools → Hardware lab; API `/api/hwlab`; docs/HARDWARE_LAB.md. A new CI job runs the
+  simulator's tests with CPU PyTorch.
 - **GPU safety.** A monitor stops all running GPU work (experiments, training, code runs, benchmarks, scans, …) when
   the GPU stays above its limit or stops responding, and pauses GPU work until the owner resumes. Blocky also pauses
   when it restarts after GPU work was interrupted, so a crash or power loss never restarts heavy work by itself. Queued

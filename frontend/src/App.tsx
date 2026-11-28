@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Activity, BookOpen, Bot, Boxes, Code, Compass, FolderKanban, Gauge, Brain, ClipboardCheck, FlaskConical, LayoutDashboard, Microscope, PanelLeft, Swords, Plus, Search, Settings as SettingsIcon, SlidersHorizontal, Trash2, Wrench } from "lucide-react";
+import { Activity, BookOpen, Bot, Boxes, Code, Compass, Cpu, FolderKanban, Gauge, Brain, ClipboardCheck, FlaskConical, LayoutDashboard, Microscope, PanelLeft, Swords, Plus, Search, Settings as SettingsIcon, SlidersHorizontal, Trash2, Wrench } from "lucide-react";
 import { api, Conversation, MessageStats, Sampling, SearchHit, Status } from "./api";
 import AgentPage from "./AgentPage";
 import ArenaPage from "./ArenaPage";
@@ -11,6 +11,7 @@ import TestsPage from "./TestsPage";
 import ExperimentsPage from "./ExperimentsPage";
 import NotebooksPage from "./NotebooksPage";
 import InternalsPage from "./InternalsPage";
+import HardwareLab from "./HardwareLab";
 import ResearchPage from "./ResearchPage";
 import ProjectsPage from "./ProjectsPage";
 import GuidePage from "./GuidePage";
@@ -23,7 +24,7 @@ import { GpuPauseBanner } from "./GpuSafety";
 import Logo from "./Logo";
 import { Accent, BLOCK_COLORS, Theme, useSetting } from "./settings";
 
-export type Page = "chat" | "agent" | "home" | "experiments" | "projects" | "code" | "notebooks" | "internals" | "guide" | "models" | "arena" | "tests" | "bench" | "memory" | "system" | "settings";
+export type Page = "chat" | "agent" | "home" | "experiments" | "projects" | "code" | "notebooks" | "internals" | "hardware" | "guide" | "models" | "arena" | "tests" | "bench" | "memory" | "system" | "settings";
 
 const PAGES = [
   { id: "projects", label: "Projects", icon: FolderKanban },
@@ -32,6 +33,7 @@ const PAGES = [
   { id: "code", label: "Your code", icon: Code },
   { id: "home", label: "Overview", icon: LayoutDashboard },
   { id: "internals", label: "Internals", icon: Microscope },
+  { id: "hardware", label: "Hardware lab", icon: Cpu },
   { id: "notebooks", label: "Notebooks", icon: BookOpen },
   { id: "models", label: "Models", icon: Boxes },
   { id: "arena", label: "Arena", icon: Swords },
@@ -48,7 +50,7 @@ const NAV_GROUPS: { label: string; ids: readonly Page[] }[] = [
   { label: "Device", ids: ["home", "system", "settings"] },
   { label: "Help", ids: ["guide"] },
 ];
-const ALL_TOOLS: readonly Page[] = ["experiments", "models", "tests", "bench", "arena", "code", "internals", "notebooks", "agent", "memory"];
+const ALL_TOOLS: readonly Page[] = ["experiments", "models", "tests", "bench", "arena", "code", "internals", "hardware", "notebooks", "agent", "memory"];
 
 /** Renders a search snippet, highlighting the [matched] words. */
 function Snippet({ text }: { text: string }) {
@@ -330,6 +332,7 @@ export default function App() {
           {page === "notebooks" && <NotebooksPage />}
           {page === "agent" && <AgentPage />}
           {page === "internals" && <InternalsPage />}
+          {page === "hardware" && <HardwareLab />}
           {page === "projects" && <ProjectsPage projectId={projectId} status={status} open={openProject} />}
           {page === "code" && <ResearchPage />}
           {page === "guide" && <GuidePage />}

@@ -40,6 +40,18 @@ export function Tabs<T extends string>({ tabs, value, onChange }: {
 // ---------- Glossary ----------
 
 export const GLOSSARY: Record<string, { title: string; what: string; why: string }> = {
+  crossbar: { title: "Crossbar (analog in-memory computing)", what: "A grid of memory devices that stores each weight as a conductance. Inputs arrive as voltages on the rows; each column's currents add up to a dot product.",
+    why: "The weights never move: the memory does the multiplication, and moving weights is where most of a normal chip's energy goes." },
+  conductance: { title: "Conductance (G)", what: "How easily current flows through a device, in microsiemens (µS). Ohm's law: current I = G·V.",
+    why: "In an analog AI chip a weight is the conductance difference of two devices, so device physics becomes weight error." },
+  dac: { title: "DAC (digital-to-analog converter)", what: "Turns each digital input into a voltage, in 2^bits steps over its range.",
+    why: "With too few bits, small inputs round to zero." },
+  adc: { title: "ADC (analog-to-digital converter)", what: "Reads each column's current back as a number, with a fixed range (larger values clip) and 2^bits steps.",
+    why: "Often the largest part of an analog chip's energy and area, so designers want as few bits as the model tolerates." },
+  drift: { title: "Drift", what: "Phase-change memory slowly loses conductance after programming: G(t) = G₀·((t + t₀)/t₀)^−ν, with ν around 0.05.",
+    why: "Without compensation the model's outputs shrink over hours and years." },
+  kld: { title: "KL divergence", what: "How far the predicted next-token probabilities are from the exact model's, averaged per token. 0 = identical.",
+    why: "The most sensitive single number for how much a model changed; small values can still flip answers." },
   tps: { title: "Tokens per second", what: "How many tokens (word pieces, ~¾ of a word) the model produces each second.",
     why: "You read at ~5–8 tok/s. Above ~20 it feels instant." },
   ttft: { title: "Time to first token", what: "How long until the first word of the answer appears.",

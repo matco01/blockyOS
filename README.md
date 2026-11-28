@@ -127,6 +127,10 @@ provides provenance, scheduling and comparison. See [docs/RESEARCH_PROJECTS.md](
 - **Layer sensitivity**: quantize or remove one layer at a time and measure the damage against a control noise floor.
 - **Technique playground**: prototype a quantization method in Python before writing a kernel, either with reference
   methods (GPTQ, AWQ, RTN, NF4, ternary) or your own function. Then export a real GGUF and profile it.
+- **Hardware lab**: run a model on a simulated chip before anyone builds it. Analog in-memory computing with measured
+  phase-change memory physics (programming noise, drift, read noise), converters and tiles, or digital number formats
+  (INT8, INT4, FP8, MXFP4). Results against the exact model, with the spread over simulated chips, and sweeps such as
+  "how many ADC bits does this model need?". See [docs/HARDWARE_LAB.md](docs/HARDWARE_LAB.md).
 
 ### Train and inspect
 - **PyTorch internals**:

@@ -66,6 +66,28 @@ jobs:
       - run: npm test
       - run: npm run build
 
+  torch-tools:
+    name: PyTorch tools (CPU)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      # scripts/setup-ml.sh installs the latest versions; CI pins the ones these tests were checked with (CPU build).
+      - run: pip install torch==2.14.1 --index-url https://download.pytorch.org/whl/cpu
+      - run: pip install -r backend/requirements-dev.txt transformers==5.22.2 accelerate==1.15.0 safetensors==0.8.0 tokenizers==0.23.3
+      # The hardware lab's chip physics and math against known values, and one run on a tiny model end to end.
+      - name: Tests
+        run: |
+          set -o pipefail
+          python -m pytest -q -rfE backend/tests/test_hwsim.py 2>&1 | tee pytest.log
+      - name: Report failing tests as annotations
+        if: failure()
+        run: |
+          grep -E "^(FAILED|ERROR) " pytest.log | head -10 | while IFS= read -r line; do echo "::error title=pytest::${line:0:1000}"; done
+          echo "::error title=pytest (last lines)::$(tail -25 pytest.log | tr '\n' ' ' | cut -c1-3000)"
+
   docker:
     name: Docker image (CPU build, starts and serves)
     runs-on: ubuntu-24.04
