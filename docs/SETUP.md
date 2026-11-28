@@ -56,12 +56,14 @@ The manual equivalent: the NVIDIA driver (`sudo ubuntu-drivers install`), the CU
 `docker compose up -d` in a clone builds the image (CUDA 12.9, llama.cpp for GTX 10xx to RTX 40xx) and starts it with
 the GPU; it needs the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/).
 Without an NVIDIA GPU: `docker build --build-arg BASE=ubuntu:24.04 -t blockyos:cpu .` and
-`docker run -d --network host -v blocky-models:/opt/blocky/models -v blocky-data:/opt/blocky/data blockyos:cpu`.
+`docker run -d --network host -v blocky-models:/opt/blocky/models -v blocky-data:/opt/blocky/data
+-v blocky-engines:/opt/blocky/engines -v blocky-hf:/opt/blocky/hf blockyos:cpu`.
 
 - The container uses the host's network on purpose: Blocky answers only requests from the machine itself (and other
   devices with the remote-access token), and inside a bridge network every request looks like it comes from outside.
 - There's no systemd in a container, so Blocky runs the chat model server itself (`BLOCKY_SUPERVISE_LLM=1`); its log is
-  in `/opt/blocky/data/llm.log`. Models and data live in the two volumes.
+  in `/opt/blocky/data/llm.log`. Models, data, engine builds and Hugging Face checkpoints live in
+  four volumes, so they survive a new image.
 - Not in the image yet: the GPU clock lock helper (it needs root) and the PyTorch lab (`scripts/setup-ml.sh` isn't set
   up for containers). For training and the lab, use the full install.
 

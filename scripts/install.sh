@@ -12,10 +12,11 @@ LLAMA_SRC=/home/blocky/llama.cpp
 
 echo "==> User and folders"
 id blocky >/dev/null 2>&1 || useradd -m -s /bin/bash blocky
-mkdir -p "$PREFIX/models" "$PREFIX/data" /etc/blocky
+# Everything the service (user blocky) writes: besides models and data, engine builds and Hugging Face checkpoints.
+mkdir -p "$PREFIX/models" "$PREFIX/data" "$PREFIX/engines" "$PREFIX/hf" /etc/blocky
 # On the device the code is copied here; in WSL dev it's a link to the Windows folder.
 [[ -e "$PREFIX/app" ]] || ln -s "$REPO_DIR" "$PREFIX/app"
-chown -R blocky:blocky "$PREFIX/models" "$PREFIX/data"
+chown -R blocky:blocky "$PREFIX/models" "$PREFIX/data" "$PREFIX/engines" "$PREFIX/hf"
 
 echo "==> System packages"
 # bubblewrap = sandbox for running model-written code in the coding tests (no network, read-only).

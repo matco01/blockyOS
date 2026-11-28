@@ -42,8 +42,8 @@ COPY --chown=blocky:blocky . /opt/blocky/app
 COPY --from=ui --chown=blocky:blocky /ui/dist /opt/blocky/app/frontend/dist
 RUN python3 -m venv /opt/blocky/venv \
     && /opt/blocky/venv/bin/pip install --no-cache-dir -r /opt/blocky/app/backend/requirements.txt \
-    && mkdir -p /opt/blocky/models /opt/blocky/data /etc/blocky \
-    && chown -R blocky:blocky /opt/blocky/models /opt/blocky/data \
+    && mkdir -p /opt/blocky/models /opt/blocky/data /opt/blocky/engines /opt/blocky/hf /etc/blocky \
+    && chown -R blocky:blocky /opt/blocky/models /opt/blocky/data /opt/blocky/engines /opt/blocky/hf \
     && chmod +x /opt/blocky/app/scripts/start-llm.sh
 
 # No systemd in a container: Blocky runs the chat model server itself (lab.SUPERVISE).
@@ -51,7 +51,7 @@ ENV BLOCKY_SUPERVISE_LLM=1 \
     PATH=/opt/blocky/venv/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 USER blocky
 WORKDIR /opt/blocky/app/backend
-VOLUME ["/opt/blocky/models", "/opt/blocky/data"]
+VOLUME ["/opt/blocky/models", "/opt/blocky/data", "/opt/blocky/engines", "/opt/blocky/hf"]
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s CMD curl -fs http://127.0.0.1:8000/api/status >/dev/null || exit 1
 CMD ["uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000"]

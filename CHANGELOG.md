@@ -82,6 +82,9 @@ with each release. Results are only comparable within one protocol version.
   `ggml-rpc-server`), which made the build stop; engine builds finished but without the RPC worker. Both names work
   now, and the RPC worker (optional, for multi-machine runs) can no longer fail the whole install; CI checks that it
   still gets built.
+- A fresh install (and the Docker image) failed at startup: the service, running as user `blocky`, couldn't create
+  `/opt/blocky/engines` and `/opt/blocky/hf` in the root-owned `/opt/blocky`. The installer and the image now create
+  them for it (Docker keeps both in volumes), and a test checks that every folder the backend uses there is created.
 - GPU clock lock helper (`blocky-gpu-clocks`) also finds `nvidia-smi` where WSL installs it; re-run `scripts/install.sh`.
 - Speed: a llama-bench repetition with a negative duration (the clock stepped backwards, seen under WSL) is now dropped
   like other invalid samples. Before, it counted as a near-zero rate and pulled the median down. Protocol unchanged:

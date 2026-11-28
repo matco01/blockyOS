@@ -9,6 +9,8 @@ services:
     volumes:
       - models:/opt/blocky/models
       - data:/opt/blocky/data
+      - engines:/opt/blocky/engines   # llama.cpp builds made under Engines
+      - hf:/opt/blocky/hf             # Hugging Face checkpoints for fine-tuning
     deploy:
       resources:
         reservations:
@@ -20,3 +22,5 @@ services:
 volumes:
   models:
   data:
+  engines:
+  hf:
