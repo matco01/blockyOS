@@ -555,7 +555,7 @@ def normalize_config(exp: dict, cfg: dict) -> dict:
         out.pop("split_mode", None)
     elif out["split_mode"] not in ("layer", "row", "none"):
         raise ValueError("Split mode must be auto, layer (pipeline: layers spread over GPUs), row (tensor parallel) or none (one GPU)")
-    # Other machines: llama.cpp RPC workers (host:port of an rpc-server), or pipeline stages for vLLM / TensorRT-LLM.
+    # Other machines: llama.cpp RPC workers (host:port of llama.cpp's RPC server), or pipeline stages for vLLM / TensorRT-LLM.
     rpc = out.get("rpc")
     if rpc in (None, "", []):
         out.pop("rpc", None)
@@ -713,7 +713,7 @@ def check_rpc_workers(cfg: dict, timeout: float = 3) -> None:
             socket.create_connection((host.strip("[]"), int(port)), timeout=timeout).close()
         except OSError as e:
             raise RuntimeError(f"RPC worker {addr} isn't reachable ({e.__class__.__name__}). Start it there "
-                               "(Settings → Multi-machine on that device, or rpc-server) and check the address") from None
+                               "(Settings → Multi-machine on that device, or llama.cpp's ggml-rpc-server) and check the address") from None
 
 
 def checkpoint_server_cmd(fw: str, ebin: Path, cfg: dict, util: float) -> tuple[list[str], str | None]:

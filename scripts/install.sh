@@ -35,7 +35,11 @@ if [[ ! -x "$PREFIX/llama.cpp/bin/llama-server" ]]; then
     echo "    no CUDA toolkit found, building CPU-only"
   fi
   sudo -u blocky env PATH="$PATH" cmake -S "$LLAMA_SRC" -B "$LLAMA_SRC/build" "${CMAKE_ARGS[@]}" >/dev/null
-  sudo -u blocky env PATH="$PATH" cmake --build "$LLAMA_SRC/build" --config Release -j"$(nproc)" --target llama-server llama-bench llama-perplexity llama-quantize llama-batched-bench llama-imatrix rpc-server
+  sudo -u blocky env PATH="$PATH" cmake --build "$LLAMA_SRC/build" --config Release -j"$(nproc)" --target llama-server llama-bench llama-perplexity llama-quantize llama-batched-bench llama-imatrix
+  # The RPC worker (optional, for multi-machine runs). llama.cpp renamed it rpc-server -> ggml-rpc-server.
+  for rpc in ggml-rpc-server rpc-server; do
+    sudo -u blocky env PATH="$PATH" cmake --build "$LLAMA_SRC/build" --config Release -j"$(nproc)" --target "$rpc" >/dev/null 2>&1 && break
+  done || echo "    note: llama.cpp's RPC worker didn't build; multi-machine runs need it (everything else works)"
   # Copy the server, benchmark tool and their shared libraries.
   mkdir -p "$PREFIX/llama.cpp/bin"
   # --remove-destination replaces files instead of overwriting them in place: a running

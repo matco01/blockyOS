@@ -32,7 +32,9 @@ RUN git clone --depth 1 --branch "${LLAMA_REF}" https://github.com/ggml-org/llam
          args="$args -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHS} -DCMAKE_EXE_LINKER_FLAGS=-Wl,--allow-shlib-undefined"; \
          export PATH=/usr/local/cuda/bin:$PATH; fi \
     && cmake -S . -B build $args \
-    && cmake --build build -j"$(nproc)" --target llama-server llama-bench llama-perplexity llama-quantize llama-batched-bench llama-imatrix rpc-server \
+    && cmake --build build -j"$(nproc)" --target llama-server llama-bench llama-perplexity llama-quantize llama-batched-bench llama-imatrix \
+    && { for rpc in ggml-rpc-server rpc-server; do cmake --build build -j"$(nproc)" --target "$rpc" >/dev/null 2>&1 && break; done \
+         || echo "note: llama.cpp's RPC worker did not build (multi-machine runs need it)"; } \
     && mkdir -p /opt/blocky/llama.cpp/bin && cp -a build/bin/. /opt/blocky/llama.cpp/bin/ \
     && rm -rf build && chown -R blocky:blocky /home/blocky/llama.cpp
 

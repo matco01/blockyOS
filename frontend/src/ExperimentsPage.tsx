@@ -269,12 +269,12 @@ function PreregPanel({ exp, onSaved }: { exp: Experiment; onSaved: () => void })
   );
 }
 
-/** llama.cpp RPC workers: other machines running rpc-server that hold part of the model. */
+/** llama.cpp RPC workers: other machines running llama.cpp's RPC server that hold part of the model. */
 function RpcWorkers({ value, onChange }: { value: string[]; onChange: (v: string[]) => void }) {
   const [text, setText] = useState(value.join(", "));
   useEffect(() => setText(value.join(", ")), [value.join(",")]); // eslint-disable-line react-hooks/exhaustive-deps
   return (
-    <div className="xc-row"><div><b>RPC workers (other machines)</b><span>llama.cpp --rpc: addresses of machines running rpc-server (Settings → Multi-machine on another Blocky). Layers are spread over this machine and the workers; the network then sets much of the speed</span></div>
+    <div className="xc-row"><div><b>RPC workers (other machines)</b><span>llama.cpp --rpc: addresses of machines running llama.cpp's RPC server (Settings → Multi-machine on another Blocky). Layers are spread over this machine and the workers; the network then sets much of the speed</span></div>
       <input className="field" aria-label="RPC workers" placeholder="192.168.1.40:50052, 192.168.1.41:50052" value={text}
         onChange={(e) => setText(e.target.value)} onBlur={() => onChange(text.split(",").map((x) => x.trim()).filter(Boolean))} /></div>
   );

@@ -1,9 +1,10 @@
 """This device as a llama.cpp RPC worker: another machine's llama.cpp can then place part of a model on this GPU.
 
 The controller runs llama-server / llama-bench / llama-perplexity with `--rpc host:port,...` (an experiment's "RPC
-workers" setting); each worker runs llama.cpp's `rpc-server`, which executes the tensors it is sent.
+workers" setting); each worker runs llama.cpp's RPC server (`ggml-rpc-server`; `rpc-server` in builds before
+the rename), which executes the tensors it is sent.
 
-Security: rpc-server has no authentication and no encryption. Anyone who can reach its port can run computations on
+Security: the RPC server has no authentication and no encryption. Anyone who can reach its port can run computations on
 this GPU and send it arbitrary data. So it's off by default and listens on localhost (reach it through an SSH tunnel:
 `ssh -L 50052:localhost:50052 user@worker`); listening on the network is a separate, explicit choice for trusted
 networks only. Blocky doesn't schedule the worker's GPU: a model loaded through RPC shares it with this device's own work.
@@ -23,7 +24,8 @@ def settings() -> dict:
 
 
 def binary():
-    return engines.bin_dir("stock") / "rpc-server"
+    d = engines.bin_dir("stock")
+    return next((d / n for n in engines.RPC_NAMES if (d / n).is_file()), d / engines.RPC_NAMES[0])
 
 
 def status() -> dict:
@@ -38,7 +40,7 @@ def _start(s: dict) -> None:
     stop()
     exe = binary()
     if not exe.is_file():
-        _error = "rpc-server isn't built: re-run scripts/install.sh (it now builds llama.cpp with the RPC backend)"
+        _error = "llama.cpp's RPC server isn't built: re-run scripts/install.sh (it builds llama.cpp with the RPC backend)"
         raise ValueError(_error)
     host = "0.0.0.0" if s["expose"] else "127.0.0.1"
     _proc = subprocess.Popen([str(exe), "-H", host, "-p", str(s["port"])], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,

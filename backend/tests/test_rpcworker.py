@@ -41,6 +41,17 @@ def test_network_listening_is_explicit(fake_rpc_server):
         rpcworker.configure({"enabled": True, "port": 80})
 
 
+def test_finds_the_worker_under_either_name(tmp_path, monkeypatch):
+    """llama.cpp renamed rpc-server to ggml-rpc-server: builds from before and after the rename both work."""
+    from app import engines
+    monkeypatch.setattr(engines, "bin_dir", lambda engine: tmp_path)
+    assert rpcworker.binary() == tmp_path / "ggml-rpc-server"  # neither built: the current name, reported as missing
+    (tmp_path / "rpc-server").write_text("")
+    assert rpcworker.binary() == tmp_path / "rpc-server"
+    (tmp_path / "ggml-rpc-server").write_text("")
+    assert rpcworker.binary() == tmp_path / "ggml-rpc-server"
+
+
 def test_missing_binary_is_explained(tmp_path, monkeypatch, fresh_db):
     monkeypatch.setattr(rpcworker, "binary", lambda: tmp_path / "nope")
     with pytest.raises(ValueError, match="install.sh"):

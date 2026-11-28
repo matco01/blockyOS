@@ -71,9 +71,9 @@ Without an NVIDIA GPU: `docker build --build-arg BASE=ubuntu:24.04 -t blockyos:c
 
 - **llama.cpp across machines (RPC):** on each worker, Settings → "Multi-machine: lend this GPU" → On. It listens on
   localhost by default; from the controller, tunnel to it (`ssh -N -L 50052:localhost:50052 user@worker`) and enter
-  `localhost:50052` under Experiments → advanced settings → RPC workers. "Listen on the network" exposes `rpc-server`
-  without authentication or encryption; use it only on a network you trust. Builds made before this version need
-  `sudo ./scripts/install.sh` again (it now builds `rpc-server`).
+  `localhost:50052` under Experiments → advanced settings → RPC workers. "Listen on the network" exposes llama.cpp's RPC server
+  (`ggml-rpc-server`; `rpc-server` in older llama.cpp) without authentication or encryption; use it only on a network you trust. Builds made before this version need
+  `sudo ./scripts/install.sh` again (it now builds the RPC server).
 - **vLLM across machines:** start a Ray cluster yourself (`ray start --head` on this machine, `ray start
   --address=<this machine>:6379` on the others, all with the same vLLM version and model path), then set Pipeline stages.
 - **Training across machines:** Internals → Full training → Machines > 1, with this machine's network address. Every

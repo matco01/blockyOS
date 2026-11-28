@@ -168,9 +168,9 @@ function RpcWorkerRow() {
       <span className="row-icon" style={{ background: "linear-gradient(180deg,#bf5af2,#8944ab)" }}><Network /></span>
       <div className="row-main">
         <div>Multi-machine: lend this GPU to another Blocky (llama.cpp RPC worker)</div>
-        <div className="row-sub">Another machine can then hold part of a model here (its experiments list this device under “RPC workers”). rpc-server has <b>no authentication or encryption</b>: by default it listens on localhost only, for an SSH tunnel (<code>ssh -L {w.port}:localhost:{w.port} user@this-device</code>). Listening on the network lets anyone who can reach port {w.port} use this GPU; only do that on a network you trust.</div>
+        <div className="row-sub">Another machine can then hold part of a model here (its experiments list this device under “RPC workers”). llama.cpp's RPC server has <b>no authentication or encryption</b>: by default it listens on localhost only, for an SSH tunnel (<code>ssh -L {w.port}:localhost:{w.port} user@this-device</code>). Listening on the network lets anyone who can reach port {w.port} use this GPU; only do that on a network you trust.</div>
         <div className="row-sub" style={{ marginTop: 6 }}>
-          {w.running ? <>Running on <code>{w.host}:{w.port}</code></> : w.enabled ? "Not running" : "Off"}{!w.installed && " · rpc-server isn't built yet: re-run scripts/install.sh"}{w.error && ` · ${w.error}`}
+          {w.running ? <>Running on <code>{w.host}:{w.port}</code></> : w.enabled ? "Not running" : "Off"}{!w.installed && " · llama.cpp's RPC server isn't built yet: re-run scripts/install.sh"}{w.error && ` · ${w.error}`}
           {w.enabled && <label style={{ marginLeft: 12 }}><input type="checkbox" checked={w.expose} onChange={(e) => apply({ expose: e.target.checked })} /> Listen on the network</label>}
         </div>
         {err && <div className="row-sub" style={{ color: "var(--red, #e5484d)" }}>{err}</div>}

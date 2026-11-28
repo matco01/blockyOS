@@ -22,6 +22,8 @@ from . import config, db, lab
 ROOT = config.DATA_DIR.parent / "engines"          # /opt/blocky/engines/<id>/bin
 SRC = ROOT / "src"
 TARGETS = ["llama-server", "llama-bench", "llama-perplexity"]
+# The optional RPC worker binary: llama.cpp renamed it (rpc-server -> ggml-rpc-server); refs of either age work.
+RPC_NAMES = ("ggml-rpc-server", "rpc-server")
 _REPO = re.compile(r"^https://[A-Za-z0-9.-]+(:\d+)?/[A-Za-z0-9._/~-]+?(\.git)?$")
 _REF = re.compile(r"^[A-Za-z0-9._/+-]{1,120}$")
 _NAME = re.compile(r"[^A-Za-z0-9._-]+")
@@ -315,14 +317,16 @@ async def _build(engine_id: str) -> None:
             if await _sh(engine_id, ["cmake", "--build", str(src / "build"), "--config", "Release", "-j", str(os.cpu_count() or 4),
                                      "--target", *TARGETS], log, timeout=7200):
                 raise RuntimeError("Build failed (see log)")
-            # The RPC worker (multi-machine runs) is optional: very old refs don't have it.
-            await _sh(engine_id, ["cmake", "--build", str(src / "build"), "--config", "Release", "-j", str(os.cpu_count() or 4),
-                                  "--target", "rpc-server"], log, timeout=3600)
+            # The RPC worker (multi-machine runs) is optional: very old refs don't have it, and newer ones renamed it.
+            for rpc in RPC_NAMES:
+                if not await _sh(engine_id, ["cmake", "--build", str(src / "build"), "--config", "Release", "-j", str(os.cpu_count() or 4),
+                                             "--target", rpc], log, timeout=3600):
+                    break
             out = ROOT / engine_id / "bin"
             shutil.rmtree(out, ignore_errors=True)
             out.mkdir(parents=True)
             for f in (src / "build" / "bin").iterdir():
-                if f.is_file() and (f.name in TARGETS or f.name == "rpc-server" or ".so" in f.name):
+                if f.is_file() and (f.name in TARGETS or f.name in RPC_NAMES or ".so" in f.name):
                     shutil.copy2(f, out / f.name, follow_symlinks=True)
             missing = [t for t in TARGETS if not (out / t).is_file()]
             if missing:

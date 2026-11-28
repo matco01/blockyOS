@@ -82,6 +82,9 @@ with each release. Results are only comparable within one protocol version.
 - CI failed at random: the display check's cache treated "never checked" as checked at boot time, so on a freshly
   booted machine (CI runners) it skipped the check for its first minute. Failing tests now also appear as annotations,
   and the workflow uses current action versions.
+- Installing, the Docker image and engine builds work with current llama.cpp again: it renamed its RPC server
+  (`rpc-server` → `ggml-rpc-server`), which made the build stop. Both names work now, and the RPC worker (optional,
+  for multi-machine runs) can no longer fail the whole install; CI checks that it still gets built.
 - GPU clock lock helper (`blocky-gpu-clocks`) also finds `nvidia-smi` where WSL installs it; re-run `scripts/install.sh`.
 - Speed: a llama-bench repetition with a negative duration (the clock stepped backwards, seen under WSL) is now dropped
   like other invalid samples. Before, it counted as a near-zero rate and pulled the median down. Protocol unchanged:

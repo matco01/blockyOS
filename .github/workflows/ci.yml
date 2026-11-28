@@ -65,7 +65,7 @@ jobs:
         run: |
           set -o pipefail
           docker build --progress=plain --build-arg BASE=ubuntu:24.04 -t blockyos:ci . 2>&1 | tee build.log || {
-            echo "::error title=docker build::$(grep -iE 'error|failed|not found|cannot' build.log | tail -20 | tr '\n' ' ' | cut -c1-3500)"
+            echo "::error title=docker build (last lines)::$(tail -30 build.log | tr '\n' ' ' | cut -c1-4000)"
             exit 1
           }
       - run: docker run -d --name blocky --network host blockyos:ci
@@ -75,6 +75,8 @@ jobs:
           curl -fs http://127.0.0.1:8000/api/projects
           curl -fs http://127.0.0.1:8000/ | grep -q 'id="root"'
           docker exec blocky /opt/blocky/llama.cpp/bin/llama-server --version
+          # The optional RPC worker got built too (upstream renamed it once; this notices the next rename).
+          curl -fs http://127.0.0.1:8000/api/rpc-worker | grep -q '"installed":true'
       - name: Report the container log as an annotation
         if: failure()
         run: echo "::error title=Container log::$(docker logs blocky 2>&1 | tail -20 | tr '\n' ' ' | cut -c1-3000)"
