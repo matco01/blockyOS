@@ -51,6 +51,14 @@ with each release. Results are only comparable within one protocol version.
   Settings → GPU safety; a banner shows the pause everywhere. AI assistants can't resume.
 
 ### Changed
+- **Measurement protocol `blocky-profile/4`: one GPU layout per run.** llama-bench used its own fit with 512 MiB free,
+  while the server and the memory analysis used another, so for models that didn't fit entirely on the GPU the speed
+  came from a different layout than the one analysed (seen as decode speed above the bandwidth limit). Now the server
+  fits once and llama-bench, llama-perplexity and kernel profiles reuse its GPU layer count (mixture-of-experts models
+  fit again with the same margin). Results from `blocky-profile/3` are not comparable with new ones; start a new
+  experiment and baseline. docs/PROTOCOL.md section 4.
+- GPUs that drive a display keep 1 GiB more free memory (`BLOCKY_DISPLAY_RESERVE_MB`) in every llama.cpp tool Blocky
+  starts. On a desktop PC, an experiment with a model close to the VRAM size froze the whole computer.
 - Research runs: snapshots hold up to 20,000 files / 200 GB. Files of 1 MB and more are hard-linked instead of copied
   (no extra space or time) and their hashes are cached; source files are always replaced, never edited in place, so a
   run's snapshot keeps the content it was hashed with.
@@ -60,31 +68,20 @@ with each release. Results are only comparable within one protocol version.
   disconnected at any time. Settings → AI assistants; docs/AI_ASSISTANTS.md.
 - MCP tools for everything: `list_api` (every endpoint), `api_get`, `api_call`, `api_delete` and `query_database`
   (read-only SQL over all stored data). Every tool is labelled read-only, write or destructive.
-
-### Changed
 - Deleting through MCP is possible at the `full` access level (previously no MCP tool deleted anything). Assistants on
   this device get the local level, `full` by default. Secrets (tokens, API keys, the pairing code) and the endpoints
   that manage access are never available through MCP.
 - Requests that arrive through a tunnel or proxy on this machine (forwarding headers) are no longer treated as coming
   from the device itself.
 
-### Changed
-- **Measurement protocol `blocky-profile/4`: one GPU layout per run.** llama-bench used its own fit with 512 MiB free,
-  while the server and the memory analysis used another, so for models that didn't fit entirely on the GPU the speed
-  came from a different layout than the one analysed (seen as decode speed above the bandwidth limit). Now the server
-  fits once and llama-bench, llama-perplexity and kernel profiles reuse its GPU layer count (mixture-of-experts models
-  fit again with the same margin). Results from `blocky-profile/3` are not comparable with new ones; start a new
-  experiment and baseline. docs/PROTOCOL.md section 4.
-- GPUs that drive a display keep 1 GiB more free memory (`BLOCKY_DISPLAY_RESERVE_MB`) in every llama.cpp tool Blocky
-  starts. On a desktop PC, an experiment with a model close to the VRAM size froze the whole computer.
-
 ### Fixed
 - CI failed at random: the display check's cache treated "never checked" as checked at boot time, so on a freshly
   booted machine (CI runners) it skipped the check for its first minute. Failing tests now also appear as annotations,
   and the workflow uses current action versions.
-- Installing, the Docker image and engine builds work with current llama.cpp again: it renamed its RPC server
-  (`rpc-server` → `ggml-rpc-server`), which made the build stop. Both names work now, and the RPC worker (optional,
-  for multi-machine runs) can no longer fail the whole install; CI checks that it still gets built.
+- Installing and the Docker image work with current llama.cpp again: it renamed its RPC server (`rpc-server` →
+  `ggml-rpc-server`), which made the build stop; engine builds finished but without the RPC worker. Both names work
+  now, and the RPC worker (optional, for multi-machine runs) can no longer fail the whole install; CI checks that it
+  still gets built.
 - GPU clock lock helper (`blocky-gpu-clocks`) also finds `nvidia-smi` where WSL installs it; re-run `scripts/install.sh`.
 - Speed: a llama-bench repetition with a negative duration (the clock stepped backwards, seen under WSL) is now dropped
   like other invalid samples. Before, it counted as a near-zero rate and pulled the median down. Protocol unchanged:
