@@ -27,7 +27,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # llama.cpp: the source stays (Blocky converts trained models with its converter), the build doesn't.
 RUN git clone --depth 1 --branch "${LLAMA_REF}" https://github.com/ggml-org/llama.cpp /home/blocky/llama.cpp \
     && cd /home/blocky/llama.cpp \
-    && args="-DCMAKE_BUILD_TYPE=Release -DLLAMA_CURL=ON -DGGML_RPC=ON -DGGML_NATIVE=OFF" \
+    && args="-DCMAKE_BUILD_TYPE=Release -DLLAMA_CURL=ON -DGGML_RPC=ON -DGGML_NATIVE=OFF -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON -DCMAKE_INSTALL_RPATH=\$ORIGIN" \
     && if [ -x /usr/local/cuda/bin/nvcc ]; then \
          args="$args -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHS} -DCMAKE_EXE_LINKER_FLAGS=-Wl,--allow-shlib-undefined"; \
          export PATH=/usr/local/cuda/bin:$PATH; fi \

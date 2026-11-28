@@ -26,7 +26,9 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y -qq build-essential cmake git 
 echo "==> llama.cpp"
 if [[ ! -x "$PREFIX/llama.cpp/bin/llama-server" ]]; then
   [[ -d "$LLAMA_SRC" ]] || sudo -u blocky git clone --depth 1 https://github.com/ggml-org/llama.cpp "$LLAMA_SRC"
-  CMAKE_ARGS=(-DCMAKE_BUILD_TYPE=Release -DLLAMA_CURL=ON -DGGML_RPC=ON)
+  # The programs look for their libraries next to themselves ($ORIGIN) and nowhere else: not in this build tree,
+  # and not in the current folder (a build-tree search path ends with an empty entry, which means exactly that).
+  CMAKE_ARGS=(-DCMAKE_BUILD_TYPE=Release -DLLAMA_CURL=ON -DGGML_RPC=ON -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON '-DCMAKE_INSTALL_RPATH=$ORIGIN')
   if command -v nvcc >/dev/null 2>&1 || [[ -x /usr/local/cuda/bin/nvcc ]]; then
     export PATH=/usr/local/cuda/bin:$PATH
     # 61 = GTX 10xx (Pascal), 75 = RTX 20xx, 86 = RTX 30xx, 89 = RTX 40xx

@@ -85,6 +85,14 @@ with each release. Results are only comparable within one protocol version.
 - A fresh install (and the Docker image) failed at startup: the service, running as user `blocky`, couldn't create
   `/opt/blocky/engines` and `/opt/blocky/hf` in the root-owned `/opt/blocky`. The installer and the image now create
   them for it (Docker keeps both in volumes), and a test checks that every folder the backend uses there is created.
+- llama.cpp programs now look for their libraries next to themselves and nowhere else (linked with the search path
+  `$ORIGIN`). Before, they looked in the build folder, which the Docker image and engine builds delete, so anything
+  started without Blocky's library path failed (for example `llama-server --version` in the container). That search
+  path also ended with an empty entry, which makes the loader try the current folder too. Builds made before this
+  keep their old search path until they are rebuilt.
+- Kernel profiles of a custom engine traced its llama-bench on the **stock** build's GPU libraries: nsys starts the
+  program, and the runner chose the stock folder for wrappers. They now load the engine's own libraries. Only regular
+  Linux installs were affected (under WSL, nsys records no kernels); re-run kernel profiles of custom engines.
 - GPU clock lock helper (`blocky-gpu-clocks`) also finds `nvidia-smi` where WSL installs it; re-run `scripts/install.sh`.
 - Speed: a llama-bench repetition with a negative duration (the clock stepped backwards, seen under WSL) is now dropped
   like other invalid samples. Before, it counted as a near-zero rate and pulled the median down. Protocol unchanged:

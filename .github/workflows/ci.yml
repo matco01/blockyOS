@@ -20,7 +20,17 @@ jobs:
       - run: pip install -r backend/requirements-dev.txt
       # Includes end-to-end experiments through the whole measurement pipeline with a fake llama.cpp (tests/fake_llama.py).
       # Failing tests become annotations (pytest-github-actions-annotate-failures), readable without signing in.
-      - run: python -m pytest -q backend/tests --cov --cov-report=term --cov-report=xml
+      # That plugin only reports failures inside a test, so errors while setting up or cleaning up a test are
+      # reported from the summary lines (-rfE) by the next step.
+      - name: Tests
+        run: |
+          set -o pipefail
+          python -m pytest -q -rfE backend/tests --cov --cov-report=term --cov-report=xml 2>&1 | tee pytest.log
+      - name: Report failing tests as annotations
+        if: failure()
+        run: |
+          grep -E "^(FAILED|ERROR) " pytest.log | head -10 | while IFS= read -r line; do echo "::error title=pytest::${line:0:1000}"; done
+          echo "::error title=pytest (last lines)::$(tail -25 pytest.log | tr '\n' ' ' | cut -c1-3000)"
       - uses: actions/upload-artifact@v7
         if: matrix.python == '3.12'
         with:

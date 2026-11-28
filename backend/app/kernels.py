@@ -78,7 +78,7 @@ async def profile(bench: Path, model: Path, extra_args: list[str], work: Path, l
             f.unlink()
         cmd = ["nsys", "profile", "-t", "cuda", "--cuda-graph-trace=node", "--sample=none", "--cpuctxsw=none", "-f", "true", "-o", str(rep),
                str(bench), "-m", str(model), *pn, "-r", "1", "-o", "jsonl", *extra_args]
-        await quantlab._proc(cmd, log, run_id, timeout=900)
+        await quantlab._proc(cmd, log, run_id, timeout=900, libdir=bench.parent)  # this engine's libraries, not the stock ones
         await quantlab._proc(["nsys", "stats", "-r", "cuda_gpu_kern_sum", "-f", "csv", "--force-overwrite", "true", "-o", str(rep), str(rep) + ".nsys-rep"],
                              log, run_id, timeout=600)
         csv_file = work / f"kern-{phase}_cuda_gpu_kern_sum.csv"

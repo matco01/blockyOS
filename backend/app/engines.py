@@ -24,6 +24,9 @@ SRC = ROOT / "src"
 TARGETS = ["llama-server", "llama-bench", "llama-perplexity"]
 # The optional RPC worker binary: llama.cpp renamed it (rpc-server -> ggml-rpc-server); refs of either age work.
 RPC_NAMES = ("ggml-rpc-server", "rpc-server")
+# Binaries look for their libraries next to themselves and nowhere else. CMake's default build-tree search path points
+# into the build tree (deleted after the copy) and ends with an empty entry, which makes the loader try the current folder.
+RPATH_ARGS = ["-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON", "-DCMAKE_INSTALL_RPATH=$ORIGIN"]
 _REPO = re.compile(r"^https://[A-Za-z0-9.-]+(:\d+)?/[A-Za-z0-9._/~-]+?(\.git)?$")
 _REF = re.compile(r"^[A-Za-z0-9._/+-]{1,120}$")
 _NAME = re.compile(r"[^A-Za-z0-9._-]+")
@@ -311,7 +314,8 @@ async def _build(engine_id: str) -> None:
                     raise RuntimeError(f"Couldn't find '{e['ref']}' in that repository")
             sha = subprocess.run(["git", "-C", str(src), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
             _set(engine_id, commit_sha=sha[:12], step="configuring")
-            if await _sh(engine_id, ["cmake", "-S", str(src), "-B", str(src / "build"), *json.loads(e["cmake_args"])], log):
+            # RPATH_ARGS first, so the owner's own arguments still win.
+            if await _sh(engine_id, ["cmake", "-S", str(src), "-B", str(src / "build"), *RPATH_ARGS, *json.loads(e["cmake_args"])], log):
                 raise RuntimeError("cmake configure failed (see log)")
             _set(engine_id, step="compiling (10–20 min with CUDA)")
             if await _sh(engine_id, ["cmake", "--build", str(src / "build"), "--config", "Release", "-j", str(os.cpu_count() or 4),

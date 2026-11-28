@@ -97,6 +97,33 @@ def test_parse_nsys_kernel_summary():
     assert kernels.parse_kern_sum("") == {"total_ms": 0.0, "categories": [], "top": []}
 
 
+def test_kernel_profile_runs_on_the_engines_own_libraries(tmp_path, monkeypatch):
+    """nsys starts llama-bench as an argument, so the runner can't tell whose libraries to load: a custom engine's
+    kernel profile must not trace the stock build's GPU libraries."""
+    import asyncio
+
+    from app import quantlab
+    calls = []
+
+    async def fake_proc(cmd, log, run_id, timeout=1800, libdir=None):
+        calls.append((cmd[:2], libdir))
+        return ""
+    monkeypatch.setattr(kernels, "available", lambda: True)
+    monkeypatch.setattr(quantlab, "_proc", fake_proc)
+    bench = tmp_path / "engines" / "my-engine" / "bin" / "llama-bench"
+    asyncio.run(kernels.profile(bench, tmp_path / "m.gguf", [], tmp_path / "work", [], 1))
+    assert calls[0] == (["nsys", "profile"], bench.parent)
+
+
+def test_runner_loads_libraries_next_to_the_binary(tmp_path):
+    import asyncio
+
+    from app import quantlab
+    show = ["/bin/sh", "-c", "echo $LD_LIBRARY_PATH"]
+    assert asyncio.run(quantlab._proc(show, [], 0)).strip() == "/bin"                      # the binary's own folder
+    assert asyncio.run(quantlab._proc(show, [], 0, libdir=tmp_path)).strip() == str(tmp_path)  # or the caller's choice
+
+
 def test_sglang_is_a_checkpoint_framework(make_gguf, checkpoint, monkeypatch):
     monkeypatch.setattr(profile.engines, "sglang_installed", lambda: True)
     make_gguf("G-Q4_K_M.gguf")
